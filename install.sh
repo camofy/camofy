@@ -193,6 +193,33 @@ CAMOFY_ROOT="${install_root}"
 CAMOFY_BIN="\$CAMOFY_ROOT/camofy"
 
 if [ -x "\$CAMOFY_BIN" ]; then
+  # 确保 TUN 设备可用（/dev/net/tun），以支持 Mihomo tun 模式
+  if [ ! -c /dev/net/tun ]; then
+    mkdir -p /dev/net 2>/dev/null || true
+
+    # 尝试加载 TUN 内核模块
+    if which modprobe >/dev/null 2>&1; then
+      modprobe tun 2>/dev/null || true
+    elif which insmod >/dev/null 2>&1; then
+      for f in /lib/modules/*/kernel/drivers/net/tun.ko /lib/modules/tun.ko; do
+        if [ -f "\$f" ]; then
+          insmod "\$f" 2>/dev/null || true
+          break
+        fi
+      done
+    fi
+
+    # 某些固件会在 /dev/misc/tun 暴露设备节点
+    if [ -e /dev/misc/tun ] && [ ! -e /dev/net/tun ]; then
+      ln -s /dev/misc/tun /dev/net/tun 2>/dev/null || true
+    fi
+
+    # 仍不存在时，尝试创建设备节点（主设备号 10，次设备号 200）
+    if [ ! -c /dev/net/tun ]; then
+      mknod /dev/net/tun c 10 200 2>/dev/null || true
+    fi
+  fi
+
   mkdir -p "\$CAMOFY_ROOT/log"
   CAMOFY_HOST=0.0.0.0 \\
   CAMOFY_PORT=3000 \\
@@ -241,4 +268,3 @@ EOF
 }
 
 main "$@"
-
