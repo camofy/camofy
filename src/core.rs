@@ -1,0 +1,818 @@
+use std::path::{Path, PathBuf};
+
+use axum::Json;
+use serde::{Deserialize, Serialize};
+use tokio::process::Command as TokioCommand;
+
+use crate::ApiResponse;
+use crate::app::{app_state, current_timestamp};
+
+#[derive(Serialize, Deserialize, Default)]
+struct CoreMeta {
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    arch: Option<String>,
+    #[serde(default)]
+    last_download_time: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct GithubRelease {
+    tag_name: String,
+}
+
+#[derive(Serialize)]
+pub struct CoreInfo {
+    version: Option<String>,
+    arch: Option<String>,
+    last_download_time: Option<String>,
+    binary_exists: bool,
+    recommended_arch: String,
+}
+
+#[derive(Serialize)]
+pub struct CoreStatusDto {
+    running: bool,
+    pid: Option<u32>,
+}
+
+#[derive(Deserialize)]
+pub struct CoreDownloadRequest {
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+fn detect_system_arch() -> String {
+    #[cfg(target_family = "unix")]
+    {
+        use std::process::Command;
+
+        if let Ok(output) = Command::new("uname").arg("-m").output() {
+            if output.status.success() {
+                if let Ok(s) = String::from_utf8(output.stdout) {
+                    let arch = s.trim();
+                    if !arch.is_empty() {
+                        return arch.to_string();
+                    }
+                }
+            }
+        }
+    }
+
+    std::env::consts::ARCH.to_string()
+}
+
+fn map_arch_to_mihomo_arch(arch: &str) -> Option<&'static str> {
+    let arch = arch.to_lowercase();
+    if arch == "x86_64" || arch == "amd64" {
+        Some("linux-amd64")
+    } else if arch == "aarch64" || arch == "arm64" {
+        Some("linux-arm64")
+    } else if arch.starts_with("armv7") {
+        Some("linux-armv7")
+    } else if arch.starts_with("armv8") {
+        Some("linux-armv8")
+    } else if arch.starts_with("mipsel") || arch.starts_with("mipsle") {
+        Some("linux-mipsle")
+    } else if arch.starts_with("mips") {
+        Some("linux-mips")
+    } else {
+        None
+    }
+}
+
+fn core_dir(root: &PathBuf) -> PathBuf {
+    let mut path = root.clone();
+    path.push("core");
+    path
+}
+
+fn core_binary_path(root: &PathBuf) -> PathBuf {
+    let mut path = core_dir(root);
+    path.push("mihomo");
+    path
+}
+
+fn core_meta_path(root: &PathBuf) -> PathBuf {
+    let mut path = core_dir(root);
+    path.push("core.meta.json");
+    path
+}
+
+fn core_pid_path(root: &PathBuf) -> PathBuf {
+    let mut path = core_dir(root);
+    path.push("mihomo.pid");
+    path
+}
+
+pub(crate) fn mihomo_log_path(root: &PathBuf) -> PathBuf {
+    let mut path = root.clone();
+    path.push("log");
+    path.push("mihomo.log");
+    path
+}
+
+fn load_core_meta(root: &PathBuf) -> CoreMeta {
+    use std::fs;
+    use std::io::ErrorKind;
+
+    let path = core_meta_path(root);
+    match fs::read_to_string(&path) {
+        Ok(content) => match serde_json::from_str::<CoreMeta>(&content) {
+            Ok(meta) => meta,
+            Err(err) => {
+                tracing::warn!(
+                    "failed to parse core.meta.json at {}: {err}",
+                    path.display()
+                );
+                CoreMeta::default()
+            }
+        },
+        Err(err) => {
+            if err.kind() != ErrorKind::NotFound {
+                tracing::warn!("failed to read core.meta.json at {}: {err}", path.display());
+            }
+            CoreMeta::default()
+        }
+    }
+}
+
+fn save_core_meta(root: &PathBuf, meta: &CoreMeta) -> Result<(), String> {
+    use std::fs;
+
+    let path = core_meta_path(root);
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("invalid core.meta.json path: {}", path.display()))?;
+
+    fs::create_dir_all(parent)
+        .map_err(|err| format!("failed to create core dir at {}: {err}", parent.display()))?;
+
+    let content = serde_json::to_string_pretty(meta)
+        .map_err(|err| format!("failed to serialize core meta: {err}"))?;
+
+    fs::write(&path, content).map_err(|err| {
+        format!(
+            "failed to write core.meta.json at {}: {err}",
+            path.display()
+        )
+    })
+}
+
+fn read_core_pid(root: &PathBuf) -> Result<u32, String> {
+    use std::fs;
+    use std::io::ErrorKind;
+
+    let path = core_pid_path(root);
+    match fs::read_to_string(&path) {
+        Ok(content) => content
+            .trim()
+            .parse::<u32>()
+            .map_err(|err| format!("invalid pid in {}: {err}", path.display())),
+        Err(err) => {
+            if err.kind() == ErrorKind::NotFound {
+                Err("pid_file_not_found".to_string())
+            } else {
+                Err(format!(
+                    "failed to read pid file at {}: {err}",
+                    path.display()
+                ))
+            }
+        }
+    }
+}
+
+fn write_core_pid(root: &PathBuf, pid: u32) -> Result<(), String> {
+    use std::fs;
+
+    let path = core_pid_path(root);
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("invalid pid path: {}", path.display()))?;
+
+    fs::create_dir_all(parent)
+        .map_err(|err| format!("failed to create core dir at {}: {err}", parent.display()))?;
+
+    fs::write(&path, pid.to_string())
+        .map_err(|err| format!("failed to write pid file at {}: {err}", path.display()))
+}
+
+fn remove_core_pid(root: &PathBuf) {
+    use std::fs;
+    let path = core_pid_path(root);
+    if let Err(err) = fs::remove_file(&path) {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!("failed to remove pid file {}: {err}", path.display());
+        }
+    }
+}
+
+fn is_process_running(pid: u32) -> bool {
+    #[cfg(target_family = "unix")]
+    {
+        let path = format!("/proc/{pid}");
+        std::fs::metadata(path).is_ok()
+    }
+    #[cfg(not(target_family = "unix"))]
+    {
+        let _ = pid;
+        false
+    }
+}
+#[cfg(target_family = "unix")]
+async fn stop_core_via_ipc() -> Result<(), String> {
+    // 使用 clash_verge_service_ipc 提供的 IPC 通道优先停止核心
+    if !Path::new(clash_verge_service_ipc::IPC_PATH).exists() {
+        return Err("ipc_path_not_found".to_string());
+    }
+
+    if let Err(err) = clash_verge_service_ipc::connect().await {
+        return Err(format!("ipc_connect_failed: {err}"));
+    }
+
+    match clash_verge_service_ipc::stop_clash().await {
+        Ok(response) => {
+            if response.code > 0 {
+                Err(format!("ipc_stop_failed: {}", response.message))
+            } else {
+                Ok(())
+            }
+        }
+        Err(err) => Err(format!("ipc_stop_error: {err}")),
+    }
+}
+
+async fn resolve_core_download_url(
+    client: &reqwest::Client,
+    arch_tag: &str,
+) -> Result<(String, String, String), String> {
+    let api_url = "https://mirror.camofy.app/repos/MetaCubeX/mihomo/releases/latest";
+    tracing::info!("fetching latest core release from {api_url} for arch {arch_tag}");
+
+    let resp = client
+        .get(api_url)
+        .header("User-Agent", "camofy/0.1.0")
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .map_err(|err| format!("failed to request latest release info: {err}"))?;
+
+    let resp = resp
+        .error_for_status()
+        .map_err(|err| format!("release info request failed: {err}"))?;
+
+    let release: GithubRelease = resp
+        .json()
+        .await
+        .map_err(|err| format!("failed to parse release json: {err}"))?;
+
+    let tag = release.tag_name;
+    let version = tag.trim_start_matches('v').to_string();
+    let file_name = format!("mihomo-{arch_tag}-v{version}.gz");
+    let url =
+        format!("https://mirror.camofy.app/MetaCubeX/mihomo/releases/download/{tag}/{file_name}");
+
+    Ok((url, version, file_name))
+}
+
+fn extract_core_binary(data: &[u8], file_name: &str) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+
+    let file_name = file_name.to_lowercase();
+
+    if file_name.ends_with(".tar.gz") || file_name.ends_with(".tgz") {
+        let gz = flate2::read::GzDecoder::new(data);
+        let mut archive = tar::Archive::new(gz);
+        for entry in archive
+            .entries()
+            .map_err(|e| format!("failed to read tar entries: {e}"))?
+        {
+            let mut entry = entry.map_err(|e| format!("failed to read tar entry: {e}"))?;
+            let path = entry
+                .path()
+                .map_err(|e| format!("failed to get tar entry path: {e}"))?;
+            let name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            if !entry.header().entry_type().is_file() {
+                continue;
+            }
+            if name == "mihomo" || name.contains("mihomo") {
+                let mut buf = Vec::new();
+                entry
+                    .read_to_end(&mut buf)
+                    .map_err(|e| format!("failed to read core from archive: {e}"))?;
+                return Ok(buf);
+            }
+        }
+        Err("no core binary found in archive".to_string())
+    } else if file_name.ends_with(".gz") {
+        let mut gz = flate2::read::GzDecoder::new(data);
+        let mut buf = Vec::new();
+        gz.read_to_end(&mut buf)
+            .map_err(|e| format!("failed to decompress core gzip: {e}"))?;
+        Ok(buf)
+    } else {
+        // assume plain binary
+        Ok(data.to_vec())
+    }
+}
+
+pub async fn get_core_info() -> Json<ApiResponse<CoreInfo>> {
+    let state = app_state();
+    let meta = load_core_meta(&state.data_root);
+    let binary_path = core_binary_path(&state.data_root);
+    let binary_exists = binary_path.is_file();
+    let recommended_arch = detect_system_arch();
+
+    let data = CoreInfo {
+        version: meta.version,
+        arch: meta.arch,
+        last_download_time: meta.last_download_time,
+        binary_exists,
+        recommended_arch,
+    };
+
+    Json(ApiResponse {
+        code: "ok".to_string(),
+        message: "success".to_string(),
+        data: Some(data),
+    })
+}
+
+pub async fn get_core_status() -> Json<ApiResponse<CoreStatusDto>> {
+    let state = app_state();
+
+    let pid = match read_core_pid(&state.data_root) {
+        Ok(pid) => Some(pid),
+        Err(reason) => {
+            if reason != "pid_file_not_found" {
+                tracing::warn!("failed to read core pid: {reason}");
+                // 如果 pid 文件损坏，尝试清理
+                remove_core_pid(&state.data_root);
+            }
+            None
+        }
+    };
+
+    let running = pid.map_or(false, is_process_running);
+
+    let data = CoreStatusDto { running, pid };
+
+    Json(ApiResponse {
+        code: "ok".to_string(),
+        message: "success".to_string(),
+        data: Some(data),
+    })
+}
+
+pub async fn download_core(Json(body): Json<CoreDownloadRequest>) -> Json<ApiResponse<CoreInfo>> {
+    let state = app_state();
+
+    let system_arch = detect_system_arch();
+    let arch_tag = match map_arch_to_mihomo_arch(&system_arch) {
+        Some(tag) => tag.to_string(),
+        None => {
+            let msg = format!("unsupported system arch for core download: {system_arch}");
+            tracing::error!("{msg}");
+            return Json(ApiResponse {
+                code: "core_unsupported_arch".to_string(),
+                message: msg,
+                data: None,
+            });
+        }
+    };
+
+    // 如果请求体中提供了 url，则优先使用用户指定的下载地址；
+    // 否则根据架构自动从 GitHub Releases 获取最新稳定版本。
+    let (download_url, version_opt, asset_name) = if let Some(url) =
+        body.url.as_ref().and_then(|u| {
+            let u = u.trim();
+            if u.is_empty() {
+                None
+            } else {
+                Some(u.to_string())
+            }
+        }) {
+        let name = url
+            .rsplit('/')
+            .next()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("mihomo")
+            .to_string();
+        (url, None, name)
+    } else {
+        match resolve_core_download_url(&state.http_client, &arch_tag).await {
+            Ok((url, tag_name, name)) => {
+                let version = tag_name.trim_start_matches('v').to_string();
+                (url, Some(version), name)
+            }
+            Err(err) => {
+                tracing::error!("{err}");
+                return Json(ApiResponse {
+                    code: "core_resolve_download_url_failed".to_string(),
+                    message: err,
+                    data: None,
+                });
+            }
+        }
+    };
+
+    tracing::info!("downloading core from {download_url}");
+
+    let tmp_dir = {
+        let mut path = state.data_root.clone();
+        path.push("tmp");
+        path
+    };
+    if let Err(err) = std::fs::create_dir_all(&tmp_dir) {
+        let msg = format!("failed to create tmp dir {}: {err}", tmp_dir.display());
+        tracing::error!("{msg}");
+        return Json(ApiResponse {
+            code: "core_download_failed".to_string(),
+            message: msg,
+            data: None,
+        });
+    }
+
+    let tmp_path = tmp_dir.join("mihomo-download.tmp");
+
+    let resp = match state.http_client.get(&download_url).send().await {
+        Ok(resp) => resp,
+        Err(err) => {
+            let msg = format!("failed to send core download request: {err}");
+            tracing::error!("{msg}");
+            return Json(ApiResponse {
+                code: "core_download_failed".to_string(),
+                message: msg,
+                data: None,
+            });
+        }
+    };
+
+    let resp = match resp.error_for_status() {
+        Ok(ok) => ok,
+        Err(err) => {
+            let msg = format!("core download responded with error: {err}");
+            tracing::error!("{msg}");
+            return Json(ApiResponse {
+                code: "core_download_failed".to_string(),
+                message: msg,
+                data: None,
+            });
+        }
+    };
+
+    let bytes = match resp.bytes().await {
+        Ok(b) => b,
+        Err(err) => {
+            let msg = format!("failed to read core download body: {err}");
+            tracing::error!("{msg}");
+            return Json(ApiResponse {
+                code: "core_download_failed".to_string(),
+                message: msg,
+                data: None,
+            });
+        }
+    };
+
+    // 解压或直接使用下载内容，取决于文件名后缀
+    let core_bytes = match extract_core_binary(&bytes, &asset_name) {
+        Ok(b) => b,
+        Err(err) => {
+            let msg = format!(
+                "failed to extract core binary from {}: {err}",
+                asset_name.as_str()
+            );
+            tracing::error!("{msg}");
+            return Json(ApiResponse {
+                code: "core_extract_failed".to_string(),
+                message: msg,
+                data: None,
+            });
+        }
+    };
+
+    if let Err(err) = std::fs::write(&tmp_path, &core_bytes) {
+        let msg = format!(
+            "failed to write tmp core file {}: {err}",
+            tmp_path.display()
+        );
+        tracing::error!("{msg}");
+        return Json(ApiResponse {
+            code: "core_install_failed".to_string(),
+            message: msg,
+            data: None,
+        });
+    }
+
+    let core_path = core_binary_path(&state.data_root);
+    if let Some(parent) = core_path.parent() {
+        if let Err(err) = std::fs::create_dir_all(parent) {
+            let msg = format!("failed to create core dir {}: {err}", parent.display());
+            tracing::error!("{msg}");
+            return Json(ApiResponse {
+                code: "core_install_failed".to_string(),
+                message: msg,
+                data: None,
+            });
+        }
+    }
+
+    if let Err(err) = std::fs::rename(&tmp_path, &core_path) {
+        let msg = format!("failed to move core file to {}: {err}", core_path.display());
+        tracing::error!("{msg}");
+        return Json(ApiResponse {
+            code: "core_install_failed".to_string(),
+            message: msg,
+            data: None,
+        });
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = std::fs::metadata(&core_path) {
+            let mut perms = metadata.permissions();
+            perms.set_mode(0o755);
+            if let Err(err) = std::fs::set_permissions(&core_path, perms) {
+                tracing::warn!(
+                    "failed to set executable permissions on core binary {}: {err}",
+                    core_path.display()
+                );
+            }
+        }
+    }
+
+    let mut meta = load_core_meta(&state.data_root);
+    meta.arch = Some(arch_tag.clone());
+    meta.version = version_opt;
+    meta.last_download_time = Some(current_timestamp());
+
+    if let Err(err) = save_core_meta(&state.data_root, &meta) {
+        tracing::error!("{err}");
+        return Json(ApiResponse {
+            code: "core_meta_save_failed".to_string(),
+            message: err,
+            data: None,
+        });
+    }
+
+    tracing::info!("core downloaded and installed at {}", core_path.display());
+
+    let info = CoreInfo {
+        version: meta.version.clone(),
+        arch: meta.arch.clone(),
+        last_download_time: meta.last_download_time,
+        binary_exists: true,
+        recommended_arch: system_arch,
+    };
+
+    Json(ApiResponse {
+        code: "ok".to_string(),
+        message: "downloaded".to_string(),
+        data: Some(info),
+    })
+}
+
+pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
+    let state = app_state();
+
+    // 检查内核是否已经安装
+    let core_path = core_binary_path(&state.data_root);
+    if !core_path.is_file() {
+        return Json(ApiResponse {
+            code: "core_not_installed".to_string(),
+            message: "core binary not found".to_string(),
+            data: None,
+        });
+    }
+
+    // 检查是否已在运行
+    if let Ok(pid) = read_core_pid(&state.data_root) {
+        if is_process_running(pid) {
+            return Json(ApiResponse {
+                code: "core_already_running".to_string(),
+                message: format!("core is already running with pid {}", pid),
+                data: None,
+            });
+        } else {
+            // 清理陈旧的 pid 文件
+            remove_core_pid(&state.data_root);
+        }
+    }
+
+    // 启动前确保 merged.yaml 已生成（根据当前订阅和用户配置 + core-defaults.yaml）
+    if let Err(err) = crate::user_profiles::generate_merged_config(&state.data_root) {
+        tracing::error!("failed to generate merged config before core start: {err}");
+        return Json(ApiResponse {
+            code: "config_merge_failed".to_string(),
+            message: err,
+            data: None,
+        });
+    }
+
+    // 检查配置文件是否存在
+    let mut config_dir = state.data_root.clone();
+    config_dir.push("config");
+    let config_file = config_dir.join("merged.yaml");
+    if !config_file.is_file() {
+        return Json(ApiResponse {
+            code: "core_config_missing".to_string(),
+            message: format!("config file not found at {}", config_file.display()),
+            data: None,
+        });
+    }
+
+    tracing::info!(
+        "starting core: binary={} config_dir={} config_file={}",
+        core_path.display(),
+        config_dir.display(),
+        config_file.display()
+    );
+
+    // 准备 Mihomo 日志输出文件
+    use std::process::Stdio;
+    let log_path = mihomo_log_path(&state.data_root);
+    // 启动前尝试轮转 mihomo.log，避免单个文件无限增长
+    let _ = crate::logs::rotate_log_file(&log_path);
+    if let Some(parent) = log_path.parent() {
+        if let Err(err) = std::fs::create_dir_all(parent) {
+            let msg = format!(
+                "failed to create mihomo log dir {}: {err}",
+                parent.display()
+            );
+            tracing::error!("{msg}");
+            return Json(ApiResponse {
+                code: "core_start_failed".to_string(),
+                message: msg,
+                data: None,
+            });
+        }
+    }
+
+    let stdout_file = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
+        Ok(f) => f,
+        Err(err) => {
+            let msg = format!(
+                "failed to open mihomo log file {}: {err}",
+                log_path.display()
+            );
+            tracing::error!("{msg}");
+            return Json(ApiResponse {
+                code: "core_start_failed".to_string(),
+                message: msg,
+                data: None,
+            });
+        }
+    };
+
+    let stderr_file = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
+        Ok(f) => f,
+        Err(err) => {
+            let msg = format!(
+                "failed to open mihomo log file {}: {err}",
+                log_path.display()
+            );
+            tracing::error!("{msg}");
+            return Json(ApiResponse {
+                code: "core_start_failed".to_string(),
+                message: msg,
+                data: None,
+            });
+        }
+    };
+
+    let child = match TokioCommand::new(&core_path)
+        .arg("-d")
+        .arg(config_dir.as_os_str())
+        .arg("-f")
+        .arg(config_file.as_os_str())
+        .stdout(Stdio::from(stdout_file))
+        .stderr(Stdio::from(stderr_file))
+        .kill_on_drop(false)
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(err) => {
+            let msg = format!("failed to spawn core process: {err}");
+            tracing::error!("{msg}");
+            return Json(ApiResponse {
+                code: "core_start_failed".to_string(),
+                message: msg,
+                data: None,
+            });
+        }
+    };
+
+    let pid = child.id().unwrap_or(0);
+    if pid == 0 {
+        tracing::warn!("failed to obtain core pid");
+    } else if let Err(err) = write_core_pid(&state.data_root, pid) {
+        tracing::error!("{err}");
+    }
+
+    Json(ApiResponse {
+        code: "ok".to_string(),
+        message: "started".to_string(),
+        data: Some(serde_json::json!({ "pid": pid })),
+    })
+}
+
+pub async fn stop_core() -> Json<ApiResponse<serde_json::Value>> {
+    let state = app_state();
+
+    // 优先尝试通过 clash_verge_service_ipc 提供的 IPC 通道优雅停止核心
+    #[cfg(target_family = "unix")]
+    {
+        if let Err(err) = stop_core_via_ipc().await {
+            tracing::debug!("failed to stop core via IPC: {err}");
+        } else {
+            tracing::info!("core stopped via IPC");
+            remove_core_pid(&state.data_root);
+            return Json(ApiResponse {
+                code: "ok".to_string(),
+                message: "stopped".to_string(),
+                data: Some(serde_json::json!({ "via": "ipc" })),
+            });
+        }
+    }
+
+    let pid = match read_core_pid(&state.data_root) {
+        Ok(pid) => pid,
+        Err(reason) => {
+            if reason != "pid_file_not_found" {
+                tracing::warn!("failed to read core pid when stopping: {reason}");
+                remove_core_pid(&state.data_root);
+            }
+            return Json(ApiResponse {
+                code: "core_not_running".to_string(),
+                message: "core is not running".to_string(),
+                data: None,
+            });
+        }
+    };
+
+    #[cfg(target_family = "unix")]
+    {
+        use std::process::Command;
+
+        tracing::info!("stopping core with pid {}", pid);
+
+        let status = Command::new("kill")
+            .arg("-TERM")
+            .arg(pid.to_string())
+            .status();
+
+        match status {
+            Ok(status) if status.success() => {
+                // 简单地假设终止成功，后续可以根据需要增加等待和 SIGKILL 逻辑
+                remove_core_pid(&state.data_root);
+                return Json(ApiResponse {
+                    code: "ok".to_string(),
+                    message: "stopped".to_string(),
+                    data: Some(serde_json::json!({ "via": "signal" })),
+                });
+            }
+            Ok(status) => {
+                let msg = format!("kill -TERM exited with status {status}");
+                tracing::error!("{msg}");
+                return Json(ApiResponse {
+                    code: "core_stop_failed".to_string(),
+                    message: msg,
+                    data: None,
+                });
+            }
+            Err(err) => {
+                let msg = format!("failed to execute kill: {err}");
+                tracing::error!("{msg}");
+                return Json(ApiResponse {
+                    code: "core_stop_failed".to_string(),
+                    message: msg,
+                    data: None,
+                });
+            }
+        }
+    }
+
+    #[cfg(not(target_family = "unix"))]
+    {
+        let _ = pid;
+        Json(ApiResponse {
+            code: "core_stop_unsupported".to_string(),
+            message: "core stop is only supported on unix targets".to_string(),
+            data: None,
+        })
+    }
+}
