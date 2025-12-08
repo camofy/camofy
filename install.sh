@@ -127,13 +127,13 @@ download_binary() {
 
   tmp="${TMPDIR:-/tmp}/camofy-download-$$"
 
-  if command -v curl >/dev/null 2>&1; then
+  if which curl >/dev/null 2>&1; then
     if ! curl -fsSL "$url" -o "$tmp"; then
       echo "下载 camofy 失败（curl）" >&2
       rm -f "$tmp" 2>/dev/null || true
       exit 1
     fi
-  elif command -v wget >/dev/null 2>&1; then
+  elif which wget >/dev/null 2>&1; then
     if ! wget -qO "$tmp" "$url"; then
       echo "下载 camofy 失败（wget）" >&2
       rm -f "$tmp" 2>/dev/null || true
