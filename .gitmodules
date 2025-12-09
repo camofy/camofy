@@ -1,3 +1,6 @@
 [submodule "clash-verge-rev"]
 	path = clash-verge-rev
 	url = https://github.com/clash-verge-rev/clash-verge-rev.git
+[submodule "clash-verge-rev-mihomo-api"]
+	path = clash-verge-rev-mihomo-api
+	url = https://github.com/clash-verge-rev/tauri-plugin-mihomo.git
