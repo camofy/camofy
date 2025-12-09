@@ -32,6 +32,8 @@ export type CoreStatus = {
 
 export type Settings = {
   password_set: boolean
+  subscription_auto_update?: ScheduledTaskConfig | null
+  geoip_auto_update?: ScheduledTaskConfig | null
 }
 
 export type AuthLoginResponse = {
@@ -81,4 +83,12 @@ export type ProxyGroup = {
 
 export type ProxiesView = {
   groups: ProxyGroup[]
+}
+
+export type ScheduledTaskConfig = {
+  cron: string
+  enabled: boolean
+  last_run_time?: string | null
+  last_run_status?: string | null
+  last_run_message?: string | null
 }

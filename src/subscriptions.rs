@@ -481,3 +481,30 @@ pub async fn fetch_subscription(
         data: Some(serde_json::json!({})),
     })
 }
+
+/// 自动更新当前“活跃订阅”的订阅内容。
+///
+/// - 若未设置活跃订阅，则返回 Err("skipped:...")，由调度器记录为跳过状态。
+/// - 其余错误则用于调度器记录为失败状态。
+pub async fn auto_update_subscriptions() -> Result<(), String> {
+    use axum::extract::Path;
+
+    let state = app_state();
+
+    let config = load_app_config(&state.data_root)
+        .map_err(|err| format!("failed to load app config for auto subscription update: {err}"))?;
+
+    let Some(active_id) = config.active_subscription_id.clone() else {
+        return Err("skipped:no_active_subscription".to_string());
+    };
+
+    let Json(resp) = fetch_subscription(Path(active_id)).await;
+    if resp.code == "ok" {
+        Ok(())
+    } else {
+        Err(format!(
+            "subscription_auto_update_failed: {}",
+            resp.message
+        ))
+    }
+}

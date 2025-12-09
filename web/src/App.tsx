@@ -14,6 +14,7 @@ import type {
   UserProfileDetail,
   UserProfileListResponse,
   UserProfileSummary,
+  ScheduledTaskConfig,
 } from './types'
 import AppHeader from './components/AppHeader'
 import LoginPanel from './components/LoginPanel'
@@ -23,6 +24,7 @@ import CoreSection from './components/CoreSection'
 import UserProfilesSection from './components/UserProfilesSection'
 import LogsSection from './components/LogsSection'
 import ProxyGroupsSection from './components/ProxyGroupsSection'
+import SchedulerSection from './components/SchedulerSection'
 
 function App() {
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([])
@@ -59,6 +61,9 @@ function App() {
   const [proxiesView, setProxiesView] = useState<ProxiesView | null>(null)
   const [proxiesLoading, setProxiesLoading] = useState(false)
   const [proxySelecting, setProxySelecting] = useState(false)
+  const [subscriptionTask, setSubscriptionTask] = useState<ScheduledTaskConfig | null>(null)
+  const [geoipTask, setGeoipTask] = useState<ScheduledTaskConfig | null>(null)
+  const [schedulerSaving, setSchedulerSaving] = useState(false)
 
   const authedFetch = (input: RequestInfo | URL, init?: RequestInit) => {
     const headers = new Headers(init?.headers ?? {})
@@ -204,6 +209,8 @@ function App() {
         setPasswordSet(true)
       } else if (body.code === 'ok' && body.data) {
         setPasswordSet(body.data.password_set)
+        setSubscriptionTask(body.data.subscription_auto_update ?? null)
+        setGeoipTask(body.data.geoip_auto_update ?? null)
       } else if (body.message) {
         setError(body.message)
       }
@@ -596,6 +603,33 @@ function App() {
     setMessage('已退出登录')
   }
 
+  const handleSaveScheduler = async () => {
+    setSchedulerSaving(true)
+    setError(null)
+    setMessage(null)
+    try {
+      const res = await authedFetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          subscription_auto_update: subscriptionTask,
+          geoip_auto_update: geoipTask,
+        }),
+      })
+      const body = (await res.json()) as ApiResponse<Settings>
+      if (body.code !== 'ok' || !body.data) {
+        throw new Error(body.message || '保存计划任务设置失败')
+      }
+      setSubscriptionTask(body.data.subscription_auto_update ?? null)
+      setGeoipTask(body.data.geoip_auto_update ?? null)
+      setMessage('自动更新计划已保存')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '保存计划任务设置失败')
+    } finally {
+      setSchedulerSaving(false)
+    }
+  }
+
   const handleSelectProxyNode = async (groupName: string, nodeName: string) => {
     setProxySelecting(true)
     setError(null)
@@ -642,11 +676,20 @@ function App() {
           />
         ) : (
           <main className="flex flex-1 flex-col gap-4">
-            <SystemStatusSection
-              coreStatus={coreStatus}
-              subscriptionsCount={subscriptions.length}
-              passwordSet={passwordSet}
-            />
+          <SystemStatusSection
+            coreStatus={coreStatus}
+            subscriptionsCount={subscriptions.length}
+            passwordSet={passwordSet}
+          />
+
+          <SchedulerSection
+            subscriptionTask={subscriptionTask}
+            geoipTask={geoipTask}
+            onChangeSubscriptionTask={setSubscriptionTask}
+            onChangeGeoipTask={setGeoipTask}
+            onSave={handleSaveScheduler}
+            saving={schedulerSaving}
+          />
 
           <SubscriptionsSection
             subscriptions={subscriptions}
