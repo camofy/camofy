@@ -16,6 +16,8 @@ struct CoreMeta {
     arch: Option<String>,
     #[serde(default)]
     last_download_time: Option<String>,
+    #[serde(default)]
+    controller_secret: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -159,6 +161,21 @@ fn save_core_meta(root: &PathBuf, meta: &CoreMeta) -> Result<(), String> {
             path.display()
         )
     })
+}
+
+pub(crate) fn ensure_controller_secret(root: &PathBuf) -> Result<String, String> {
+    let mut meta = load_core_meta(root);
+
+    if let Some(secret) = meta.controller_secret.clone() {
+        return Ok(secret);
+    }
+
+    let secret = uuid::Uuid::new_v4().to_string();
+    meta.controller_secret = Some(secret.clone());
+
+    save_core_meta(root, &meta)?;
+
+    Ok(secret)
 }
 
 fn read_core_pid(root: &PathBuf) -> Result<u32, String> {
