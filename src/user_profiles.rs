@@ -719,7 +719,7 @@ const CORE_DEFAULTS_YAML: &str = r#" # Core defaults for camofy (router)
 mode: rule
 mixed-port: 7897
 allow-lan: false
-log-level: warning
+log-level: info
 ipv6: true
 external-controller-unix: /tmp/verge/clash-verge-service.sock
 tun:
