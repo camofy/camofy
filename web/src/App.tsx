@@ -7,6 +7,7 @@ import type {
   CoreStatus,
   LogResponse,
   MergedConfig,
+  ProxiesView,
   Settings,
   Subscription,
   SubscriptionListResponse,
@@ -21,6 +22,7 @@ import SubscriptionsSection from './components/SubscriptionsSection'
 import CoreSection from './components/CoreSection'
 import UserProfilesSection from './components/UserProfilesSection'
 import LogsSection from './components/LogsSection'
+import ProxyGroupsSection from './components/ProxyGroupsSection'
 
 function App() {
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([])
@@ -54,6 +56,9 @@ function App() {
   const [appLog, setAppLog] = useState<string[]>([])
   const [mihomoLog, setMihomoLog] = useState<string[]>([])
   const [logLoading, setLogLoading] = useState(false)
+  const [proxiesView, setProxiesView] = useState<ProxiesView | null>(null)
+  const [proxiesLoading, setProxiesLoading] = useState(false)
+  const [proxySelecting, setProxySelecting] = useState(false)
 
   const authedFetch = (input: RequestInfo | URL, init?: RequestInit) => {
     const headers = new Headers(init?.headers ?? {})
@@ -163,6 +168,28 @@ function App() {
     }
   }
 
+  const loadProxies = async () => {
+    setProxiesLoading(true)
+    try {
+      const res = await authedFetch('/api/mihomo/proxies')
+      const body = (await res.json()) as ApiResponse<ProxiesView>
+      if (body.code === 'ok' && body.data) {
+        setProxiesView(body.data)
+      } else if (body.code === 'mihomo_proxies_failed') {
+        setProxiesView(null)
+        if (body.message) {
+          setError(body.message)
+        }
+      } else if (body.message) {
+        setError(body.message)
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '加载代理组信息失败')
+    } finally {
+      setProxiesLoading(false)
+    }
+  }
+
   const loadSettings = async (tokenFromStorage: string | null) => {
     try {
       if (tokenFromStorage) {
@@ -232,6 +259,7 @@ function App() {
     void loadUserProfiles()
     void loadMergedConfig()
     void loadLogs()
+    void loadProxies()
   }, [authReady, passwordSet, authToken])
 
   const handleSubmit = async (e: FormEvent) => {
@@ -568,6 +596,32 @@ function App() {
     setMessage('已退出登录')
   }
 
+  const handleSelectProxyNode = async (groupName: string, nodeName: string) => {
+    setProxySelecting(true)
+    setError(null)
+    setMessage(null)
+    try {
+      const res = await authedFetch(
+        `/api/mihomo/proxies/${encodeURIComponent(groupName)}/select`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: nodeName }),
+        },
+      )
+      const body = (await res.json()) as ApiResponse<unknown>
+      if (body.code !== 'ok') {
+        throw new Error(body.message || '切换节点失败')
+      }
+      setMessage(`已切换代理组 ${groupName} 的节点为 ${nodeName}`)
+      await loadProxies()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '切换节点失败')
+    } finally {
+      setProxySelecting(false)
+    }
+  }
+
   return (
     <div className="app-root bg-slate-950 text-slate-100">
       <div className="mx-auto flex min-h-screen max-w-5xl flex-col px-4 py-8">
@@ -672,6 +726,18 @@ function App() {
               }}
             />
           </section>
+
+          <ProxyGroupsSection
+            proxies={proxiesView}
+            loading={proxiesLoading}
+            selecting={proxySelecting}
+            onReload={() => {
+              void loadProxies()
+            }}
+            onSelectNode={(groupName, nodeName) => {
+              void handleSelectProxyNode(groupName, nodeName)
+            }}
+          />
 
           <LogsSection
             appLog={appLog}
