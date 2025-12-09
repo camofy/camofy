@@ -6,6 +6,23 @@ use crate::ApiResponse;
 pub const LOG_MAX_BYTES: u64 = 1_024 * 1_024; // 1MB
 pub const LOG_MAX_ROTATED_FILES: usize = 5;
 
+fn effective_log_max_bytes(path: &std::path::Path) -> u64 {
+    // 基础上限
+    let mut max_bytes = LOG_MAX_BYTES;
+
+    // 尝试根据磁盘可用空间动态收紧上限：不超过剩余可用空间的 80%
+    if let Some(parent) = path.parent() {
+        if let Ok(free) = fs2::available_space(parent) {
+            let cap = free.saturating_mul(80).saturating_div(100);
+            if cap > 0 {
+                max_bytes = max_bytes.min(cap);
+            }
+        }
+    }
+
+    max_bytes
+}
+
 /// 简单的日志轮转：当文件大小超过 LOG_MAX_BYTES 时，
 /// 将当前文件依次按 .1 ~ .LOG_MAX_ROTATED_FILES 滚动，并清理最旧的文件。
 pub fn rotate_log_file(path: &std::path::Path) -> std::io::Result<()> {
@@ -18,7 +35,8 @@ pub fn rotate_log_file(path: &std::path::Path) -> std::io::Result<()> {
         Err(err) => return Err(err),
     };
 
-    if meta.len() < LOG_MAX_BYTES {
+    let max_bytes = effective_log_max_bytes(path);
+    if meta.len() < max_bytes {
         return Ok(());
     }
 
