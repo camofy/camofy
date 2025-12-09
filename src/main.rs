@@ -74,6 +74,9 @@ struct AppConfig {
     active_user_profile_id: Option<String>,
     #[serde(default)]
     panel_password_hash: Option<String>,
+    /// Whether Mihomo core should be auto-started on camofy launch.
+    #[serde(default)]
+    core_auto_start: bool,
 }
 
 #[tokio::main]
@@ -99,6 +102,9 @@ async fn main() {
         tracing::error!("failed to set global application state");
         return;
     }
+
+    // 根据上次记忆的状态自动启动内核（如果需要）
+    core::auto_start_core_if_configured().await;
 
     let app = build_router();
 
