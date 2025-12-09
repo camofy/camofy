@@ -1,3 +1,5 @@
+import AnsiText from './AnsiText'
+
 type LogsSectionProps = {
   appLog: string[]
   mihomoLog: string[]
@@ -38,7 +40,7 @@ function LogsSection({ appLog, mihomoLog, loading, onReload }: LogsSectionProps)
               </p>
             ) : (
               <pre className="whitespace-pre-wrap break-all font-mono text-[11px] text-slate-200">
-                {appLog.join('\n')}
+                <AnsiText text={appLog.join('\n')} />
               </pre>
             )}
           </div>
@@ -59,7 +61,7 @@ function LogsSection({ appLog, mihomoLog, loading, onReload }: LogsSectionProps)
               </p>
             ) : (
               <pre className="whitespace-pre-wrap break-all font-mono text-[11px] text-slate-200">
-                {mihomoLog.join('\n')}
+                <AnsiText text={mihomoLog.join('\n')} />
               </pre>
             )}
           </div>
@@ -70,4 +72,3 @@ function LogsSection({ appLog, mihomoLog, loading, onReload }: LogsSectionProps)
 }
 
 export default LogsSection
-
