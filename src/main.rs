@@ -16,6 +16,7 @@ mod core;
 mod logs;
 mod subscriptions;
 mod user_profiles;
+mod mihomo;
 
 use crate::app::AppState;
 
@@ -225,7 +226,12 @@ fn build_router() -> Router {
         .route("/core/stop", post(core::stop_core))
         .route("/config/merged", get(user_profiles::get_merged_config))
         .route("/logs/app", get(logs::get_app_log))
-        .route("/logs/mihomo", get(logs::get_mihomo_log));
+        .route("/logs/mihomo", get(logs::get_mihomo_log))
+        .route("/mihomo/proxies", get(mihomo::get_proxies))
+        .route(
+            "/mihomo/proxies/:group/select",
+            post(mihomo::select_proxy),
+        );
 
     // 为 /api 路由增加认证中间件
     let api = api.layer(middleware::from_fn(auth::api_auth_middleware));

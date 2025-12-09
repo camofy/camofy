@@ -66,3 +66,19 @@ export type LogResponse = {
   lines: string[]
 }
 
+export type ProxyNode = {
+  name: string
+  type: string
+  delay?: number | null
+}
+
+export type ProxyGroup = {
+  name: string
+  type: string
+  now?: string | null
+  nodes: ProxyNode[]
+}
+
+export type ProxiesView = {
+  groups: ProxyGroup[]
+}

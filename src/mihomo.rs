@@ -1,0 +1,410 @@
+use std::collections::HashMap;
+use axum::{extract::Path, Json};
+use serde::{Deserialize, Serialize};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::net::UnixStream;
+
+use crate::app::app_state;
+use crate::core::ensure_controller_secret;
+use crate::ApiResponse;
+
+const MIHOMO_SOCKET_PATH: &str = "/tmp/verge/clash-verge-service.sock";
+
+#[derive(Serialize)]
+pub struct ProxyNodeDto {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub proxy_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delay: Option<u32>,
+}
+
+#[derive(Serialize)]
+pub struct ProxyGroupDto {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub group_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub now: Option<String>,
+    pub nodes: Vec<ProxyNodeDto>,
+}
+
+#[derive(Serialize)]
+pub struct ProxiesViewDto {
+    pub groups: Vec<ProxyGroupDto>,
+}
+
+#[derive(Deserialize)]
+struct ProxiesRaw {
+    proxies: HashMap<String, ProxyRaw>,
+}
+
+#[derive(Deserialize)]
+struct ProxyRaw {
+    name: String,
+    #[serde(rename = "type")]
+    proxy_type: Option<String>,
+    #[serde(default)]
+    all: Option<Vec<String>>,
+    #[serde(default)]
+    now: Option<String>,
+    #[serde(default)]
+    history: Vec<DelayEntry>,
+}
+
+#[derive(Deserialize)]
+struct DelayEntry {
+    #[serde(default)]
+    delay: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct ErrorResponseBody {
+    #[serde(default)]
+    message: Option<String>,
+}
+
+fn build_http_request(
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    secret: &str,
+) -> String {
+    let path = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{}", path)
+    };
+
+    let mut req = String::new();
+    req.push_str(&format!("{method} {path} HTTP/1.1\r\n"));
+    req.push_str("Host: 127.0.0.1\r\n");
+    req.push_str("Accept: application/json\r\n");
+    req.push_str("Connection: close\r\n");
+    req.push_str(&format!("Authorization: Bearer {secret}\r\n"));
+
+    if let Some(body_str) = body {
+        req.push_str("Content-Type: application/json\r\n");
+        req.push_str(&format!("Content-Length: {}\r\n", body_str.len()));
+        req.push_str("\r\n");
+        req.push_str(body_str);
+    } else {
+        req.push_str("\r\n");
+    }
+
+    req
+}
+
+async fn read_header(reader: &mut BufReader<&mut UnixStream>) -> Result<String, String> {
+    let mut header = String::new();
+    loop {
+        let mut line = String::new();
+        let size = reader
+            .read_line(&mut line)
+            .await
+            .map_err(|err| format!("failed to read response header: {err}"))?;
+        if size == 0 {
+            return Err("no response from mihomo".to_string());
+        }
+        header.push_str(&line);
+        if line == "\r\n" {
+            break;
+        }
+    }
+    Ok(header)
+}
+
+async fn read_chunked_body(reader: &mut BufReader<&mut UnixStream>) -> Result<String, String> {
+    let mut body = Vec::new();
+    loop {
+        let mut size_line = String::new();
+        reader
+            .read_line(&mut size_line)
+            .await
+            .map_err(|err| format!("failed to read chunk size: {err}"))?;
+        let size_line = size_line.trim();
+        if size_line.is_empty() {
+            continue;
+        }
+        let chunk_size = usize::from_str_radix(size_line, 16)
+            .map_err(|err| format!("failed to parse chunk size: {err}"))?;
+
+        if chunk_size == 0 {
+            let mut _end = String::new();
+            reader
+                .read_line(&mut _end)
+                .await
+                .map_err(|err| format!("failed to read chunk terminator: {err}"))?;
+            break;
+        }
+
+        let mut chunk_data = vec![0u8; chunk_size];
+        reader
+            .read_exact(&mut chunk_data)
+            .await
+            .map_err(|err| format!("failed to read chunk data: {err}"))?;
+        body.extend_from_slice(&chunk_data);
+
+        let mut _crlf = String::new();
+        reader
+            .read_line(&mut _crlf)
+            .await
+            .map_err(|err| format!("failed to read chunk CRLF: {err}"))?;
+    }
+
+    String::from_utf8(body).map_err(|err| format!("failed to decode chunked body as utf-8: {err}"))
+}
+
+async fn send_mihomo_request(
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+    secret: &str,
+) -> Result<(u16, String), String> {
+    let mut stream = UnixStream::connect(MIHOMO_SOCKET_PATH)
+        .await
+        .map_err(|err| format!("failed to connect to mihomo unix socket at {MIHOMO_SOCKET_PATH}: {err}"))?;
+
+    let request = build_http_request(method, path, body, secret);
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .map_err(|err| format!("failed to write request to mihomo: {err}"))?;
+    stream
+        .flush()
+        .await
+        .map_err(|err| format!("failed to flush request to mihomo: {err}"))?;
+
+    let mut reader = BufReader::new(&mut stream);
+
+    let header = read_header(&mut reader).await?;
+
+    let mut content_length: Option<usize> = None;
+    let mut is_chunked = false;
+    for line in header.lines() {
+        let lower = line.to_ascii_lowercase();
+        if let Some(v) = lower.strip_prefix("content-length: ") {
+            if let Ok(len) = v.trim().parse::<usize>() {
+                content_length = Some(len);
+            }
+        }
+        if lower.contains("transfer-encoding: chunked") {
+            is_chunked = true;
+        }
+    }
+
+    let body_str = if is_chunked {
+        read_chunked_body(&mut reader).await?
+    } else if let Some(len) = content_length {
+        let mut buf = vec![0u8; len];
+        reader
+            .read_exact(&mut buf)
+            .await
+            .map_err(|err| format!("failed to read response body: {err}"))?;
+        String::from_utf8(buf)
+            .map_err(|err| format!("failed to decode response body as utf-8: {err}"))?
+    } else {
+        let mut buf = String::new();
+        reader
+            .read_to_string(&mut buf)
+            .await
+            .map_err(|err| format!("failed to read response body: {err}"))?;
+        buf
+    };
+
+    let mut lines = header.lines();
+    let status_line = lines
+        .next()
+        .ok_or_else(|| "invalid mihomo response: missing status line".to_string())?;
+    let mut parts = status_line.split_whitespace();
+    let _ = parts
+        .next()
+        .ok_or_else(|| "invalid mihomo response: missing http version".to_string())?;
+    let code_str = parts
+        .next()
+        .ok_or_else(|| "invalid mihomo response: missing status code".to_string())?;
+    let status_code: u16 = code_str
+        .parse()
+        .map_err(|err| format!("invalid mihomo status code: {err}"))?;
+
+    Ok((status_code, body_str))
+}
+
+fn map_error_from_body(status: u16, body: &str) -> String {
+    if body.is_empty() {
+        return format!("mihomo returned {} with empty body", status);
+    }
+    match serde_json::from_str::<ErrorResponseBody>(body) {
+        Ok(err_body) => err_body
+            .message
+            .unwrap_or_else(|| format!("mihomo returned status {status}")),
+        Err(_) => format!("mihomo returned status {status}: {body}"),
+    }
+}
+
+async fn fetch_proxies_view(secret: &str) -> Result<ProxiesViewDto, String> {
+    let (status, body) = send_mihomo_request("GET", "/proxies", None, secret).await?;
+
+    if status < 200 || status >= 300 {
+        let msg = map_error_from_body(status, &body);
+        return Err(msg);
+    }
+
+    let raw: ProxiesRaw =
+        serde_json::from_str(&body).map_err(|err| format!("failed to parse mihomo /proxies response: {err}"))?;
+
+    let mut groups = Vec::new();
+
+    for proxy in raw.proxies.values() {
+        if proxy.name == "GLOBAL" {
+            continue;
+        }
+        let Some(all_nodes) = proxy.all.as_ref() else {
+            continue;
+        };
+
+        let mut nodes = Vec::new();
+        for node_name in all_nodes {
+            let node_entry = raw
+                .proxies
+                .get(node_name)
+                .or_else(|| raw.proxies.get(node_name.as_str()));
+
+            if let Some(node) = node_entry {
+                let delay = node
+                    .history
+                    .last()
+                    .and_then(|h| h.delay);
+                nodes.push(ProxyNodeDto {
+                    name: node.name.clone(),
+                    proxy_type: node.proxy_type.clone().unwrap_or_else(|| "unknown".to_string()),
+                    delay,
+                });
+            } else {
+                nodes.push(ProxyNodeDto {
+                    name: node_name.clone(),
+                    proxy_type: "unknown".to_string(),
+                    delay: None,
+                });
+            }
+        }
+
+        groups.push(ProxyGroupDto {
+            name: proxy.name.clone(),
+            group_type: proxy.proxy_type.clone().unwrap_or_else(|| "unknown".to_string()),
+            now: proxy.now.clone(),
+            nodes,
+        });
+    }
+
+    Ok(ProxiesViewDto { groups })
+}
+
+fn encode_path_segment(input: &str) -> String {
+    let mut out = String::new();
+    for b in input.bytes() {
+        match b {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}
+
+async fn select_node_for_group(secret: &str, group: &str, node: &str) -> Result<(), String> {
+    let path = format!("/proxies/{}", encode_path_segment(group));
+    let body = serde_json::json!({ "name": node });
+    let body_str =
+        serde_json::to_string(&body).map_err(|err| format!("failed to serialize select-node request body: {err}"))?;
+
+    let (status, resp_body) = send_mihomo_request("PUT", &path, Some(&body_str), secret).await?;
+    if status < 200 || status >= 300 {
+        let msg = map_error_from_body(status, &resp_body);
+        return Err(msg);
+    }
+
+    Ok(())
+}
+
+pub async fn get_proxies() -> Json<ApiResponse<ProxiesViewDto>> {
+    let state = app_state();
+
+    let secret = match ensure_controller_secret(&state.data_root) {
+        Ok(s) => s,
+        Err(err) => {
+            tracing::error!("{err}");
+            return Json(ApiResponse {
+                code: "mihomo_secret_error".to_string(),
+                message: err,
+                data: None,
+            });
+        }
+    };
+
+    match fetch_proxies_view(&secret).await {
+        Ok(view) => Json(ApiResponse {
+            code: "ok".to_string(),
+            message: "success".to_string(),
+            data: Some(view),
+        }),
+        Err(err) => {
+            tracing::error!("failed to fetch mihomo proxies: {err}");
+            Json(ApiResponse {
+                code: "mihomo_proxies_failed".to_string(),
+                message: err,
+                data: None,
+            })
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct SelectProxyRequest {
+    pub name: String,
+}
+
+pub async fn select_proxy(
+    Path(group): Path<String>,
+    Json(body): Json<SelectProxyRequest>,
+) -> Json<ApiResponse<serde_json::Value>> {
+    let state = app_state();
+
+    let secret = match ensure_controller_secret(&state.data_root) {
+        Ok(s) => s,
+        Err(err) => {
+            tracing::error!("{err}");
+            return Json(ApiResponse {
+                code: "mihomo_secret_error".to_string(),
+                message: err,
+                data: None,
+            });
+        }
+    };
+
+    if body.name.trim().is_empty() {
+        return Json(ApiResponse {
+            code: "mihomo_invalid_proxy_name".to_string(),
+            message: "proxy name cannot be empty".to_string(),
+            data: None,
+        });
+    }
+
+    match select_node_for_group(&secret, &group, &body.name).await {
+        Ok(()) => Json(ApiResponse {
+            code: "ok".to_string(),
+            message: "selected".to_string(),
+            data: Some(serde_json::json!({})),
+        }),
+        Err(err) => {
+            tracing::error!("failed to select proxy for group {group}: {err}");
+            Json(ApiResponse {
+                code: "mihomo_select_failed".to_string(),
+                message: err,
+                data: None,
+            })
+        }
+    }
+}
