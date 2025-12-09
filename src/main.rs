@@ -17,6 +17,8 @@ mod logs;
 mod subscriptions;
 mod user_profiles;
 mod mihomo;
+mod geoip;
+mod scheduler;
 
 use crate::app::AppState;
 
@@ -65,6 +67,20 @@ struct ProfileMeta {
     last_modified_time: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Default)]
+struct ScheduledTaskConfig {
+    /// 类 crontab 表达式，形如 "0 3 * * *"
+    cron: String,
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    last_run_time: Option<String>,
+    #[serde(default)]
+    last_run_status: Option<String>,
+    #[serde(default)]
+    last_run_message: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Default)]
 struct AppConfig {
     #[serde(default)]
@@ -78,6 +94,12 @@ struct AppConfig {
     /// Whether Mihomo core should be auto-started on camofy launch.
     #[serde(default)]
     core_auto_start: bool,
+    /// 自动更新远程订阅的定时任务配置
+    #[serde(default)]
+    subscription_auto_update: Option<ScheduledTaskConfig>,
+    /// 自动更新 GeoIP 数据库的定时任务配置
+    #[serde(default)]
+    geoip_auto_update: Option<ScheduledTaskConfig>,
 }
 
 #[tokio::main]
@@ -103,6 +125,9 @@ async fn main() {
         tracing::error!("failed to set global application state");
         return;
     }
+
+    // 启动后台定时任务调度器（订阅自动更新、GeoIP 数据库自动更新等）
+    scheduler::start_scheduler();
 
     // 根据上次记忆的状态自动启动内核（如果需要）
     core::auto_start_core_if_configured().await;
@@ -291,17 +316,46 @@ fn app_config_path(root: &PathBuf) -> PathBuf {
     path
 }
 
+fn apply_app_config_defaults(config: &mut AppConfig) {
+    // 默认启用订阅与 GeoIP 的自动更新任务，每天凌晨 3 点执行。
+    if config.subscription_auto_update.is_none() {
+        config.subscription_auto_update = Some(ScheduledTaskConfig {
+            cron: "0 3 * * *".to_string(),
+            enabled: true,
+            last_run_time: None,
+            last_run_status: None,
+            last_run_message: None,
+        });
+    }
+
+    if config.geoip_auto_update.is_none() {
+        config.geoip_auto_update = Some(ScheduledTaskConfig {
+            cron: "0 3 * * *".to_string(),
+            enabled: true,
+            last_run_time: None,
+            last_run_status: None,
+            last_run_message: None,
+        });
+    }
+}
+
 pub(crate) fn load_app_config(root: &PathBuf) -> Result<AppConfig, String> {
     use std::fs;
     use std::io::ErrorKind;
 
     let path = app_config_path(root);
     match fs::read_to_string(&path) {
-        Ok(content) => serde_json::from_str(&content)
-            .map_err(|err| format!("failed to parse app.json at {}: {err}", path.display())),
+        Ok(content) => {
+            let mut config: AppConfig = serde_json::from_str(&content)
+                .map_err(|err| format!("failed to parse app.json at {}: {err}", path.display()))?;
+            apply_app_config_defaults(&mut config);
+            Ok(config)
+        }
         Err(err) => {
             if err.kind() == ErrorKind::NotFound {
-                Ok(AppConfig::default())
+                let mut config = AppConfig::default();
+                apply_app_config_defaults(&mut config);
+                Ok(config)
             } else {
                 Err(format!("failed to read app.json at {}: {err}", path.display()))
             }
