@@ -613,6 +613,19 @@ pub async fn download_core(Json(body): Json<CoreDownloadRequest>) -> Json<ApiRes
 pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
     let state = app_state();
 
+    // 启动前确保 geoip.metadb 存在，不存在则先尝试下载。
+    let geoip_path = crate::geoip::geoip_target_path(&state.data_root);
+    if !geoip_path.is_file() {
+        tracing::info!(
+            "geoip.metadb not found at {}, trying to download before core start",
+            geoip_path.display()
+        );
+        if let Err(err) = crate::geoip::update_geoip_db().await {
+            tracing::error!("failed to download geoip.metadb before core start: {err}");
+            // 若下载失败，为避免影响核心启动，这里只记录错误，不直接返回。
+        }
+    }
+
     // 检查内核是否已经安装
     let core_path = core_binary_path(&state.data_root);
     if !core_path.is_file() {

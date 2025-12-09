@@ -5,7 +5,7 @@ use crate::app::app_state;
 const GEOIP_URL: &str =
     "https://mirror.camofy.app/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb";
 
-fn geoip_target_path(root: &PathBuf) -> PathBuf {
+pub(crate) fn geoip_target_path(root: &PathBuf) -> PathBuf {
     let mut path = root.clone();
     path.push("config");
     path.push("geoip.metadb");
@@ -91,4 +91,3 @@ pub async fn update_geoip_db() -> Result<(), String> {
 
     Ok(())
 }
-
