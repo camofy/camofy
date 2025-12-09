@@ -6,6 +6,7 @@ use tokio::process::Command as TokioCommand;
 
 use crate::ApiResponse;
 use crate::app::{app_state, current_timestamp};
+use crate::{load_app_config, save_app_config};
 
 #[derive(Serialize, Deserialize, Default)]
 struct CoreMeta {
@@ -369,6 +370,20 @@ pub async fn get_core_status() -> Json<ApiResponse<CoreStatusDto>> {
     })
 }
 
+fn update_core_auto_start_flag(root: &PathBuf, auto_start: bool) {
+    match load_app_config(root) {
+        Ok(mut config) => {
+            config.core_auto_start = auto_start;
+            if let Err(err) = save_app_config(root, &config) {
+                tracing::error!("failed to save app config when updating core_auto_start: {err}");
+            }
+        }
+        Err(err) => {
+            tracing::error!("failed to load app config when updating core_auto_start: {err}");
+        }
+    }
+}
+
 pub async fn download_core(Json(body): Json<CoreDownloadRequest>) -> Json<ApiResponse<CoreInfo>> {
     let state = app_state();
 
@@ -723,6 +738,9 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
         tracing::error!("{err}");
     }
 
+    // 记忆当前期望的状态为“已启动”，用于下次 camofy 启动时自动拉起内核。
+    update_core_auto_start_flag(&state.data_root, true);
+
     Json(ApiResponse {
         code: "ok".to_string(),
         message: "started".to_string(),
@@ -741,6 +759,7 @@ pub async fn stop_core() -> Json<ApiResponse<serde_json::Value>> {
         } else {
             tracing::info!("core stopped via IPC");
             remove_core_pid(&state.data_root);
+            update_core_auto_start_flag(&state.data_root, false);
             return Json(ApiResponse {
                 code: "ok".to_string(),
                 message: "stopped".to_string(),
@@ -779,6 +798,7 @@ pub async fn stop_core() -> Json<ApiResponse<serde_json::Value>> {
             Ok(status) if status.success() => {
                 // 简单地假设终止成功，后续可以根据需要增加等待和 SIGKILL 逻辑
                 remove_core_pid(&state.data_root);
+                update_core_auto_start_flag(&state.data_root, false);
                 return Json(ApiResponse {
                     code: "ok".to_string(),
                     message: "stopped".to_string(),
@@ -814,5 +834,64 @@ pub async fn stop_core() -> Json<ApiResponse<serde_json::Value>> {
             message: "core stop is only supported on unix targets".to_string(),
             data: None,
         })
+    }
+}
+
+/// 在 camofy 启动时，根据上次记忆的状态自动拉起内核。
+pub(crate) async fn auto_start_core_if_configured() {
+    let state = app_state();
+
+    let should_auto_start = match load_app_config(&state.data_root) {
+        Ok(config) => config.core_auto_start,
+        Err(err) => {
+            tracing::error!("failed to load app config when checking core auto-start: {err}");
+            false
+        }
+    };
+
+    if !should_auto_start {
+        return;
+    }
+
+    // 如果 PID 存在且仍在运行，则无需再次启动。
+    match read_core_pid(&state.data_root) {
+        Ok(pid) => {
+            if is_process_running(pid) {
+                tracing::info!("core is already running on startup with pid {}", pid);
+                return;
+            } else {
+                // 清理陈旧的 pid 文件
+                remove_core_pid(&state.data_root);
+            }
+        }
+        Err(reason) => {
+            if reason != "pid_file_not_found" {
+                tracing::warn!("failed to read core pid on startup: {reason}");
+                remove_core_pid(&state.data_root);
+            }
+        }
+    }
+
+    // 检查内核是否已经安装
+    let core_path = core_binary_path(&state.data_root);
+    if !core_path.is_file() {
+        tracing::info!(
+            "core_auto_start was enabled, but core binary not found at {}",
+            core_path.display()
+        );
+        return;
+    }
+
+    tracing::info!("auto-starting core because last state was running");
+
+    let Json(resp) = start_core().await;
+    if resp.code != "ok" {
+        tracing::error!(
+            "failed to auto-start core on camofy launch: code={}, message={}",
+            resp.code,
+            resp.message
+        );
+    } else {
+        tracing::info!("core auto-started successfully on camofy launch");
     }
 }
