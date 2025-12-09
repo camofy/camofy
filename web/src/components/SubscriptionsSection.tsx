@@ -8,8 +8,6 @@ type SubscriptionsSectionProps = {
   editingId: string | null
   name: string
   url: string
-  message: string | null
-  error: string | null
   onChangeName: (value: string) => void
   onChangeUrl: (value: string) => void
   onResetForm: () => void
@@ -33,8 +31,6 @@ function SubscriptionsSection({
   editingId,
   name,
   url,
-  message,
-  error,
   onChangeName,
   onChangeUrl,
   onResetForm,
@@ -57,17 +53,6 @@ function SubscriptionsSection({
           刷新
         </button>
       </div>
-
-      {message && (
-        <p className="mt-2 text-xs text-emerald-400" role="status">
-          {message}
-        </p>
-      )}
-      {error && (
-        <p className="mt-2 text-xs text-red-400 break-words" role="alert">
-          {error}
-        </p>
-      )}
 
       <div className="mt-4 grid gap-6 md:grid-cols-[18rem_1fr]">
         <form onSubmit={onSubmit} className="space-y-3">
@@ -193,4 +178,3 @@ function SubscriptionsSection({
 }
 
 export default SubscriptionsSection
-

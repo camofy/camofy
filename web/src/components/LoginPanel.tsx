@@ -1,12 +1,8 @@
-import type { FormEvent } from 'react'
-
 type LoginPanelProps = {
   loginPassword: string
   onLoginPasswordChange: (value: string) => void
-  onSubmit: (event: FormEvent<HTMLFormElement>) => void
+  onSubmit: (event: React.FormEvent<HTMLFormElement>) => void
   loading: boolean
-  error: string | null
-  message: string | null
 }
 
 function LoginPanel({
@@ -14,8 +10,6 @@ function LoginPanel({
   onLoginPasswordChange,
   onSubmit,
   loading,
-  error,
-  message,
 }: LoginPanelProps) {
   return (
     <main className="flex flex-1 items-center justify-center">
@@ -27,16 +21,6 @@ function LoginPanel({
         <p className="mt-1 text-xs text-slate-400">
           该面板已设置访问密码，请输入密码以继续。
         </p>
-        {error && (
-          <p className="mt-2 text-xs text-red-400 break-words" role="alert">
-            {error}
-          </p>
-        )}
-        {message && (
-          <p className="mt-2 text-xs text-emerald-400" role="status">
-            {message}
-          </p>
-        )}
         <div className="mt-3">
           <label className="block text-xs font-medium text-slate-300">面板密码</label>
           <input
@@ -60,4 +44,3 @@ function LoginPanel({
 }
 
 export default LoginPanel
-
