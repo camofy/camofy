@@ -20,6 +20,7 @@ tar = "0.4"
 argon2 = { version = "0.5", default-features = false, features = ["password-hash", "std"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 clash_verge_service_ipc = { version = "2.0.24", features = ["client"], git = "https://github.com/clash-verge-rev/clash-verge-service-ipc" }
+fs2 = "0.4"
 
 [profile.release]
 opt-level = "z"
