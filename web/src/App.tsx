@@ -1,4 +1,5 @@
 import { type FormEvent, useEffect, useState } from 'react'
+import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
 import './App.css'
 import type {
   ApiResponse,
@@ -656,6 +657,14 @@ function App() {
     }
   }
 
+  const navLinkClass = ({ isActive }: { isActive: boolean }) =>
+    [
+      'rounded-md px-3 py-1 text-xs font-medium transition-colors border',
+      isActive
+        ? 'border-sky-500/70 bg-slate-800 text-sky-300'
+        : 'border-transparent text-slate-300 hover:text-sky-300 hover:bg-slate-900',
+    ].join(' ')
+
   return (
     <div className="app-root bg-slate-950 text-slate-100">
       <div className="mx-auto flex min-h-screen max-w-5xl flex-col px-4 py-8">
@@ -675,122 +684,189 @@ function App() {
             message={message}
           />
         ) : (
-          <main className="flex flex-1 flex-col gap-4">
-          <SystemStatusSection
-            coreStatus={coreStatus}
-            subscriptionsCount={subscriptions.length}
-            passwordSet={passwordSet}
-          />
+          <>
+            <nav className="mb-4 flex flex-wrap items-center gap-2 border-b border-slate-800 pb-2 text-xs">
+              <NavLink to="/overview" className={navLinkClass}>
+                总览
+              </NavLink>
+              <NavLink to="/subscriptions" className={navLinkClass}>
+                订阅管理
+              </NavLink>
+              <NavLink to="/profiles" className={navLinkClass}>
+                用户配置
+              </NavLink>
+              <NavLink to="/core" className={navLinkClass}>
+                内核管理
+              </NavLink>
+              <NavLink to="/proxies" className={navLinkClass}>
+                代理组与节点
+              </NavLink>
+              <NavLink to="/logs" className={navLinkClass}>
+                日志
+              </NavLink>
+            </nav>
 
-          <SchedulerSection
-            subscriptionTask={subscriptionTask}
-            geoipTask={geoipTask}
-            onChangeSubscriptionTask={setSubscriptionTask}
-            onChangeGeoipTask={setGeoipTask}
-            onSave={handleSaveScheduler}
-            saving={schedulerSaving}
-          />
+            <main className="flex flex-1 flex-col gap-4">
+              {(error || message) && (
+                <div className="space-y-1 text-xs">
+                  {error && (
+                    <p className="break-words text-rose-400" role="alert">
+                      {error}
+                    </p>
+                  )}
+                  {message && (
+                    <p className="text-emerald-400" role="status">
+                      {message}
+                    </p>
+                  )}
+                </div>
+              )}
 
-          <SubscriptionsSection
-            subscriptions={subscriptions}
-            loading={loading}
-            saving={saving}
-            editingId={editingId}
-            name={name}
-            url={url}
-            message={message}
-            error={error}
-            onChangeName={setName}
-            onChangeUrl={setUrl}
-            onResetForm={resetForm}
-            onSubmit={handleSubmit}
-            onReload={() => {
-              void loadSubscriptions()
-            }}
-            onEdit={handleEdit}
-            onDelete={handleDelete}
-            onActivate={handleActivate}
-            onFetch={(id) => {
-              void handleFetch(id)
-            }}
-          />
-
-          <section className="grid gap-4 md:grid-cols-2">
-            <CoreSection
-              coreInfo={coreInfo}
-              coreStatus={coreStatus}
-              coreLoading={coreLoading}
-              coreActionLoading={coreActionLoading}
-              onRefresh={() => {
-                void refreshCore()
-              }}
-              onDownload={() => {
-                void handleCoreDownload()
-              }}
-              onStart={() => {
-                void handleCoreStart()
-              }}
-              onStop={() => {
-                void handleCoreStop()
-              }}
-            />
-            <UserProfilesSection
-              userProfiles={userProfiles}
-              userProfilesLoading={userProfilesLoading}
-              activeUserProfileId={activeUserProfileId}
-              userProfileName={userProfileName}
-              userProfileContent={userProfileContent}
-              userProfileSaving={userProfileSaving}
-              newUserProfileName={newUserProfileName}
-              creatingUserProfile={creatingUserProfile}
-              mergedConfig={mergedConfig}
-              mergedConfigLoading={mergedConfigLoading}
-              onReloadUserProfiles={() => {
-                void loadUserProfiles()
-              }}
-              onLoadUserProfileDetail={(id) => {
-                void loadUserProfileDetail(id)
-              }}
-              onActivateUserProfile={(id) => {
-                void handleActivateUserProfile(id)
-              }}
-              onDeleteUserProfile={handleDeleteUserProfile}
-              onNewUserProfileNameChange={setNewUserProfileName}
-              onCreateUserProfile={() => {
-                void handleCreateUserProfile()
-              }}
-              onUserProfileNameChange={setUserProfileName}
-              onUserProfileContentChange={setUserProfileContent}
-              onSaveUserProfile={() => {
-                void handleSaveUserProfile()
-              }}
-              onReloadMergedConfig={() => {
-                void loadMergedConfig()
-              }}
-            />
-          </section>
-
-          <ProxyGroupsSection
-            proxies={proxiesView}
-            loading={proxiesLoading}
-            selecting={proxySelecting}
-            onReload={() => {
-              void loadProxies()
-            }}
-            onSelectNode={(groupName, nodeName) => {
-              void handleSelectProxyNode(groupName, nodeName)
-            }}
-          />
-
-          <LogsSection
-            appLog={appLog}
-            mihomoLog={mihomoLog}
-            loading={logLoading}
-            onReload={() => {
-              void loadLogs()
-            }}
-          />
-        </main>
+              <Routes>
+                <Route path="/" element={<Navigate to="/overview" replace />} />
+                <Route
+                  path="/overview"
+                  element={
+                    <>
+                      <SystemStatusSection
+                        coreStatus={coreStatus}
+                        subscriptionsCount={subscriptions.length}
+                        passwordSet={passwordSet}
+                      />
+                      <SchedulerSection
+                        subscriptionTask={subscriptionTask}
+                        geoipTask={geoipTask}
+                        onChangeSubscriptionTask={setSubscriptionTask}
+                        onChangeGeoipTask={setGeoipTask}
+                        onSave={handleSaveScheduler}
+                        saving={schedulerSaving}
+                      />
+                    </>
+                  }
+                />
+                <Route
+                  path="/subscriptions"
+                  element={
+                    <SubscriptionsSection
+                      subscriptions={subscriptions}
+                      loading={loading}
+                      saving={saving}
+                      editingId={editingId}
+                      name={name}
+                      url={url}
+                      message={message}
+                      error={error}
+                      onChangeName={setName}
+                      onChangeUrl={setUrl}
+                      onResetForm={resetForm}
+                      onSubmit={handleSubmit}
+                      onReload={() => {
+                        void loadSubscriptions()
+                      }}
+                      onEdit={handleEdit}
+                      onDelete={handleDelete}
+                      onActivate={handleActivate}
+                      onFetch={(id) => {
+                        void handleFetch(id)
+                      }}
+                    />
+                  }
+                />
+                <Route
+                  path="/profiles"
+                  element={
+                    <UserProfilesSection
+                      userProfiles={userProfiles}
+                      userProfilesLoading={userProfilesLoading}
+                      activeUserProfileId={activeUserProfileId}
+                      userProfileName={userProfileName}
+                      userProfileContent={userProfileContent}
+                      userProfileSaving={userProfileSaving}
+                      newUserProfileName={newUserProfileName}
+                      creatingUserProfile={creatingUserProfile}
+                      mergedConfig={mergedConfig}
+                      mergedConfigLoading={mergedConfigLoading}
+                      onReloadUserProfiles={() => {
+                        void loadUserProfiles()
+                      }}
+                      onLoadUserProfileDetail={(id) => {
+                        void loadUserProfileDetail(id)
+                      }}
+                      onActivateUserProfile={(id) => {
+                        void handleActivateUserProfile(id)
+                      }}
+                      onDeleteUserProfile={handleDeleteUserProfile}
+                      onNewUserProfileNameChange={setNewUserProfileName}
+                      onCreateUserProfile={() => {
+                        void handleCreateUserProfile()
+                      }}
+                      onUserProfileNameChange={setUserProfileName}
+                      onUserProfileContentChange={setUserProfileContent}
+                      onSaveUserProfile={() => {
+                        void handleSaveUserProfile()
+                      }}
+                      onReloadMergedConfig={() => {
+                        void loadMergedConfig()
+                      }}
+                    />
+                  }
+                />
+                <Route
+                  path="/core"
+                  element={
+                    <CoreSection
+                      coreInfo={coreInfo}
+                      coreStatus={coreStatus}
+                      coreLoading={coreLoading}
+                      coreActionLoading={coreActionLoading}
+                      onRefresh={() => {
+                        void refreshCore()
+                      }}
+                      onDownload={() => {
+                        void handleCoreDownload()
+                      }}
+                      onStart={() => {
+                        void handleCoreStart()
+                      }}
+                      onStop={() => {
+                        void handleCoreStop()
+                      }}
+                    />
+                  }
+                />
+                <Route
+                  path="/proxies"
+                  element={
+                    <ProxyGroupsSection
+                      proxies={proxiesView}
+                      loading={proxiesLoading}
+                      selecting={proxySelecting}
+                      onReload={() => {
+                        void loadProxies()
+                      }}
+                      onSelectNode={(groupName, nodeName) => {
+                        void handleSelectProxyNode(groupName, nodeName)
+                      }}
+                    />
+                  }
+                />
+                <Route
+                  path="/logs"
+                  element={
+                    <LogsSection
+                      appLog={appLog}
+                      mihomoLog={mihomoLog}
+                      loading={logLoading}
+                      onReload={() => {
+                        void loadLogs()
+                      }}
+                    />
+                  }
+                />
+                <Route path="*" element={<Navigate to="/overview" replace />} />
+              </Routes>
+            </main>
+          </>
         )}
 
         <footer className="mt-6 border-t border-slate-800 pt-4">
