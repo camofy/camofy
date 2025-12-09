@@ -13,12 +13,20 @@ use crate::{ApiResponse, AppConfig};
 #[derive(Serialize)]
 pub struct SettingsDto {
     pub password_set: bool,
+    #[serde(default)]
+    pub subscription_auto_update: Option<crate::ScheduledTaskConfig>,
+    #[serde(default)]
+    pub geoip_auto_update: Option<crate::ScheduledTaskConfig>,
 }
 
 #[derive(Deserialize)]
 pub struct UpdateSettingsRequest {
     #[serde(default)]
     pub password: Option<String>,
+    #[serde(default)]
+    pub subscription_auto_update: Option<crate::ScheduledTaskConfig>,
+    #[serde(default)]
+    pub geoip_auto_update: Option<crate::ScheduledTaskConfig>,
 }
 
 #[derive(Deserialize)]
@@ -96,6 +104,8 @@ pub async fn get_settings() -> Json<ApiResponse<SettingsDto>> {
         Ok(cfg) => {
             let data = SettingsDto {
                 password_set: cfg.panel_password_hash.is_some(),
+                subscription_auto_update: cfg.subscription_auto_update,
+                geoip_auto_update: cfg.geoip_auto_update,
             };
             Json(ApiResponse {
                 code: "ok".to_string(),
@@ -163,6 +173,14 @@ pub async fn update_settings(
         config.panel_password_hash = Some(hash);
     }
 
+    // 更新定时任务相关配置（如果前端有传）
+    if let Some(task) = body.subscription_auto_update {
+        config.subscription_auto_update = Some(task);
+    }
+    if let Some(task) = body.geoip_auto_update {
+        config.geoip_auto_update = Some(task);
+    }
+
     if let Err(err) = crate::save_app_config(&state.data_root, &config) {
         tracing::error!("{err}");
         return Json(ApiResponse {
@@ -174,6 +192,8 @@ pub async fn update_settings(
 
     let dto = SettingsDto {
         password_set: config.panel_password_hash.is_some(),
+        subscription_auto_update: config.subscription_auto_update,
+        geoip_auto_update: config.geoip_auto_update,
     };
 
     Json(ApiResponse {
