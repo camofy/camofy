@@ -611,7 +611,12 @@ fn merge_yaml_configs(
         if let Some(name) = key_str {
             if matches!(
                 name,
-                "prepend-rules" | "append-rules" | "prepend-proxies" | "append-proxies"
+                "prepend-rules"
+                    | "append-rules"
+                    | "prepend-proxies"
+                    | "append-proxies"
+                    | "prepend-proxy-groups"
+                    | "append-proxy-groups"
             ) {
                 continue;
             }
@@ -637,6 +642,8 @@ fn merge_yaml_configs(
     let key_append_rules = Value::String("append-rules".into());
     let key_prepend_proxies = Value::String("prepend-proxies".into());
     let key_append_proxies = Value::String("append-proxies".into());
+    let key_prepend_proxy_groups = Value::String("prepend-proxy-groups".into());
+    let key_append_proxy_groups = Value::String("append-proxy-groups".into());
 
     // 处理 rules
     let prepend_rules = user_map.get(&key_prepend_rules);
@@ -661,6 +668,21 @@ fn merge_yaml_configs(
             append_proxies,
         )? {
             final_map.insert(Value::String("proxies".into()), Value::Sequence(seq));
+        }
+    }
+
+    // 处理 proxy-groups
+    let prepend_proxy_groups = user_map.get(&key_prepend_proxy_groups);
+    let append_proxy_groups = user_map.get(&key_append_proxy_groups);
+    if prepend_proxy_groups.is_some() || append_proxy_groups.is_some() {
+        if let Some(seq) = merge_sequence_field(
+            "proxy-groups",
+            &remote_map,
+            &user_map,
+            prepend_proxy_groups,
+            append_proxy_groups,
+        )? {
+            final_map.insert(Value::String("proxy-groups".into()), Value::Sequence(seq));
         }
     }
 
