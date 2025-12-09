@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use axum::{extract::Path, Json};
+use axum::{Json, extract::Path};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -78,9 +78,7 @@ fn to_user_profile_summary(
     })
 }
 
-pub async fn get_user_profile(
-    Path(id): Path<String>,
-) -> Json<ApiResponse<UserProfileDetail>> {
+pub async fn get_user_profile(Path(id): Path<String>) -> Json<ApiResponse<UserProfileDetail>> {
     use std::fs;
 
     let state = app_state();
@@ -113,10 +111,7 @@ pub async fn get_user_profile(
     let content = match fs::read_to_string(&path) {
         Ok(c) => c,
         Err(err) => {
-            let msg = format!(
-                "failed to read user profile file {}: {err}",
-                path.display()
-            );
+            let msg = format!("failed to read user profile file {}: {err}", path.display());
             tracing::error!("{msg}");
             return Json(ApiResponse {
                 code: "user_profile_read_failed".to_string(),
@@ -239,7 +234,10 @@ pub async fn create_user_profile(
     let path = profile_file_path(&state.data_root, &profile);
     if let Some(parent) = path.parent() {
         if let Err(err) = std::fs::create_dir_all(parent) {
-            let msg = format!("failed to create user profile dir {}: {err}", parent.display());
+            let msg = format!(
+                "failed to create user profile dir {}: {err}",
+                parent.display()
+            );
             tracing::error!("{msg}");
             return Json(ApiResponse {
                 code: "user_profile_write_failed".to_string(),
@@ -265,7 +263,7 @@ pub async fn create_user_profile(
                 code: "internal_error".to_string(),
                 message: "failed to build user profile summary".to_string(),
                 data: None,
-            })
+            });
         }
     };
 
@@ -345,7 +343,10 @@ pub async fn update_user_profile(
     let path = profile_file_path(&state.data_root, &updated_profile);
     if let Some(parent) = path.parent() {
         if let Err(err) = fs::create_dir_all(parent) {
-            let msg = format!("failed to create user profile dir {}: {err}", parent.display());
+            let msg = format!(
+                "failed to create user profile dir {}: {err}",
+                parent.display()
+            );
             tracing::error!("{msg}");
             return Json(ApiResponse {
                 code: "user_profile_write_failed".to_string(),
@@ -393,9 +394,7 @@ pub async fn update_user_profile(
     })
 }
 
-pub async fn delete_user_profile(
-    Path(id): Path<String>,
-) -> Json<ApiResponse<serde_json::Value>> {
+pub async fn delete_user_profile(Path(id): Path<String>) -> Json<ApiResponse<serde_json::Value>> {
     let state = app_state();
 
     use std::fs;
@@ -445,7 +444,10 @@ pub async fn delete_user_profile(
     let path = user_profile_path(&state.data_root, &id);
     if let Err(err) = fs::remove_file(&path) {
         if err.kind() != std::io::ErrorKind::NotFound {
-            tracing::warn!("failed to remove user profile file {}: {err}", path.display());
+            tracing::warn!(
+                "failed to remove user profile file {}: {err}",
+                path.display()
+            );
         }
     }
 
@@ -456,9 +458,7 @@ pub async fn delete_user_profile(
     })
 }
 
-pub async fn activate_user_profile(
-    Path(id): Path<String>,
-) -> Json<ApiResponse<serde_json::Value>> {
+pub async fn activate_user_profile(Path(id): Path<String>) -> Json<ApiResponse<serde_json::Value>> {
     let state = app_state();
 
     let mut config = match load_app_config(&state.data_root) {
@@ -560,7 +560,7 @@ fn merge_yaml_configs(
             Some(other) => {
                 return Err(format!(
                     "field '{field}' must be a sequence when present, got {other:?}"
-                ))
+                ));
             }
         };
 
@@ -573,7 +573,7 @@ fn merge_yaml_configs(
                 other => {
                     return Err(format!(
                         "field 'prepend-{field}' must be a sequence when present, got {other:?}"
-                    ))
+                    ));
                 }
             }
         }
@@ -587,7 +587,7 @@ fn merge_yaml_configs(
                 other => {
                     return Err(format!(
                         "field 'append-{field}' must be a sequence when present, got {other:?}"
-                    ))
+                    ));
                 }
             }
         }
@@ -708,17 +708,29 @@ fn save_merged_config(root: &PathBuf, value: &serde_yaml::Value) -> Result<(), S
     fs::create_dir_all(parent)
         .map_err(|err| format!("failed to create config dir at {}: {err}", parent.display()))?;
 
-    let content =
-        serde_yaml::to_string(value).map_err(|err| format!("failed to serialize merged config: {err}"))?;
+    let content = serde_yaml::to_string(value)
+        .map_err(|err| format!("failed to serialize merged config: {err}"))?;
 
     let tmp_path = path.with_extension("yaml.tmp");
     {
-        let mut file = fs::File::create(&tmp_path)
-            .map_err(|err| format!("failed to create temp merged config at {}: {err}", tmp_path.display()))?;
-        file.write_all(content.as_bytes())
-            .map_err(|err| format!("failed to write temp merged config at {}: {err}", tmp_path.display()))?;
-        file.flush()
-            .map_err(|err| format!("failed to flush temp merged config at {}: {err}", tmp_path.display()))?;
+        let mut file = fs::File::create(&tmp_path).map_err(|err| {
+            format!(
+                "failed to create temp merged config at {}: {err}",
+                tmp_path.display()
+            )
+        })?;
+        file.write_all(content.as_bytes()).map_err(|err| {
+            format!(
+                "failed to write temp merged config at {}: {err}",
+                tmp_path.display()
+            )
+        })?;
+        file.flush().map_err(|err| {
+            format!(
+                "failed to flush temp merged config at {}: {err}",
+                tmp_path.display()
+            )
+        })?;
     }
 
     fs::rename(&tmp_path, &path).map_err(|err| {
@@ -741,7 +753,7 @@ const CORE_DEFAULTS_YAML: &str = r#" # Core defaults for camofy (router)
 mode: rule
 mixed-port: 7897
 allow-lan: false
-log-level: info
+log-level: warning
 ipv6: true
 external-controller-unix: /tmp/verge/clash-verge-service.sock
 tun:
@@ -771,6 +783,31 @@ sniffer:
   parse-pure-ip: false
   force-dns-mapping: true
   override-destination: true
+dns:
+  ipv6: true
+  enable: true
+  listen: 0.0.0.0:1053
+  use-hosts: false
+  default-nameserver:
+  - 119.29.29.29
+  - 223.5.5.5
+  - 223.6.6.6
+  - 8.8.4.4
+  - 8.8.8.8
+  nameserver:
+  - https://durable0762.com:44443/dns-query
+  - https://delirium9599.com:44443/dns-query
+  - https://cf-cdn.delirium9599.com:443/dns-query
+  fake-ip-range: 198.18.0.1/15
+  fake-ip-filter:
+  - '*.lan'
+  - '*.localdomain'
+  - '*.example'
+  - '*.invalid'
+  - '*.localhost'
+  - '*.test'
+  - '*.local'
+  - '*.home.arpa'
 "#;
 
 pub fn generate_merged_config(root: &PathBuf) -> Result<(), String> {
@@ -835,7 +872,10 @@ pub fn generate_merged_config(root: &PathBuf) -> Result<(), String> {
         if !defaults_path.is_file() {
             if let Some(parent) = defaults_path.parent() {
                 if let Err(err) = fs::create_dir_all(parent) {
-                    tracing::error!("failed to create core-defaults dir {}: {err}", parent.display());
+                    tracing::error!(
+                        "failed to create core-defaults dir {}: {err}",
+                        parent.display()
+                    );
                 }
             }
             if let Err(err) = fs::File::create(&defaults_path)
@@ -867,7 +907,7 @@ pub fn generate_merged_config(root: &PathBuf) -> Result<(), String> {
     };
 
     if let Some(defaults_value) = defaults_value_opt.as_ref() {
-        merged = merge_yaml_configs(Some(defaults_value), Some(&merged))
+        merged = merge_yaml_configs(Some(&merged), Some(defaults_value))
             .map_err(|err| format!("config merge failed: {err}"))?;
     }
 
@@ -941,10 +981,7 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("/tmp/verge/clash-verge-service.sock")
         );
-        assert_eq!(
-            value.get("mixed-port").and_then(|v| v.as_i64()),
-            Some(7897)
-        );
+        assert_eq!(value.get("mixed-port").and_then(|v| v.as_i64()), Some(7897));
         assert_eq!(value.get("mode").and_then(|v| v.as_str()), Some("rule"));
         assert_eq!(
             value
@@ -983,8 +1020,7 @@ mod tests {
 
         let mut profile_path = profile_dir;
         profile_path.push("user1.yaml");
-        fs::write(&profile_path, "mixed-port: 8888\nmode: global\n")
-            .expect("write user profile");
+        fs::write(&profile_path, "mixed-port: 8888\nmode: global\n").expect("write user profile");
 
         generate_merged_config(&root).expect("generate_merged_config failed");
 
@@ -994,13 +1030,7 @@ mod tests {
         let value: serde_yaml::Value =
             serde_yaml::from_str(&merged_content).expect("parse merged.yaml after override");
 
-        assert_eq!(
-            value.get("mixed-port").and_then(|v| v.as_i64()),
-            Some(8888)
-        );
-        assert_eq!(
-            value.get("mode").and_then(|v| v.as_str()),
-            Some("global")
-        );
+        assert_eq!(value.get("mixed-port").and_then(|v| v.as_i64()), Some(8888));
+        assert_eq!(value.get("mode").and_then(|v| v.as_str()), Some("global"));
     }
 }
