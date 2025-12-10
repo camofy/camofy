@@ -812,6 +812,7 @@ mixed-port: 7897
 allow-lan: false
 log-level: warning
 ipv6: true
+external-controller: ''
 external-controller-unix: /tmp/verge/clash-verge-service.sock
 tun:
   enable: true
