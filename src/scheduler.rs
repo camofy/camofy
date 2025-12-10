@@ -4,7 +4,7 @@ use std::time::Duration;
 use chrono::{Datelike, Local, Timelike};
 
 use crate::app::{app_state, current_timestamp};
-use crate::{load_app_config, save_app_config, AppConfig, ScheduledTaskConfig};
+use crate::{save_app_config, AppConfig, ScheduledTaskConfig};
 
 #[derive(Copy, Clone)]
 enum TaskKind {
@@ -307,15 +307,13 @@ fn record_run_state(kind: TaskKind, state: &TaskRunState) {
     let name = task_name(kind);
     let app = app_state();
 
-    let mut config = match load_app_config(&app.data_root) {
-        Ok(cfg) => cfg,
-        Err(err) => {
-            tracing::error!("scheduler[{name}] failed to load app config for recording run state: {err}");
-            return;
-        }
-    };
+    let mut guard = app
+        .app_config
+        .write()
+        .expect("app config rwlock poisoned");
+    let config: &mut AppConfig = &mut guard;
 
-    let task_cfg = task_config_mut(&mut config, kind);
+    let task_cfg = task_config_mut(config, kind);
     task_cfg.last_run_time = Some(current_timestamp());
 
     match state {
@@ -333,7 +331,7 @@ fn record_run_state(kind: TaskKind, state: &TaskRunState) {
         }
     }
 
-    if let Err(err) = save_app_config(&app.data_root, &config) {
+    if let Err(err) = save_app_config(&app.data_root, config) {
         tracing::error!("scheduler[{name}] failed to save app config after run: {err}");
     }
 }
@@ -342,17 +340,17 @@ async fn run_task_loop(kind: TaskKind) {
     let name = task_name(kind);
 
     loop {
-        let app = app_state();
-        let config = match load_app_config(&app.data_root) {
-            Ok(cfg) => cfg,
-            Err(err) => {
-                tracing::error!("scheduler[{name}] failed to load app config: {err}");
-                tokio::time::sleep(Duration::from_secs(60)).await;
-                continue;
-            }
+        let task_cfg_opt = {
+            let app = app_state();
+            let guard = app
+                .app_config
+                .read()
+                .expect("app config rwlock poisoned");
+            let config: &AppConfig = &guard;
+            task_config(config, kind).cloned()
         };
 
-        let Some(task_cfg) = task_config(&config, kind) else {
+        let Some(task_cfg) = task_cfg_opt else {
             // 未配置任务：定期重试读取配置。
             tokio::time::sleep(Duration::from_secs(300)).await;
             continue;

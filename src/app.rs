@@ -19,6 +19,10 @@ pub struct AppState {
     pub data_root: PathBuf,
     pub http_client: reqwest::Client,
     pub auth_tokens: Mutex<Vec<AuthSession>>,
+    /// 全局应用配置，进程内唯一真相源（SoT）。
+    /// 启动时从磁盘加载一次，之后所有读写都通过内存进行，
+    /// 磁盘上的 app.json 仅作为持久化备份。
+    pub app_config: std::sync::RwLock<crate::AppConfig>,
 }
 
 static APP_STATE: OnceLock<AppState> = OnceLock::new();
