@@ -30,6 +30,18 @@ export type CoreStatus = {
   pid?: number | null
 }
 
+export type CoreOperationKind = 'start' | 'stop'
+
+export type CoreOperationStatus = 'pending' | 'running' | 'success' | 'error'
+
+export type CoreOperationState = {
+  kind: CoreOperationKind
+  status: CoreOperationStatus
+  message?: string | null
+  started_at: string
+  finished_at?: string | null
+}
+
 export type Settings = {
   password_set: boolean
   subscription_auto_update?: ScheduledTaskConfig | null
@@ -92,3 +104,21 @@ export type ScheduledTaskConfig = {
   last_run_status?: string | null
   last_run_message?: string | null
 }
+
+export type AppEvent =
+  | {
+      type: 'config_applied'
+      reason: string
+      core_reload: unknown
+      timestamp: string
+    }
+  | {
+      type: 'core_status_changed'
+      running: boolean
+      pid?: number | null
+      timestamp: string
+    }
+  | {
+      type: 'core_operation_updated'
+      state: CoreOperationState
+    }

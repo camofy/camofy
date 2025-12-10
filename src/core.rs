@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 use tokio::process::Command as TokioCommand;
 
 use crate::ApiResponse;
+use crate::{
+    AppEvent, CoreOperationKind, CoreOperationState, CoreOperationStatus,
+};
 use crate::app::{app_state, current_timestamp};
 use crate::{save_app_config, AppConfig};
 
@@ -335,6 +338,50 @@ pub(crate) fn core_running_status(root: &PathBuf) -> (bool, Option<u32>) {
             }
             (false, None)
         }
+    }
+}
+
+async fn update_core_operation_state(
+    kind: CoreOperationKind,
+    status: CoreOperationStatus,
+    message: Option<String>,
+    finished: bool,
+) {
+    let app = app_state();
+    let mut guard = app.core_operation.lock().await;
+
+    let now = crate::app::current_timestamp();
+
+    let mut state = match guard.take() {
+        Some(existing) if existing.kind == kind => {
+            let mut updated = existing;
+            updated.status = status.clone();
+            updated.message = message.clone();
+            if finished {
+                updated.finished_at = Some(now.clone());
+            }
+            updated
+        }
+        _ => CoreOperationState {
+            kind: kind.clone(),
+            status: status.clone(),
+            message: message.clone(),
+            started_at: now.clone(),
+            finished_at: if finished { Some(now.clone()) } else { None },
+        },
+    };
+
+    // 如果是开始新的运行状态，确保 started_at 被设置为当前时间且 finished_at 为空。
+    if matches!(status, CoreOperationStatus::Running) && !finished {
+        state.started_at = now.clone();
+        state.finished_at = None;
+    }
+
+    *guard = Some(state.clone());
+
+    let event = AppEvent::CoreOperationUpdated { state };
+    if let Err(err) = app.events_tx.send(event) {
+        tracing::debug!("failed to broadcast CoreOperationUpdated: {err}");
     }
 }
 #[cfg(target_family = "unix")]
@@ -697,8 +744,20 @@ pub async fn download_core(Json(body): Json<CoreDownloadRequest>) -> Json<ApiRes
     })
 }
 
+/// 内部核心启动逻辑：完整执行所有检查与进程拉起，返回 JSON 响应。
+///
+/// 注意：该函数可能耗时较长；对外 API 应通过异步封装（见 `start_core_async`）调用。
 pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
     let state = app_state();
+
+    // 记录开始启动操作
+    update_core_operation_state(
+        CoreOperationKind::Start,
+        CoreOperationStatus::Running,
+        Some("starting core".to_string()),
+        false,
+    )
+    .await;
 
     // 启动前确保 geoip.metadb 存在，不存在则先尝试下载。
     let geoip_path = crate::geoip::geoip_target_path(&state.data_root);
@@ -716,6 +775,13 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
     // 检查内核是否已经安装
     let core_path = core_binary_path(&state.data_root);
     if !core_path.is_file() {
+        update_core_operation_state(
+            CoreOperationKind::Start,
+            CoreOperationStatus::Error,
+            Some("core binary not found".to_string()),
+            true,
+        )
+        .await;
         return Json(ApiResponse {
             code: "core_not_installed".to_string(),
             message: "core binary not found".to_string(),
@@ -726,6 +792,13 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
     // 检查是否已在运行
     if let Ok(pid) = read_core_pid(&state.data_root) {
         if is_process_running(pid) {
+            update_core_operation_state(
+                CoreOperationKind::Start,
+                CoreOperationStatus::Error,
+                Some(format!("core is already running with pid {}", pid)),
+                true,
+            )
+            .await;
             return Json(ApiResponse {
                 code: "core_already_running".to_string(),
                 message: format!("core is already running with pid {}", pid),
@@ -740,6 +813,13 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
     // 启动前确保 merged.yaml 已生成（根据当前订阅和用户配置 + core-defaults.yaml）
     if let Err(err) = crate::user_profiles::generate_merged_config(&state.data_root) {
         tracing::error!("failed to generate merged config before core start: {err}");
+        update_core_operation_state(
+            CoreOperationKind::Start,
+            CoreOperationStatus::Error,
+            Some(format!("failed to generate merged config: {err}")),
+            true,
+        )
+        .await;
         return Json(ApiResponse {
             code: "config_merge_failed".to_string(),
             message: err,
@@ -752,9 +832,17 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
     config_dir.push("config");
     let config_file = config_dir.join("merged.yaml");
     if !config_file.is_file() {
+        let msg = format!("config file not found at {}", config_file.display());
+        update_core_operation_state(
+            CoreOperationKind::Start,
+            CoreOperationStatus::Error,
+            Some(msg.clone()),
+            true,
+        )
+        .await;
         return Json(ApiResponse {
             code: "core_config_missing".to_string(),
-            message: format!("config file not found at {}", config_file.display()),
+            message: msg,
             data: None,
         });
     }
@@ -798,6 +886,13 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
                 log_path.display()
             );
             tracing::error!("{msg}");
+            update_core_operation_state(
+                CoreOperationKind::Start,
+                CoreOperationStatus::Error,
+                Some(msg.clone()),
+                true,
+            )
+            .await;
             return Json(ApiResponse {
                 code: "core_start_failed".to_string(),
                 message: msg,
@@ -818,6 +913,13 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
                 log_path.display()
             );
             tracing::error!("{msg}");
+            update_core_operation_state(
+                CoreOperationKind::Start,
+                CoreOperationStatus::Error,
+                Some(msg.clone()),
+                true,
+            )
+            .await;
             return Json(ApiResponse {
                 code: "core_start_failed".to_string(),
                 message: msg,
@@ -840,6 +942,13 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
         Err(err) => {
             let msg = format!("failed to spawn core process: {err}");
             tracing::error!("{msg}");
+            update_core_operation_state(
+                CoreOperationKind::Start,
+                CoreOperationStatus::Error,
+                Some(msg.clone()),
+                true,
+            )
+            .await;
             return Json(ApiResponse {
                 code: "core_start_failed".to_string(),
                 message: msg,
@@ -861,6 +970,14 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
     // 记忆当前期望的状态为“已启动”，用于下次 camofy 启动时自动拉起内核。
     update_core_auto_start_flag(true);
 
+    update_core_operation_state(
+        CoreOperationKind::Start,
+        CoreOperationStatus::Success,
+        Some(format!("core started with pid {pid}")),
+        true,
+    )
+    .await;
+
     Json(ApiResponse {
         code: "ok".to_string(),
         message: "started".to_string(),
@@ -878,11 +995,18 @@ pub async fn stop_core() -> Json<ApiResponse<serde_json::Value>> {
     #[cfg(target_family = "unix")]
     {
         if let Err(err) = stop_core_via_ipc().await {
-            tracing::debug!("failed to stop core via IPC: {err}");
+            tracing::warn!("failed to stop core via IPC: {err}");
         } else {
             tracing::info!("core stopped via IPC");
             remove_core_pid(&state.data_root);
             update_core_auto_start_flag(false);
+            update_core_operation_state(
+                CoreOperationKind::Stop,
+                CoreOperationStatus::Success,
+                Some("core stopped via IPC".to_string()),
+                true,
+            )
+            .await;
             return Json(ApiResponse {
                 code: "ok".to_string(),
                 message: "stopped".to_string(),
@@ -898,6 +1022,13 @@ pub async fn stop_core() -> Json<ApiResponse<serde_json::Value>> {
                 tracing::warn!("failed to read core pid when stopping: {reason}");
                 remove_core_pid(&state.data_root);
             }
+            update_core_operation_state(
+                CoreOperationKind::Stop,
+                CoreOperationStatus::Error,
+                Some("core is not running".to_string()),
+                true,
+            )
+            .await;
             return Json(ApiResponse {
                 code: "core_not_running".to_string(),
                 message: "core is not running".to_string(),
@@ -922,6 +1053,13 @@ pub async fn stop_core() -> Json<ApiResponse<serde_json::Value>> {
                 // 简单地假设终止成功，后续可以根据需要增加等待和 SIGKILL 逻辑
                 remove_core_pid(&state.data_root);
                 update_core_auto_start_flag(false);
+                update_core_operation_state(
+                    CoreOperationKind::Stop,
+                    CoreOperationStatus::Success,
+                    Some("core stopped via signal".to_string()),
+                    true,
+                )
+                .await;
                 return Json(ApiResponse {
                     code: "ok".to_string(),
                     message: "stopped".to_string(),
@@ -931,6 +1069,13 @@ pub async fn stop_core() -> Json<ApiResponse<serde_json::Value>> {
             Ok(status) => {
                 let msg = format!("kill -TERM exited with status {status}");
                 tracing::error!("{msg}");
+                update_core_operation_state(
+                    CoreOperationKind::Stop,
+                    CoreOperationStatus::Error,
+                    Some(msg.clone()),
+                    true,
+                )
+                .await;
                 return Json(ApiResponse {
                     code: "core_stop_failed".to_string(),
                     message: msg,
@@ -940,6 +1085,13 @@ pub async fn stop_core() -> Json<ApiResponse<serde_json::Value>> {
             Err(err) => {
                 let msg = format!("failed to execute kill: {err}");
                 tracing::error!("{msg}");
+                update_core_operation_state(
+                    CoreOperationKind::Stop,
+                    CoreOperationStatus::Error,
+                    Some(msg.clone()),
+                    true,
+                )
+                .await;
                 return Json(ApiResponse {
                     code: "core_stop_failed".to_string(),
                     message: msg,

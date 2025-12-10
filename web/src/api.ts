@@ -162,22 +162,23 @@ export async function downloadCore(
 
 export async function startCore(
   authedFetch: AuthedFetch,
-): Promise<number | undefined> {
-  const body = await requestJson<{ pid?: number }>(
-    authedFetch,
-    '/api/core/start',
-    { method: 'POST' },
-  )
+): Promise<void> {
+  const body = await requestJson<{ operation?: string }>(authedFetch, '/api/core/start', {
+    method: 'POST',
+  })
   if (body.code !== 'ok') {
     throw new Error(body.message || '启动内核失败')
   }
-  return body.data?.pid
 }
 
 export async function stopCore(authedFetch: AuthedFetch): Promise<void> {
-  const body = await requestJson<unknown>(authedFetch, '/api/core/stop', {
-    method: 'POST',
-  })
+  const body = await requestJson<{ operation?: string }>(
+    authedFetch,
+    '/api/core/stop',
+    {
+      method: 'POST',
+    },
+  )
   if (body.code !== 'ok') {
     throw new Error(body.message || '停止内核失败')
   }
@@ -389,4 +390,3 @@ export async function updateSchedulerSettings(
   }
   return body.data
 }
-
