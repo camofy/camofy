@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, broadcast};
 
 /// Default data root for router environments.
 pub const DEFAULT_DATA_ROOT: &str = "/jffs/camofy";
@@ -23,6 +23,8 @@ pub struct AppState {
     /// 启动时从磁盘加载一次，之后所有读写都通过内存进行，
     /// 磁盘上的 app.json 仅作为持久化备份。
     pub app_config: std::sync::RwLock<crate::AppConfig>,
+    /// 全局事件总线，用于向后台任务 / WebSocket 推送应用状态变更。
+    pub events_tx: broadcast::Sender<crate::AppEvent>,
 }
 
 static APP_STATE: OnceLock<AppState> = OnceLock::new();
