@@ -8,7 +8,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::app::{app_state, AppState};
-use crate::{ApiResponse, AppConfig};
+use crate::{ApiResponse, AppConfig, get_app_config_snapshot, with_app_config_mut};
 
 #[derive(Serialize)]
 pub struct SettingsDto {
@@ -60,13 +60,9 @@ pub async fn api_auth_middleware(req: Request<Body>, next: Next) -> Response {
     let is_public = path == "/health" || path == "/auth/login";
 
     let state = app_state();
-    let requires_auth = match crate::load_app_config(&state.data_root) {
-        Ok(cfg) => cfg.panel_password_hash.is_some(),
-        Err(err) => {
-            tracing::error!("failed to load app config in auth middleware: {err}");
-            false
-        }
-    };
+    let requires_auth = get_app_config_snapshot()
+        .panel_password_hash
+        .is_some();
 
     if !requires_auth {
         // 未设置密码时，所有接口无需认证
@@ -98,30 +94,17 @@ pub async fn api_auth_middleware(req: Request<Body>, next: Next) -> Response {
 }
 
 pub async fn get_settings() -> Json<ApiResponse<SettingsDto>> {
-    let state = app_state();
-
-    match crate::load_app_config(&state.data_root) {
-        Ok(cfg) => {
-            let data = SettingsDto {
-                password_set: cfg.panel_password_hash.is_some(),
-                subscription_auto_update: cfg.subscription_auto_update,
-                geoip_auto_update: cfg.geoip_auto_update,
-            };
-            Json(ApiResponse {
-                code: "ok".to_string(),
-                message: "success".to_string(),
-                data: Some(data),
-            })
-        }
-        Err(err) => {
-            tracing::error!("{err}");
-            Json(ApiResponse {
-                code: "config_load_failed".to_string(),
-                message: err,
-                data: None,
-            })
-        }
-    }
+    let cfg = get_app_config_snapshot();
+    let data = SettingsDto {
+        password_set: cfg.panel_password_hash.is_some(),
+        subscription_auto_update: cfg.subscription_auto_update,
+        geoip_auto_update: cfg.geoip_auto_update,
+    };
+    Json(ApiResponse {
+        code: "ok".to_string(),
+        message: "success".to_string(),
+        data: Some(data),
+    })
 }
 
 pub async fn update_settings(
@@ -130,21 +113,8 @@ pub async fn update_settings(
     use argon2::{Argon2, password_hash::{PasswordHasher, SaltString}};
     use rand_core::OsRng;
 
-    let state = app_state();
-
-    let mut config: AppConfig = match crate::load_app_config(&state.data_root) {
-        Ok(cfg) => cfg,
-        Err(err) => {
-            tracing::error!("{err}");
-            return Json(ApiResponse {
-                code: "config_load_failed".to_string(),
-                message: err,
-                data: None,
-            });
-        }
-    };
-
-    if let Some(password) = body.password.as_deref() {
+    // 先在锁外完成密码相关校验与哈希计算，避免在持有写锁时做重计算或早返回。
+    let new_password_hash = if let Some(password) = body.password.as_deref() {
         let trimmed = password.trim();
         if trimmed.is_empty() {
             return Json(ApiResponse {
@@ -170,37 +140,48 @@ pub async fn update_settings(
             }
         };
 
-        config.panel_password_hash = Some(hash);
-    }
-
-    // 更新定时任务相关配置（如果前端有传）
-    if let Some(task) = body.subscription_auto_update {
-        config.subscription_auto_update = Some(task);
-    }
-    if let Some(task) = body.geoip_auto_update {
-        config.geoip_auto_update = Some(task);
-    }
-
-    if let Err(err) = crate::save_app_config(&state.data_root, &config) {
-        tracing::error!("{err}");
-        return Json(ApiResponse {
-            code: "config_save_failed".to_string(),
-            message: err,
-            data: None,
-        });
-    }
-
-    let dto = SettingsDto {
-        password_set: config.panel_password_hash.is_some(),
-        subscription_auto_update: config.subscription_auto_update,
-        geoip_auto_update: config.geoip_auto_update,
+        Some(hash)
+    } else {
+        None
     };
 
-    Json(ApiResponse {
-        code: "ok".to_string(),
-        message: "settings_updated".to_string(),
-        data: Some(dto),
-    })
+    let sub_task = body.subscription_auto_update.clone();
+    let geoip_task = body.geoip_auto_update.clone();
+
+    let result = with_app_config_mut(|config: &mut AppConfig| {
+        if let Some(hash) = new_password_hash.as_ref() {
+            config.panel_password_hash = Some(hash.clone());
+        }
+
+        if let Some(task) = sub_task {
+            config.subscription_auto_update = Some(task);
+        }
+        if let Some(task) = geoip_task {
+            config.geoip_auto_update = Some(task);
+        }
+
+        SettingsDto {
+            password_set: config.panel_password_hash.is_some(),
+            subscription_auto_update: config.subscription_auto_update.clone(),
+            geoip_auto_update: config.geoip_auto_update.clone(),
+        }
+    });
+
+    match result {
+        Ok(dto) => Json(ApiResponse {
+            code: "ok".to_string(),
+            message: "settings_updated".to_string(),
+            data: Some(dto),
+        }),
+        Err(err) => {
+            tracing::error!("{err}");
+            Json(ApiResponse {
+                code: "config_save_failed".to_string(),
+                message: err,
+                data: None,
+            })
+        }
+    }
 }
 
 pub async fn auth_login(
@@ -210,17 +191,7 @@ pub async fn auth_login(
 
     let state = app_state();
 
-    let mut config: AppConfig = match crate::load_app_config(&state.data_root) {
-        Ok(cfg) => cfg,
-        Err(err) => {
-            tracing::error!("{err}");
-            return Json(ApiResponse {
-                code: "config_load_failed".to_string(),
-                message: err,
-                data: None,
-            });
-        }
-    };
+    let config: AppConfig = get_app_config_snapshot();
 
     let hash_str = match config.panel_password_hash.as_deref() {
         Some(h) => h.to_string(),
@@ -239,10 +210,9 @@ pub async fn auth_login(
             let msg = format!("invalid stored password hash: {err}");
             tracing::error!("{msg}");
             // 清除损坏的密码，避免死锁状态
-            config.panel_password_hash = None;
-            if let Err(save_err) = crate::save_app_config(&state.data_root, &config) {
-                tracing::error!("{save_err}");
-            }
+            let _ = with_app_config_mut(|cfg: &mut AppConfig| {
+                cfg.panel_password_hash = None;
+            });
             return Json(ApiResponse {
                 code: "auth_invalid_password_store".to_string(),
                 message: msg,
