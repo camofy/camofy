@@ -172,7 +172,7 @@ function UserProfilesSection({
               用户 YAML 配置
             </label>
             <textarea
-              className="mt-1 h-48 w-full resize-y rounded border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-[11px] text-slate-100 outline-none ring-0 focus:border-sky-500"
+              className="mt-1 h-72 w-full resize-y rounded border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-[11px] text-slate-100 outline-none ring-0 focus:border-sky-500"
               value={userProfileContent}
               onChange={(e) => onUserProfileContentChange(e.target.value)}
               placeholder="# 在这里编写用户配置，支持 prepend-rules / append-rules / prepend-proxies / append-proxies 等字段"
@@ -206,7 +206,7 @@ function UserProfilesSection({
                 刷新
               </button>
             </div>
-            <div className="max-h-64 overflow-auto rounded border border-slate-800 bg-slate-950/60 p-2">
+            <div className="max-h-[60vh] overflow-auto rounded border border-slate-800 bg-slate-950/60 p-2">
               {mergedConfigLoading ? (
                 <p className="text-[11px] text-slate-400">
                   正在加载 merged.yaml…
@@ -225,4 +225,3 @@ function UserProfilesSection({
 }
 
 export default UserProfilesSection
-

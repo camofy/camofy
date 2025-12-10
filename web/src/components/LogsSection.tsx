@@ -31,7 +31,7 @@ function LogsSection({ appLog, mihomoLog, loading, onReload }: LogsSectionProps)
               应用日志 app.log
             </span>
           </div>
-          <div className="max-h-64 overflow-auto rounded border border-slate-800 bg-slate-950/60 p-2">
+          <div className="max-h-[60vh] overflow-auto rounded border border-slate-800 bg-slate-950/60 p-2">
             {loading ? (
               <p className="text-[11px] text-slate-400">正在加载日志…</p>
             ) : appLog.length === 0 ? (
@@ -52,7 +52,7 @@ function LogsSection({ appLog, mihomoLog, loading, onReload }: LogsSectionProps)
               Mihomo 日志 mihomo.log
             </span>
           </div>
-          <div className="max-h-64 overflow-auto rounded border border-slate-800 bg-slate-950/60 p-2">
+          <div className="max-h-[60vh] overflow-auto rounded border border-slate-800 bg-slate-950/60 p-2">
             {loading ? (
               <p className="text-[11px] text-slate-400">正在加载日志…</p>
             ) : mihomoLog.length === 0 ? (
