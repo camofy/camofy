@@ -25,6 +25,8 @@ pub struct AppState {
     pub app_config: std::sync::RwLock<crate::AppConfig>,
     /// 全局事件总线，用于向后台任务 / WebSocket 推送应用状态变更。
     pub events_tx: broadcast::Sender<crate::AppEvent>,
+    /// 最近一次核心启动/停止操作的状态（包括正在执行中的）。
+    pub core_operation: Mutex<Option<crate::CoreOperationState>>,
 }
 
 static APP_STATE: OnceLock<AppState> = OnceLock::new();

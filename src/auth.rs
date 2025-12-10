@@ -73,11 +73,25 @@ pub async fn api_auth_middleware(req: Request<Body>, next: Next) -> Response {
         return next.run(req).await;
     }
 
-    let token = req
+    // 先尝试从 Header 中获取 Token（常规 REST 请求）。
+    let mut token = req
         .headers()
         .get("X-Auth-Token")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
+
+    // 对于 WebSocket 等无法自定义 Header 的场景，从查询参数 token 中兜底获取。
+    if token.is_none() {
+        if let Some(query) = req.uri().query() {
+            for pair in query.split('&') {
+                if let Some(rest) = pair.strip_prefix("token=") {
+                    // token 目前是 UUID，不涉及复杂编码，这里直接使用原始值。
+                    token = Some(rest.to_string());
+                    break;
+                }
+            }
+        }
+    }
 
     if let Some(token) = token {
         if validate_token(state, &token).await {
