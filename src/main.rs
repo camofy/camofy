@@ -14,6 +14,7 @@ use crate::app::app_state;
 
 mod app;
 mod auth;
+mod config_manager;
 mod core;
 mod logs;
 mod subscriptions;
@@ -104,6 +105,48 @@ pub(crate) struct AppConfig {
     geoip_auto_update: Option<ScheduledTaskConfig>,
 }
 
+/// 对应“是什么导致了配置需要被应用 / 重新加载”的高层原因，
+/// 便于后续在日志或 WebSocket 事件中做区分。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigChangeReason {
+    SubscriptionFetched,
+    ActiveSubscriptionChanged,
+    SubscriptionDeleted,
+    UserProfileUpdated,
+    ActiveUserProfileChanged,
+    UserProfileDeleted,
+    SettingsUpdated,
+    Other,
+}
+
+/// 描述一次“尝试向 Mihomo 应用配置”的结果。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "snake_case")]
+pub enum CoreReloadResult {
+    NotRunning,
+    Reloaded,
+    ReloadFailed { message: String },
+    Skipped { reason: String },
+}
+
+/// 后台向前端广播的应用级事件模型。
+/// 后续可以通过 WebSocket 订阅这些事件，实现实时状态更新。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AppEvent {
+    ConfigApplied {
+        reason: ConfigChangeReason,
+        core_reload: CoreReloadResult,
+        timestamp: String,
+    },
+    CoreStatusChanged {
+        running: bool,
+        pid: Option<u32>,
+        timestamp: String,
+    },
+}
+
 #[tokio::main]
 async fn main() {
     let data_root = app::data_root();
@@ -118,11 +161,15 @@ async fn main() {
         }
     };
 
+    // 全局事件广播通道（后续可用于 WebSocket 实时推送）
+    let (events_tx, _events_rx) = tokio::sync::broadcast::channel(128);
+
     let state = AppState {
         data_root: data_root.clone(),
         http_client: reqwest::ClientBuilder::new().user_agent("clash-verge/v2.4.3").build().unwrap(),
         auth_tokens: tokio::sync::Mutex::new(Vec::new()),
         app_config: std::sync::RwLock::new(app_config),
+        events_tx,
     };
     if let Err(err) = app::init_data_dirs(&data_root) {
         tracing::error!(

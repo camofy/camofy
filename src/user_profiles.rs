@@ -5,7 +5,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::app::{app_state, current_timestamp};
-use crate::{ApiResponse, AppConfig, ProfileMeta, ProfileType};
+use crate::{
+    ApiResponse, AppConfig, ConfigChangeReason, ProfileMeta, ProfileType, config_manager,
+};
 use crate::{load_app_config, save_app_config};
 
 #[derive(Serialize)]
@@ -259,6 +261,27 @@ pub async fn create_user_profile(
         });
     }
 
+    // 如果新建的用户配置当前就是活跃配置，则尝试基于最新配置生成 merged.yaml 并通知内核重载。
+    let should_apply = {
+        let cfg = crate::get_app_config_snapshot();
+        cfg.active_user_profile_id
+            .as_deref()
+            .is_some_and(|active| active == profile.id.as_str())
+    };
+
+    if should_apply {
+        if let Err(err) = generate_merged_config(&state.data_root) {
+            tracing::error!(
+                "failed to generate merged config after creating active user profile: {err}"
+            );
+        } else {
+            let _ = config_manager::reload_core_if_running(
+                ConfigChangeReason::UserProfileUpdated,
+            )
+            .await;
+        }
+    }
+
     Json(ApiResponse {
         code: "ok".to_string(),
         message: "created".to_string(),
@@ -358,16 +381,6 @@ pub async fn update_user_profile(
         });
     }
 
-    // 更新用户 profile 成功后尝试重新生成 merged.yaml
-    if let Err(err) = generate_merged_config(&state.data_root) {
-        tracing::error!("failed to generate merged config after user profile update: {err}");
-        return Json(ApiResponse {
-            code: "config_merge_failed".to_string(),
-            message: err,
-            data: None,
-        });
-    }
-
     let detail = UserProfileDetail {
         id: updated_profile.id.clone(),
         name: updated_profile.name.clone(),
@@ -375,6 +388,23 @@ pub async fn update_user_profile(
         last_modified_time: updated_profile.last_modified_time.clone(),
         content: content_to_write,
     };
+
+    // 如果更新的是当前活跃的用户配置，则在成功写入后生成 merged.yaml 并尝试重载内核配置。
+    if is_active {
+        if let Err(err) = generate_merged_config(&state.data_root) {
+            tracing::error!("failed to generate merged config after user profile update: {err}");
+            return Json(ApiResponse {
+                code: "config_merge_failed".to_string(),
+                message: err,
+                data: None,
+            });
+        }
+
+        let _ = config_manager::reload_core_if_running(
+            ConfigChangeReason::UserProfileUpdated,
+        )
+        .await;
+    }
 
     Json(ApiResponse {
         code: "ok".to_string(),
@@ -388,6 +418,7 @@ pub async fn delete_user_profile(Path(id): Path<String>) -> Json<ApiResponse<ser
 
     use std::fs;
 
+    let mut was_active = false;
     let mut removed = false;
 
     {
@@ -412,6 +443,7 @@ pub async fn delete_user_profile(Path(id): Path<String>) -> Json<ApiResponse<ser
                 .as_ref()
                 .is_some_and(|active| active == &id)
             {
+                was_active = true;
                 config.active_user_profile_id = None;
             }
 
@@ -444,6 +476,20 @@ pub async fn delete_user_profile(Path(id): Path<String>) -> Json<ApiResponse<ser
         }
     }
 
+    // 如果删除的是当前活跃的用户配置，则尝试基于最新配置生成 merged.yaml 并通知内核重载。
+    if was_active {
+        if let Err(err) = generate_merged_config(&state.data_root) {
+            tracing::error!(
+                "failed to generate merged config after deleting active user profile: {err}"
+            );
+        } else {
+            let _ = config_manager::reload_core_if_running(
+                ConfigChangeReason::UserProfileDeleted,
+            )
+            .await;
+        }
+    }
+
     Json(ApiResponse {
         code: "ok".to_string(),
         message: "deleted".to_string(),
@@ -452,9 +498,9 @@ pub async fn delete_user_profile(Path(id): Path<String>) -> Json<ApiResponse<ser
 }
 
 pub async fn activate_user_profile(Path(id): Path<String>) -> Json<ApiResponse<serde_json::Value>> {
-    let state = app_state();
-
     let mut found = false;
+
+    let state = app_state();
 
     {
         let mut guard = state
@@ -491,6 +537,21 @@ pub async fn activate_user_profile(Path(id): Path<String>) -> Json<ApiResponse<s
             data: None,
         });
     }
+
+    // 激活用户配置后，基于最新配置生成 merged.yaml，并尝试通知内核重载。
+    if let Err(err) = generate_merged_config(&state.data_root) {
+        tracing::error!("failed to generate merged config after user profile activate: {err}");
+        return Json(ApiResponse {
+            code: "config_merge_failed".to_string(),
+            message: err,
+            data: None,
+        });
+    }
+
+    let _ = config_manager::reload_core_if_running(
+        ConfigChangeReason::ActiveUserProfileChanged,
+    )
+    .await;
 
     Json(ApiResponse {
         code: "ok".to_string(),
