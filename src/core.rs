@@ -239,6 +239,78 @@ pub(crate) fn is_process_running(pid: u32) -> bool {
     }
 }
 
+#[cfg(target_family = "unix")]
+fn apply_dns_redirect_rule() {
+    use std::process::Command;
+
+    let rule = [
+        "-t",
+        "nat",
+        "-A",
+        "PREROUTING",
+        "-p",
+        "udp",
+        "--dport",
+        "53",
+        "-j",
+        "REDIRECT",
+        "--to-ports",
+        "1053",
+    ];
+
+    match Command::new("iptables").args(&rule).status() {
+        Ok(status) if status.success() => {
+            tracing::info!("iptables dns redirect rule applied successfully");
+        }
+        Ok(status) => {
+            tracing::warn!("failed to apply iptables dns redirect rule, exit status: {status}");
+        }
+        Err(err) => {
+            tracing::warn!("failed to execute iptables to apply dns redirect rule: {err}");
+        }
+    }
+}
+
+#[cfg(not(target_family = "unix"))]
+fn apply_dns_redirect_rule() {
+}
+
+#[cfg(target_family = "unix")]
+fn remove_dns_redirect_rule() {
+    use std::process::Command;
+
+    let rule = [
+        "-t",
+        "nat",
+        "-D",
+        "PREROUTING",
+        "-p",
+        "udp",
+        "--dport",
+        "53",
+        "-j",
+        "REDIRECT",
+        "--to-ports",
+        "1053",
+    ];
+
+    match Command::new("iptables").args(&rule).status() {
+        Ok(status) if status.success() => {
+            tracing::info!("iptables dns redirect rule removed successfully");
+        }
+        Ok(status) => {
+            tracing::warn!("failed to remove iptables dns redirect rule, exit status: {status}");
+        }
+        Err(err) => {
+            tracing::warn!("failed to execute iptables to remove dns redirect rule: {err}");
+        }
+    }
+}
+
+#[cfg(not(target_family = "unix"))]
+fn remove_dns_redirect_rule() {
+}
+
 /// 读取当前 Mihomo 内核的运行状态。
 ///
 /// 返回值：
@@ -783,6 +855,9 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
         tracing::error!("{err}");
     }
 
+    // 内核进程成功拉起后，再配置 DNS 重定向 iptables 规则。
+    apply_dns_redirect_rule();
+
     // 记忆当前期望的状态为“已启动”，用于下次 camofy 启动时自动拉起内核。
     update_core_auto_start_flag(true);
 
@@ -795,6 +870,9 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
 
 pub async fn stop_core() -> Json<ApiResponse<serde_json::Value>> {
     let state = app_state();
+
+    // 停止内核前优先移除 DNS 转发规则，避免仍有新的 DNS 请求被转发到即将关闭的内核。
+    remove_dns_redirect_rule();
 
     // 优先尝试通过 clash_verge_service_ipc 提供的 IPC 通道优雅停止核心
     #[cfg(target_family = "unix")]
