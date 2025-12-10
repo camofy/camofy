@@ -6,8 +6,8 @@ use uuid::Uuid;
 
 use crate::app::app_state;
 use crate::app::current_timestamp;
-use crate::{ApiResponse, AppConfig, ProfileMeta, ProfileType};
-use crate::{save_app_config, with_app_config_mut};
+use crate::{ApiResponse, AppConfig, ConfigChangeReason, ProfileMeta, ProfileType};
+use crate::{config_manager, save_app_config, with_app_config_mut};
 
 #[derive(Serialize)]
 pub struct SubscriptionDto {
@@ -255,6 +255,17 @@ pub async fn delete_subscription(
         }
     }
 
+    // 删除订阅后，尝试基于最新配置重新生成 merged.yaml 并通知内核重载。
+    let _ = crate::user_profiles::generate_merged_config(&state.data_root)
+        .map_err(|err| {
+            tracing::error!("failed to generate merged config after subscription delete: {err}");
+        });
+    // 生成失败不会影响本次删除操作的返回，仅记录错误；重载结果通过事件总线上报。
+    let _ = config_manager::reload_core_if_running(
+        ConfigChangeReason::SubscriptionDeleted,
+    )
+    .await;
+
     Json(ApiResponse {
         code: "ok".to_string(),
         message: "deleted".to_string(),
@@ -304,6 +315,21 @@ pub async fn activate_subscription(
             data: None,
         });
     }
+
+    // 激活订阅后基于新配置重新生成 merged.yaml，并尝试通知内核重载。
+    if let Err(err) = crate::user_profiles::generate_merged_config(&state.data_root) {
+        tracing::error!("failed to generate merged config after subscription activate: {err}");
+        return Json(ApiResponse {
+            code: "config_merge_failed".to_string(),
+            message: err,
+            data: None,
+        });
+    }
+
+    let _ = config_manager::reload_core_if_running(
+        ConfigChangeReason::ActiveSubscriptionChanged,
+    )
+    .await;
 
     Json(ApiResponse {
         code: "ok".to_string(),
@@ -477,6 +503,12 @@ pub async fn fetch_subscription(
             data: None,
         });
     }
+
+    // 配置合并成功后，尝试通知内核重载最新配置。
+    let _ = config_manager::reload_core_if_running(
+        ConfigChangeReason::SubscriptionFetched,
+    )
+    .await;
 
     Json(ApiResponse {
         code: "ok".to_string(),

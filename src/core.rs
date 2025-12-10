@@ -178,7 +178,7 @@ pub(crate) fn ensure_controller_secret(root: &PathBuf) -> Result<String, String>
     Ok(secret)
 }
 
-fn read_core_pid(root: &PathBuf) -> Result<u32, String> {
+pub(crate) fn read_core_pid(root: &PathBuf) -> Result<u32, String> {
     use std::fs;
     use std::io::ErrorKind;
 
@@ -226,7 +226,7 @@ fn remove_core_pid(root: &PathBuf) {
     }
 }
 
-fn is_process_running(pid: u32) -> bool {
+pub(crate) fn is_process_running(pid: u32) -> bool {
     #[cfg(target_family = "unix")]
     {
         let path = format!("/proc/{pid}");
@@ -236,6 +236,33 @@ fn is_process_running(pid: u32) -> bool {
     {
         let _ = pid;
         false
+    }
+}
+
+/// 读取当前 Mihomo 内核的运行状态。
+///
+/// 返回值：
+/// - `(true, Some(pid))`：内核正在运行
+/// - `(false, _)`：未运行或 PID 文件不存在 / 损坏（内部会在必要时尝试清理 PID 文件）
+pub(crate) fn core_running_status(root: &PathBuf) -> (bool, Option<u32>) {
+    match read_core_pid(root) {
+        Ok(pid) => {
+            if is_process_running(pid) {
+                (true, Some(pid))
+            } else {
+                // PID 文件存在但进程已经不在了，尝试清理
+                remove_core_pid(root);
+                (false, None)
+            }
+        }
+        Err(reason) => {
+            if reason != "pid_file_not_found" {
+                tracing::warn!("failed to read core pid: {reason}");
+                // 读取 PID 失败时也尝试清理，避免下次重复报错
+                remove_core_pid(root);
+            }
+            (false, None)
+        }
     }
 }
 #[cfg(target_family = "unix")]
@@ -364,20 +391,7 @@ pub async fn get_core_info() -> Json<ApiResponse<CoreInfo>> {
 pub async fn get_core_status() -> Json<ApiResponse<CoreStatusDto>> {
     let state = app_state();
 
-    let pid = match read_core_pid(&state.data_root) {
-        Ok(pid) => Some(pid),
-        Err(reason) => {
-            if reason != "pid_file_not_found" {
-                tracing::warn!("failed to read core pid: {reason}");
-                // 如果 pid 文件损坏，尝试清理
-                remove_core_pid(&state.data_root);
-            }
-            None
-        }
-    };
-
-    let running = pid.map_or(false, is_process_running);
-
+    let (running, pid) = core_running_status(&state.data_root);
     let data = CoreStatusDto { running, pid };
 
     Json(ApiResponse {

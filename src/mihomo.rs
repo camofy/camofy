@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
+
 use axum::{extract::Path, Json};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -239,6 +241,42 @@ fn map_error_from_body(status: u16, body: &str) -> String {
             .message
             .unwrap_or_else(|| format!("mihomo returned status {status}")),
         Err(_) => format!("mihomo returned status {status}: {body}"),
+    }
+}
+
+/// 使用当前的 `merged.yaml` 向 Mihomo 发送“重新加载配置”请求。
+///
+/// 约定：调用方应保证 `merged.yaml` 已经根据最新配置生成。
+pub async fn reload_config_with_merged(root: &PathBuf) -> Result<(), String> {
+    let secret = ensure_controller_secret(root)
+        .map_err(|err| format!("failed to ensure controller secret: {err}"))?;
+
+    let path = crate::user_profiles::merged_config_path(root);
+    if !path.is_file() {
+        return Err(format!(
+            "merged config file not found at {}",
+            path.display()
+        ));
+    }
+
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| format!("merged config path is not valid utf-8: {}", path.display()))?;
+
+    let body = serde_json::json!({
+        "path": path_str,
+        "force": true,
+    });
+    let body_str = serde_json::to_string(&body)
+        .map_err(|err| format!("failed to serialize reload-config body: {err}"))?;
+
+    let (status, resp_body) =
+        send_mihomo_request("PUT", "/configs", Some(&body_str), &secret).await?;
+
+    if (200..300).contains(&status) {
+        Ok(())
+    } else {
+        Err(map_error_from_body(status, &resp_body))
     }
 }
 
