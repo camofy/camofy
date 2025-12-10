@@ -10,6 +10,8 @@ use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::app::app_state;
+
 mod app;
 mod auth;
 mod core;
@@ -81,8 +83,8 @@ struct ScheduledTaskConfig {
     last_run_message: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Default)]
-struct AppConfig {
+#[derive(Serialize, Deserialize, Default, Clone)]
+pub(crate) struct AppConfig {
     #[serde(default)]
     profiles: Vec<ProfileMeta>,
     #[serde(default)]
@@ -107,10 +109,20 @@ async fn main() {
     let data_root = app::data_root();
     init_tracing(&data_root);
 
+    // 启动时从磁盘加载 app.json，失败则直接退出进程。
+    let app_config = match load_app_config(&data_root) {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            tracing::error!("{err}");
+            std::process::exit(1);
+        }
+    };
+
     let state = AppState {
         data_root: data_root.clone(),
         http_client: reqwest::ClientBuilder::new().user_agent("clash-verge/v2.4.3").build().unwrap(),
         auth_tokens: tokio::sync::Mutex::new(Vec::new()),
+        app_config: std::sync::RwLock::new(app_config),
     };
     if let Err(err) = app::init_data_dirs(&data_root) {
         tracing::error!(
@@ -383,4 +395,34 @@ pub(crate) fn save_app_config(root: &PathBuf, config: &AppConfig) -> Result<(), 
 
     fs::write(&path, content)
         .map_err(|err| format!("failed to write app.json at {}: {err}", path.display()))
+}
+
+/// 读取当前全局 AppConfig 的只读快照。
+pub(crate) fn get_app_config_snapshot() -> AppConfig {
+    let state = app_state();
+    let guard = state.app_config.read().expect("app config rwlock poisoned");
+    guard.clone()
+}
+
+/// 对全局 AppConfig 进行一次原子更新，并将结果持久化到磁盘。
+///
+/// - `f` 在持有写锁的情况下被调用，可以对配置做任意修改。
+/// - 修改完成后会将配置写回 `<DATA_ROOT>/config/app.json`。
+/// - 磁盘写入失败时，内存中的修改仍然保留（以内存为准），返回 Err。
+pub(crate) fn with_app_config_mut<F, R>(f: F) -> Result<R, String>
+where
+    F: FnOnce(&mut AppConfig) -> R,
+{
+    let state = app_state();
+    let mut guard = state
+        .app_config
+        .write()
+        .expect("app config rwlock poisoned");
+
+    let result = f(&mut guard);
+
+    // 尝试将修改持久化到磁盘。失败时返回错误，但不回滚内存中的修改。
+    save_app_config(&state.data_root, &guard)?;
+
+    Ok(result)
 }

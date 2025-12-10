@@ -6,7 +6,7 @@ use tokio::process::Command as TokioCommand;
 
 use crate::ApiResponse;
 use crate::app::{app_state, current_timestamp};
-use crate::{load_app_config, save_app_config};
+use crate::{save_app_config, AppConfig};
 
 #[derive(Serialize, Deserialize, Default)]
 struct CoreMeta {
@@ -387,17 +387,18 @@ pub async fn get_core_status() -> Json<ApiResponse<CoreStatusDto>> {
     })
 }
 
-fn update_core_auto_start_flag(root: &PathBuf, auto_start: bool) {
-    match load_app_config(root) {
-        Ok(mut config) => {
-            config.core_auto_start = auto_start;
-            if let Err(err) = save_app_config(root, &config) {
-                tracing::error!("failed to save app config when updating core_auto_start: {err}");
-            }
-        }
-        Err(err) => {
-            tracing::error!("failed to load app config when updating core_auto_start: {err}");
-        }
+fn update_core_auto_start_flag(auto_start: bool) {
+    let state = app_state();
+
+    let mut guard = state
+        .app_config
+        .write()
+        .expect("app config rwlock poisoned");
+    let config: &mut AppConfig = &mut guard;
+
+    config.core_auto_start = auto_start;
+    if let Err(err) = save_app_config(&state.data_root, config) {
+        tracing::error!("failed to save app config when updating core_auto_start: {err}");
     }
 }
 
@@ -769,7 +770,7 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
     }
 
     // 记忆当前期望的状态为“已启动”，用于下次 camofy 启动时自动拉起内核。
-    update_core_auto_start_flag(&state.data_root, true);
+    update_core_auto_start_flag(true);
 
     Json(ApiResponse {
         code: "ok".to_string(),
@@ -789,7 +790,7 @@ pub async fn stop_core() -> Json<ApiResponse<serde_json::Value>> {
         } else {
             tracing::info!("core stopped via IPC");
             remove_core_pid(&state.data_root);
-            update_core_auto_start_flag(&state.data_root, false);
+            update_core_auto_start_flag(false);
             return Json(ApiResponse {
                 code: "ok".to_string(),
                 message: "stopped".to_string(),
@@ -828,7 +829,7 @@ pub async fn stop_core() -> Json<ApiResponse<serde_json::Value>> {
             Ok(status) if status.success() => {
                 // 简单地假设终止成功，后续可以根据需要增加等待和 SIGKILL 逻辑
                 remove_core_pid(&state.data_root);
-                update_core_auto_start_flag(&state.data_root, false);
+                update_core_auto_start_flag(false);
                 return Json(ApiResponse {
                     code: "ok".to_string(),
                     message: "stopped".to_string(),
@@ -871,12 +872,13 @@ pub async fn stop_core() -> Json<ApiResponse<serde_json::Value>> {
 pub(crate) async fn auto_start_core_if_configured() {
     let state = app_state();
 
-    let should_auto_start = match load_app_config(&state.data_root) {
-        Ok(config) => config.core_auto_start,
-        Err(err) => {
-            tracing::error!("failed to load app config when checking core auto-start: {err}");
-            false
-        }
+    let should_auto_start = {
+        let guard = state
+            .app_config
+            .read()
+            .expect("app config rwlock poisoned");
+        let config: &AppConfig = &guard;
+        config.core_auto_start
     };
 
     if !should_auto_start {

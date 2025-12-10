@@ -83,31 +83,30 @@ pub async fn get_user_profile(Path(id): Path<String>) -> Json<ApiResponse<UserPr
 
     let state = app_state();
 
-    let config = match load_app_config(&state.data_root) {
-        Ok(cfg) => cfg,
-        Err(err) => {
-            tracing::error!("{err}");
+    // 从全局配置中获取 profile 元数据和活跃状态
+    let (profile_meta, active_id) = {
+        let guard = state
+            .app_config
+            .read()
+            .expect("app config rwlock poisoned");
+        let config: &AppConfig = &guard;
+
+        let Some(profile) = config
+            .profiles
+            .iter()
+            .find(|p| matches!(p.profile_type, ProfileType::User) && p.id == id)
+        else {
             return Json(ApiResponse {
-                code: "config_load_failed".to_string(),
-                message: err,
+                code: "user_profile_not_found".to_string(),
+                message: "user profile not found".to_string(),
                 data: None,
             });
-        }
+        };
+
+        (profile.clone(), config.active_user_profile_id.clone())
     };
 
-    let Some(profile) = config
-        .profiles
-        .iter()
-        .find(|p| matches!(p.profile_type, ProfileType::User) && p.id == id)
-    else {
-        return Json(ApiResponse {
-            code: "user_profile_not_found".to_string(),
-            message: "user profile not found".to_string(),
-            data: None,
-        });
-    };
-
-    let path = profile_file_path(&state.data_root, profile);
+   let path = profile_file_path(&state.data_root, &profile_meta);
     let content = match fs::read_to_string(&path) {
         Ok(c) => c,
         Err(err) => {
@@ -121,13 +120,13 @@ pub async fn get_user_profile(Path(id): Path<String>) -> Json<ApiResponse<UserPr
         }
     };
 
-    let active_id = config.active_user_profile_id.as_deref();
+    let active_id = active_id.as_deref();
 
     let detail = UserProfileDetail {
-        id: profile.id.clone(),
-        name: profile.name.clone(),
-        is_active: active_id == Some(profile.id.as_str()),
-        last_modified_time: profile.last_modified_time.clone(),
+        id: profile_meta.id.clone(),
+        name: profile_meta.name.clone(),
+        is_active: active_id == Some(profile_meta.id.as_str()),
+        last_modified_time: profile_meta.last_modified_time.clone(),
         content,
     };
 
@@ -141,50 +140,29 @@ pub async fn get_user_profile(Path(id): Path<String>) -> Json<ApiResponse<UserPr
 pub async fn list_user_profiles() -> Json<ApiResponse<UserProfileListResponse>> {
     let state = app_state();
 
-    match load_app_config(&state.data_root) {
-        Ok(config) => {
-            let user_profiles = config
-                .profiles
-                .iter()
-                .filter_map(|p| to_user_profile_summary(&config, p))
-                .collect();
+    let guard = state
+        .app_config
+        .read()
+        .expect("app config rwlock poisoned");
+    let config: &AppConfig = &guard;
 
-            Json(ApiResponse {
-                code: "ok".to_string(),
-                message: "success".to_string(),
-                data: Some(UserProfileListResponse { user_profiles }),
-            })
-        }
-        Err(err) => {
-            tracing::error!("{err}");
-            Json(ApiResponse {
-                code: "config_load_failed".to_string(),
-                message: err,
-                data: None,
-            })
-        }
-    }
+    let user_profiles = config
+        .profiles
+        .iter()
+        .filter_map(|p| to_user_profile_summary(config, p))
+        .collect();
+
+    Json(ApiResponse {
+        code: "ok".to_string(),
+        message: "success".to_string(),
+        data: Some(UserProfileListResponse { user_profiles }),
+    })
 }
 
 pub async fn create_user_profile(
     Json(body): Json<CreateUserProfileRequest>,
 ) -> Json<ApiResponse<UserProfileSummary>> {
     let state = app_state();
-
-    let mut config = match load_app_config(&state.data_root) {
-        Ok(cfg) => cfg,
-        Err(err) => {
-            tracing::error!("{err}");
-            return Json(ApiResponse {
-                code: "config_load_failed".to_string(),
-                message: err,
-                data: None,
-            });
-        }
-    };
-
-    let id = Uuid::new_v4().to_string();
-    let path = format!("user-profiles/{id}.yaml");
 
     // 如果提供了内容且非空，先校验 YAML 格式；空内容视为一个空配置
     let trimmed = body.content.trim();
@@ -203,32 +181,57 @@ pub async fn create_user_profile(
         body.content
     };
 
-    let profile = ProfileMeta {
-        id: id.clone(),
-        name: body.name,
-        profile_type: ProfileType::User,
-        path,
-        url: None,
-        last_fetch_time: None,
-        last_fetch_status: None,
-        last_modified_time: Some(current_timestamp()),
+    // 在全局配置中创建 profile 元数据并持久化
+    let (profile, summary) = {
+        let mut guard = state
+            .app_config
+            .write()
+            .expect("app config rwlock poisoned");
+        let config: &mut AppConfig = &mut guard;
+
+        let id = Uuid::new_v4().to_string();
+        let path = format!("user-profiles/{id}.yaml");
+
+        let profile = ProfileMeta {
+            id: id.clone(),
+            name: body.name,
+            profile_type: ProfileType::User,
+            path,
+            url: None,
+            last_fetch_time: None,
+            last_fetch_status: None,
+            last_modified_time: Some(current_timestamp()),
+        };
+
+        // 如果当前没有活跃用户 profile，则将新建的设为活跃
+        if config.active_user_profile_id.is_none() {
+            config.active_user_profile_id = Some(id.clone());
+        }
+
+        config.profiles.push(profile.clone());
+
+        if let Err(err) = save_app_config(&state.data_root, config) {
+            tracing::error!("{err}");
+            return Json(ApiResponse {
+                code: "config_save_failed".to_string(),
+                message: err,
+                data: None,
+            });
+        }
+
+        let summary = match to_user_profile_summary(config, &profile) {
+            Some(s) => s,
+            None => {
+                return Json(ApiResponse {
+                    code: "internal_error".to_string(),
+                    message: "failed to build user profile summary".to_string(),
+                    data: None,
+                });
+            }
+        };
+
+        (profile, summary)
     };
-
-    // 如果当前没有活跃用户 profile，则将新建的设为活跃
-    if config.active_user_profile_id.is_none() {
-        config.active_user_profile_id = Some(id.clone());
-    }
-
-    config.profiles.push(profile.clone());
-
-    if let Err(err) = save_app_config(&state.data_root, &config) {
-        tracing::error!("{err}");
-        return Json(ApiResponse {
-            code: "config_save_failed".to_string(),
-            message: err,
-            data: None,
-        });
-    }
 
     // 写入用户 profile 文件
     let path = profile_file_path(&state.data_root, &profile);
@@ -256,17 +259,6 @@ pub async fn create_user_profile(
         });
     }
 
-    let summary = match to_user_profile_summary(&config, &profile) {
-        Some(s) => s,
-        None => {
-            return Json(ApiResponse {
-                code: "internal_error".to_string(),
-                message: "failed to build user profile summary".to_string(),
-                data: None,
-            });
-        }
-    };
-
     Json(ApiResponse {
         code: "ok".to_string(),
         message: "created".to_string(),
@@ -282,20 +274,31 @@ pub async fn update_user_profile(
 
     let state = app_state();
 
-    let mut config = match load_app_config(&state.data_root) {
-        Ok(cfg) => cfg,
-        Err(err) => {
-            tracing::error!("{err}");
+    // 先校验内容是否合法 YAML
+    let trimmed = body.content.trim();
+    let content_to_write = if trimmed.is_empty() {
+        "# empty user profile\n".to_string()
+    } else {
+        if let Err(err) = serde_yaml::from_str::<serde_yaml::Value>(trimmed) {
+            let msg = format!("invalid user profile yaml: {err}");
+            tracing::error!("{msg}");
             return Json(ApiResponse {
-                code: "config_load_failed".to_string(),
-                message: err,
+                code: "user_profile_invalid_yaml".to_string(),
+                message: msg,
                 data: None,
             });
         }
+        body.content
     };
 
-    // 将可变借用限制在局部作用域，避免与后续对 config 的不可变借用冲突
-    let (updated_profile, content_to_write) = {
+    // 更新全局配置中的 profile 元数据
+    let (updated_profile, is_active) = {
+        let mut guard = state
+            .app_config
+            .write()
+            .expect("app config rwlock poisoned");
+        let config: &mut AppConfig = &mut guard;
+
         let Some(profile) = config
             .profiles
             .iter_mut()
@@ -308,37 +311,26 @@ pub async fn update_user_profile(
             });
         };
 
-        let trimmed = body.content.trim();
-        let content_to_write = if trimmed.is_empty() {
-            "# empty user profile\n".to_string()
-        } else {
-            if let Err(err) = serde_yaml::from_str::<serde_yaml::Value>(trimmed) {
-                let msg = format!("invalid user profile yaml: {err}");
-                tracing::error!("{msg}");
-                return Json(ApiResponse {
-                    code: "user_profile_invalid_yaml".to_string(),
-                    message: msg,
-                    data: None,
-                });
-            }
-            body.content
-        };
-
-        // 更新 profile 元数据
         profile.name = body.name;
         profile.last_modified_time = Some(current_timestamp());
 
-        (profile.clone(), content_to_write)
-    };
+        let updated_profile = profile.clone();
+        let is_active = config
+            .active_user_profile_id
+            .as_deref()
+            .is_some_and(|active| active == updated_profile.id.as_str());
 
-    if let Err(err) = save_app_config(&state.data_root, &config) {
-        tracing::error!("{err}");
-        return Json(ApiResponse {
-            code: "config_save_failed".to_string(),
-            message: err,
-            data: None,
-        });
-    }
+        if let Err(err) = save_app_config(&state.data_root, config) {
+            tracing::error!("{err}");
+            return Json(ApiResponse {
+                code: "config_save_failed".to_string(),
+                message: err,
+                data: None,
+            });
+        }
+
+        (updated_profile, is_active)
+    };
 
     let path = profile_file_path(&state.data_root, &updated_profile);
     if let Some(parent) = path.parent() {
@@ -379,10 +371,7 @@ pub async fn update_user_profile(
     let detail = UserProfileDetail {
         id: updated_profile.id.clone(),
         name: updated_profile.name.clone(),
-        is_active: config
-            .active_user_profile_id
-            .as_deref()
-            .is_some_and(|active| active == updated_profile.id.as_str()),
+        is_active,
         last_modified_time: updated_profile.last_modified_time.clone(),
         content: content_to_write,
     };
@@ -399,44 +388,48 @@ pub async fn delete_user_profile(Path(id): Path<String>) -> Json<ApiResponse<ser
 
     use std::fs;
 
-    let mut config = match load_app_config(&state.data_root) {
-        Ok(cfg) => cfg,
-        Err(err) => {
-            tracing::error!("{err}");
-            return Json(ApiResponse {
-                code: "config_load_failed".to_string(),
-                message: err,
-                data: None,
-            });
+    let mut removed = false;
+
+    {
+        let mut guard = state
+            .app_config
+            .write()
+            .expect("app config rwlock poisoned");
+        let config: &mut AppConfig = &mut guard;
+
+        let original_len = config.profiles.len();
+        config
+            .profiles
+            .retain(|p| !(matches!(p.profile_type, ProfileType::User) && p.id == id));
+
+        if config.profiles.len() == original_len {
+            // not found
+        } else {
+            removed = true;
+
+            if config
+                .active_user_profile_id
+                .as_ref()
+                .is_some_and(|active| active == &id)
+            {
+                config.active_user_profile_id = None;
+            }
+
+            if let Err(err) = save_app_config(&state.data_root, config) {
+                tracing::error!("{err}");
+                return Json(ApiResponse {
+                    code: "config_save_failed".to_string(),
+                    message: err,
+                    data: None,
+                });
+            }
         }
-    };
+    }
 
-    let original_len = config.profiles.len();
-    config
-        .profiles
-        .retain(|p| !(matches!(p.profile_type, ProfileType::User) && p.id == id));
-
-    if config.profiles.len() == original_len {
+    if !removed {
         return Json(ApiResponse {
             code: "user_profile_not_found".to_string(),
             message: "user profile not found".to_string(),
-            data: None,
-        });
-    }
-
-    if config
-        .active_user_profile_id
-        .as_ref()
-        .is_some_and(|active| active == &id)
-    {
-        config.active_user_profile_id = None;
-    }
-
-    if let Err(err) = save_app_config(&state.data_root, &config) {
-        tracing::error!("{err}");
-        return Json(ApiResponse {
-            code: "config_save_failed".to_string(),
-            message: err,
             data: None,
         });
     }
@@ -461,37 +454,40 @@ pub async fn delete_user_profile(Path(id): Path<String>) -> Json<ApiResponse<ser
 pub async fn activate_user_profile(Path(id): Path<String>) -> Json<ApiResponse<serde_json::Value>> {
     let state = app_state();
 
-    let mut config = match load_app_config(&state.data_root) {
-        Ok(cfg) => cfg,
-        Err(err) => {
-            tracing::error!("{err}");
-            return Json(ApiResponse {
-                code: "config_load_failed".to_string(),
-                message: err,
-                data: None,
-            });
-        }
-    };
+    let mut found = false;
 
-    if !config
-        .profiles
-        .iter()
-        .any(|p| matches!(p.profile_type, ProfileType::User) && p.id == id)
     {
+        let mut guard = state
+            .app_config
+            .write()
+            .expect("app config rwlock poisoned");
+        let config: &mut AppConfig = &mut guard;
+
+        if !config
+            .profiles
+            .iter()
+            .any(|p| matches!(p.profile_type, ProfileType::User) && p.id == id)
+        {
+            // not found
+        } else {
+            found = true;
+            config.active_user_profile_id = Some(id.clone());
+
+            if let Err(err) = save_app_config(&state.data_root, config) {
+                tracing::error!("{err}");
+                return Json(ApiResponse {
+                    code: "config_save_failed".to_string(),
+                    message: err,
+                    data: None,
+                });
+            }
+        }
+    }
+
+    if !found {
         return Json(ApiResponse {
             code: "user_profile_not_found".to_string(),
             message: "user profile not found".to_string(),
-            data: None,
-        });
-    }
-
-    config.active_user_profile_id = Some(id);
-
-    if let Err(err) = save_app_config(&state.data_root, &config) {
-        tracing::error!("{err}");
-        return Json(ApiResponse {
-            code: "config_save_failed".to_string(),
-            message: err,
             data: None,
         });
     }
