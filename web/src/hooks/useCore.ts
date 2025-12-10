@@ -1,5 +1,10 @@
-import { useCallback, useState } from 'react'
-import type { CoreInfo, CoreStatus } from '../types'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import type {
+  AppEvent,
+  CoreInfo,
+  CoreOperationState,
+  CoreStatus,
+} from '../types'
 import { useAuth } from '../context/AuthContext'
 import { useNotifications } from '../context/NotificationContext'
 import {
@@ -11,13 +16,15 @@ import {
 } from '../api'
 
 export function useCore() {
-  const { authedFetch } = useAuth()
+  const { authedFetch, token, authReady } = useAuth()
   const { notifyError, notifySuccess } = useNotifications()
 
   const [coreInfo, setCoreInfo] = useState<CoreInfo | null>(null)
   const [coreStatus, setCoreStatus] = useState<CoreStatus | null>(null)
   const [loading, setLoading] = useState(false)
   const [actionLoading, setActionLoading] = useState(false)
+  const [operationState, setOperationState] = useState<CoreOperationState | null>(null)
+  const wsRef = useRef<WebSocket | null>(null)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -53,34 +60,89 @@ export function useCore() {
   }, [authedFetch, notifyError, notifySuccess])
 
   const start = useCallback(async () => {
-    setActionLoading(true)
     try {
       await startCore(authedFetch)
-      notifySuccess('内核已启动')
-      await refresh()
+      notifySuccess('已提交内核启动请求')
     } catch (err) {
       const msg =
         err instanceof Error ? err.message : '启动内核失败'
       notifyError(msg)
-    } finally {
-      setActionLoading(false)
     }
   }, [authedFetch, notifyError, notifySuccess, refresh])
 
   const stop = useCallback(async () => {
-    setActionLoading(true)
     try {
       await stopCore(authedFetch)
-      notifySuccess('内核已停止')
-      await refresh()
+      notifySuccess('已提交内核停止请求')
     } catch (err) {
       const msg =
         err instanceof Error ? err.message : '停止内核失败'
       notifyError(msg)
-    } finally {
-      setActionLoading(false)
     }
   }, [authedFetch, notifyError, notifySuccess, refresh])
+
+  // 通过 WebSocket 订阅后端推送的核心状态/操作事件
+  useEffect(() => {
+    if (!authReady) return
+
+    const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws'
+    const host = window.location.host
+    const tokenParam = token ? `?token=${encodeURIComponent(token)}` : ''
+    const url = `${protocol}://${host}/api/events/ws${tokenParam}`
+
+    const ws = new WebSocket(url)
+    wsRef.current = ws
+
+    ws.onmessage = (event) => {
+      try {
+        const payload = JSON.parse(event.data) as AppEvent
+        if (payload.type === 'core_status_changed') {
+          setCoreStatus({
+            running: payload.running,
+            pid: payload.pid ?? null,
+          })
+        } else if (payload.type === 'core_operation_updated') {
+          setOperationState(payload.state)
+          setActionLoading(payload.state.status === 'running')
+          if (payload.state.status === 'success') {
+            const op = payload.state.kind === 'start' ? '启动' : '停止'
+            notifySuccess(
+              payload.state.message || `内核${op}完成`,
+            )
+            // 操作成功时刷新一次信息，保证 coreInfo 同步
+            void refresh()
+          } else if (payload.state.status === 'error') {
+            const op = payload.state.kind === 'start' ? '启动' : '停止'
+            notifyError(
+              payload.state.message || `内核${op}失败`,
+            )
+            void refresh()
+          }
+        }
+      } catch (err) {
+        console.error('failed to handle ws event', err)
+      }
+    }
+
+    ws.onerror = (err) => {
+      console.error('websocket error', err)
+    }
+
+    ws.onclose = () => {
+      wsRef.current = null
+    }
+
+    return () => {
+      ws.close()
+    }
+  }, [authReady, token, notifyError, notifySuccess, refresh])
+
+  // 根据当前 operation 状态自动设置 actionLoading
+  useEffect(() => {
+    setActionLoading(
+      !!(operationState && operationState.status === 'running'),
+    )
+  }, [operationState])
 
   return {
     coreInfo,
@@ -93,4 +155,3 @@ export function useCore() {
     stop,
   }
 }
-

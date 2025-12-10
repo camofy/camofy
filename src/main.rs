@@ -16,6 +16,8 @@ mod app;
 mod auth;
 mod config_manager;
 mod core;
+mod core_async;
+mod ws;
 mod logs;
 mod subscriptions;
 mod user_profiles;
@@ -145,6 +147,34 @@ pub enum AppEvent {
         pid: Option<u32>,
         timestamp: String,
     },
+    CoreOperationUpdated {
+        state: CoreOperationState,
+    },
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CoreOperationKind {
+    Start,
+    Stop,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CoreOperationStatus {
+    Pending,
+    Running,
+    Success,
+    Error,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct CoreOperationState {
+    pub kind: CoreOperationKind,
+    pub status: CoreOperationStatus,
+    pub message: Option<String>,
+    pub started_at: String,
+    pub finished_at: Option<String>,
 }
 
 #[tokio::main]
@@ -170,6 +200,7 @@ async fn main() {
         auth_tokens: tokio::sync::Mutex::new(Vec::new()),
         app_config: std::sync::RwLock::new(app_config),
         events_tx,
+        core_operation: tokio::sync::Mutex::new(None),
     };
     if let Err(err) = app::init_data_dirs(&data_root) {
         tracing::error!(
@@ -306,8 +337,8 @@ fn build_router() -> Router {
         .route("/core", get(core::get_core_info))
         .route("/core/status", get(core::get_core_status))
         .route("/core/download", post(core::download_core))
-        .route("/core/start", post(core::start_core))
-        .route("/core/stop", post(core::stop_core))
+        .route("/core/start", post(core_async::start_core_async))
+        .route("/core/stop", post(core_async::stop_core_async))
         .route("/config/merged", get(user_profiles::get_merged_config))
         .route("/logs/app", get(logs::get_app_log))
         .route("/logs/mihomo", get(logs::get_mihomo_log))
@@ -315,7 +346,8 @@ fn build_router() -> Router {
         .route(
             "/mihomo/proxies/:group/select",
             post(mihomo::select_proxy),
-        );
+        )
+        .route("/events/ws", get(ws::events_ws));
 
     // 为 /api 路由增加认证中间件
     let api = api.layer(middleware::from_fn(auth::api_auth_middleware));
