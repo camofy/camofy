@@ -199,7 +199,12 @@ async fn main() {
 
     let state = AppState {
         data_root: data_root.clone(),
-        http_client: reqwest::ClientBuilder::new().user_agent("clash-verge/v2.4.3").build().unwrap(),
+        http_client: reqwest::ClientBuilder::new()
+            .user_agent("clash-verge/v2.4.3")
+            // 为所有 HTTP 请求设置一个上限，防止下载或远程请求无限挂起。
+            .timeout(std::time::Duration::from_secs(300))
+            .build()
+            .unwrap(),
         auth_tokens: tokio::sync::Mutex::new(Vec::new()),
         app_config: std::sync::RwLock::new(app_config),
         events_tx,
