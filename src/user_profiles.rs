@@ -783,14 +783,15 @@ fn save_merged_config(root: &PathBuf, value: &serde_yaml::Value) -> Result<(), S
     })
 }
 
-fn core_defaults_path(root: &PathBuf) -> PathBuf {
+fn defaults_path(root: &PathBuf) -> PathBuf {
     let mut path = root.clone();
     path.push("config");
-    path.push("core-defaults.yaml");
+    path.push("defaults.yaml");
     path
 }
 
-const CORE_DEFAULTS_YAML: &str = include_str!("./system.yaml");
+const DEFAULTS_YAML: &str = include_str!("./defaults.yaml");
+const SYSTEM_YAML: &str = include_str!("./system.yaml");
 
 pub fn generate_merged_config(root: &PathBuf) -> Result<(), String> {
     let config = load_app_config(root)?;
@@ -841,12 +842,21 @@ pub fn generate_merged_config(root: &PathBuf) -> Result<(), String> {
         None
     };
 
-    let mut merged = merge_yaml_configs(remote_value.as_ref(), user_value.as_ref())
-        .map_err(|err| format!("config merge failed: {err}"))?;
+    // 逐层合并顺序：
+    // 1. defaults.yaml       —— 全局默认配置（最低优先级，可由远程/用户配置覆盖）
+    // 2. 远程订阅配置        —— 当前活跃订阅
+    // 3. 用户配置            —— 当前活跃用户 profile
+    // 4. system.yaml         —— 系统级配置（最高优先级，用于强制覆盖关键字段）
+    //
+    // merge_yaml_configs(remote, user) 的语义是：
+    // - remote 为“基础配置”
+    // - user   为“用户配置”，在标量/对象上覆盖 remote，在列表上按规则处理
+    //
+    // 因此最终合并顺序为：
+    // defaults -> remote -> user -> system
 
-    // 将 core-defaults.yaml 作为“基础配置” include 进来，再走一遍通用合并逻辑：
-    // defaults 作为 remote，profiles merge 结果作为 user，保证用户/订阅可覆盖默认值。
-    let defaults_path = core_defaults_path(root);
+    // 1. 加载 defaults.yaml（若不存在则写入内置模板）
+    let defaults_path = defaults_path(root);
     let defaults_value_opt = {
         use std::fs;
         use std::io::Write;
@@ -855,16 +865,16 @@ pub fn generate_merged_config(root: &PathBuf) -> Result<(), String> {
             if let Some(parent) = defaults_path.parent() {
                 if let Err(err) = fs::create_dir_all(parent) {
                     tracing::error!(
-                        "failed to create core-defaults dir {}: {err}",
+                        "failed to create defaults dir {}: {err}",
                         parent.display()
                     );
                 }
             }
             if let Err(err) = fs::File::create(&defaults_path)
-                .and_then(|mut f| f.write_all(CORE_DEFAULTS_YAML.as_bytes()))
+                .and_then(|mut f| f.write_all(DEFAULTS_YAML.as_bytes()))
             {
                 tracing::error!(
-                    "failed to write default core-defaults.yaml at {}: {err}",
+                    "failed to write default defaults.yaml at {}: {err}",
                     defaults_path.display()
                 );
                 None
@@ -872,7 +882,7 @@ pub fn generate_merged_config(root: &PathBuf) -> Result<(), String> {
                 match load_yaml_file(&defaults_path) {
                     Ok(v) => Some(v),
                     Err(err) => {
-                        tracing::error!("failed to parse default core-defaults.yaml: {err}");
+                        tracing::error!("failed to parse default defaults.yaml: {err}");
                         None
                     }
                 }
@@ -881,17 +891,30 @@ pub fn generate_merged_config(root: &PathBuf) -> Result<(), String> {
             match load_yaml_file(&defaults_path) {
                 Ok(v) => Some(v),
                 Err(err) => {
-                    tracing::error!("failed to load core-defaults.yaml: {err}");
+                    tracing::error!("failed to load defaults.yaml: {err}");
                     None
                 }
             }
         }
     };
 
-    if let Some(defaults_value) = defaults_value_opt.as_ref() {
-        merged = merge_yaml_configs(Some(&merged), Some(defaults_value))
-            .map_err(|err| format!("config merge failed: {err}"))?;
-    }
+    let defaults_value = defaults_value_opt.unwrap_or(serde_yaml::Value::Null);
+
+    // 2. 解析系统级配置 system.yaml（最高优先级，内嵌于二进制）
+    let system_value: serde_yaml::Value = serde_yaml::from_str(SYSTEM_YAML)
+        .map_err(|err| format!("failed to parse embedded system.yaml: {err}"))?;
+
+    // 3. defaults -> remote
+    let mut merged = merge_yaml_configs(Some(&defaults_value), remote_value.as_ref())
+        .map_err(|err| format!("config merge failed: {err}"))?;
+
+    // 4. (defaults+remote) -> user
+    merged = merge_yaml_configs(Some(&merged), user_value.as_ref())
+        .map_err(|err| format!("config merge failed: {err}"))?;
+
+    // 5. (defaults+remote+user) -> system（system 为最高优先级）
+    merged = merge_yaml_configs(Some(&merged), Some(&system_value))
+        .map_err(|err| format!("config merge failed: {err}"))?;
 
     save_merged_config(root, &merged)
 }
@@ -975,7 +998,7 @@ mod tests {
     }
 
     #[test]
-    fn user_profile_overrides_core_defaults() {
+    fn user_profile_overrides_defaults_for_custom_fields() {
         let root = temp_root("core-overrides");
 
         let profile_id = "user1".to_string();
@@ -1002,7 +1025,11 @@ mod tests {
 
         let mut profile_path = profile_dir;
         profile_path.push("user1.yaml");
-        fs::write(&profile_path, "mixed-port: 8888\nmode: global\n").expect("write user profile");
+        fs::write(
+            &profile_path,
+            "mixed-port: 8888\nmode: global\ncustom-key: 42\n",
+        )
+        .expect("write user profile");
 
         generate_merged_config(&root).expect("generate_merged_config failed");
 
@@ -1012,7 +1039,11 @@ mod tests {
         let value: serde_yaml::Value =
             serde_yaml::from_str(&merged_content).expect("parse merged.yaml after override");
 
-        assert_eq!(value.get("mixed-port").and_then(|v| v.as_i64()), Some(8888));
-        assert_eq!(value.get("mode").and_then(|v| v.as_str()), Some("global"));
+        // system.yaml 中定义的字段应保持系统值（用户无法覆盖）
+        assert_eq!(value.get("mixed-port").and_then(|v| v.as_i64()), Some(7897));
+        assert_eq!(value.get("mode").and_then(|v| v.as_str()), Some("rule"));
+
+        // 用户新增的自定义字段应当被保留
+        assert_eq!(value.get("custom-key").and_then(|v| v.as_i64()), Some(42));
     }
 }
