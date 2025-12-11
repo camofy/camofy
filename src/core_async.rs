@@ -18,7 +18,9 @@ pub async fn start_core_async() -> Json<ApiResponse<serde_json::Value>> {
             .lock()
             .await;
         if let Some(state) = guard.as_ref() {
-            if matches!(state.status, CoreOperationStatus::Running) {
+            if matches!(state.status, CoreOperationStatus::Running)
+                && matches!(state.kind, CoreOperationKind::Start | CoreOperationKind::Stop)
+            {
                 return Json(ApiResponse {
                     code: "core_operation_in_progress".to_string(),
                     message: "another core operation is in progress".to_string(),
@@ -39,6 +41,7 @@ pub async fn start_core_async() -> Json<ApiResponse<serde_json::Value>> {
             kind: CoreOperationKind::Start,
             status: CoreOperationStatus::Running,
             message: Some("starting core".to_string()),
+            progress: None,
             started_at: started_at.clone(),
             finished_at: None,
         };
@@ -76,7 +79,9 @@ pub async fn stop_core_async() -> Json<ApiResponse<serde_json::Value>> {
             .lock()
             .await;
         if let Some(state) = guard.as_ref() {
-            if matches!(state.status, CoreOperationStatus::Running) {
+            if matches!(state.status, CoreOperationStatus::Running)
+                && matches!(state.kind, CoreOperationKind::Start | CoreOperationKind::Stop)
+            {
                 return Json(ApiResponse {
                     code: "core_operation_in_progress".to_string(),
                     message: "another core operation is in progress".to_string(),
@@ -96,6 +101,7 @@ pub async fn stop_core_async() -> Json<ApiResponse<serde_json::Value>> {
             kind: CoreOperationKind::Stop,
             status: CoreOperationStatus::Running,
             message: Some("stopping core".to_string()),
+            progress: None,
             started_at: started_at.clone(),
             finished_at: None,
         };
@@ -121,4 +127,3 @@ pub async fn stop_core_async() -> Json<ApiResponse<serde_json::Value>> {
         data: Some(serde_json::json!({ "operation": "stop" })),
     })
 }
-
