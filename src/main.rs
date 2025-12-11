@@ -219,8 +219,12 @@ async fn main() {
     // 启动后台定时任务调度器（订阅自动更新、GeoIP 数据库自动更新等）
     scheduler::start_scheduler();
 
-    // 根据上次记忆的状态自动启动内核（如果需要）
-    core::auto_start_core_if_configured().await;
+    // 根据上次记忆的状态自动启动内核（如果需要）。
+    // 放到后台任务中执行，内部会在尝试启动前等待网络连通性恢复，
+    // 避免在路由器刚开机、网络尚未就绪时阻塞 Web 服务启动。
+    tokio::spawn(async {
+        core::auto_start_core_if_configured().await;
+    });
 
     let app = build_router();
 
