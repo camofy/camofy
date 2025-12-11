@@ -366,6 +366,7 @@ async fn update_core_operation_state(
     kind: CoreOperationKind,
     status: CoreOperationStatus,
     message: Option<String>,
+    progress: Option<f32>,
     finished: bool,
 ) {
     let app = app_state();
@@ -378,6 +379,9 @@ async fn update_core_operation_state(
             let mut updated = existing;
             updated.status = status.clone();
             updated.message = message.clone();
+            if let Some(p) = progress {
+                updated.progress = Some(p);
+            }
             if finished {
                 updated.finished_at = Some(now.clone());
             }
@@ -387,6 +391,7 @@ async fn update_core_operation_state(
             kind: kind.clone(),
             status: status.clone(),
             message: message.clone(),
+            progress,
             started_at: now.clone(),
             finished_at: if finished { Some(now.clone()) } else { None },
         },
@@ -610,6 +615,16 @@ pub async fn download_core(Json(body): Json<CoreDownloadRequest>) -> Json<ApiRes
 
     tracing::info!("downloading core from {download_url}");
 
+    // 记录一次“下载/更新内核”操作的开始状态，便于通过 WebSocket 实时展示进度。
+    update_core_operation_state(
+        CoreOperationKind::Download,
+        CoreOperationStatus::Running,
+        Some("downloading core".to_string()),
+        Some(0.0),
+        false,
+    )
+    .await;
+
     let tmp_dir = {
         let mut path = state.data_root.clone();
         path.push("tmp");
@@ -618,6 +633,14 @@ pub async fn download_core(Json(body): Json<CoreDownloadRequest>) -> Json<ApiRes
     if let Err(err) = std::fs::create_dir_all(&tmp_dir) {
         let msg = format!("failed to create tmp dir {}: {err}", tmp_dir.display());
         tracing::error!("{msg}");
+        update_core_operation_state(
+            CoreOperationKind::Download,
+            CoreOperationStatus::Error,
+            Some(msg.clone()),
+            None,
+            true,
+        )
+        .await;
         return Json(ApiResponse {
             code: "core_download_failed".to_string(),
             message: msg,
@@ -632,6 +655,14 @@ pub async fn download_core(Json(body): Json<CoreDownloadRequest>) -> Json<ApiRes
         Err(err) => {
             let msg = format!("failed to send core download request: {err}");
             tracing::error!("{msg}");
+            update_core_operation_state(
+                CoreOperationKind::Download,
+                CoreOperationStatus::Error,
+                Some(msg.clone()),
+                None,
+                true,
+            )
+            .await;
             return Json(ApiResponse {
                 code: "core_download_failed".to_string(),
                 message: msg,
@@ -645,6 +676,14 @@ pub async fn download_core(Json(body): Json<CoreDownloadRequest>) -> Json<ApiRes
         Err(err) => {
             let msg = format!("core download responded with error: {err}");
             tracing::error!("{msg}");
+            update_core_operation_state(
+                CoreOperationKind::Download,
+                CoreOperationStatus::Error,
+                Some(msg.clone()),
+                None,
+                true,
+            )
+            .await;
             return Json(ApiResponse {
                 code: "core_download_failed".to_string(),
                 message: msg,
@@ -653,18 +692,60 @@ pub async fn download_core(Json(body): Json<CoreDownloadRequest>) -> Json<ApiRes
         }
     };
 
-    let bytes = match resp.bytes().await {
-        Ok(b) => b,
-        Err(err) => {
-            let msg = format!("failed to read core download body: {err}");
-            tracing::error!("{msg}");
-            return Json(ApiResponse {
-                code: "core_download_failed".to_string(),
-                message: msg,
-                data: None,
-            });
+    // 流式读取响应体，以便按字节数更新下载进度。
+    let total_len = resp.content_length();
+    let mut downloaded: u64 = 0;
+    let mut bytes = Vec::new();
+
+    let mut resp = resp;
+    while let Some(chunk_result) = resp.chunk().await.transpose() {
+        match chunk_result {
+            Ok(chunk) => {
+                downloaded = downloaded.saturating_add(chunk.len() as u64);
+                bytes.extend_from_slice(&chunk);
+
+                if let Some(total) = total_len {
+                    if total > 0 {
+                        let mut progress = downloaded as f32 / total as f32;
+                        if !progress.is_finite() {
+                            progress = 0.0;
+                        }
+                        if progress > 1.0 {
+                            progress = 1.0;
+                        } else if progress < 0.0 {
+                            progress = 0.0;
+                        }
+                        // 更新下载进度，但不修改 finished_at。
+                        update_core_operation_state(
+                            CoreOperationKind::Download,
+                            CoreOperationStatus::Running,
+                            None,
+                            Some(progress),
+                            false,
+                        )
+                        .await;
+                    }
+                }
+            }
+            Err(err) => {
+                let msg = format!("failed to read core download body: {err}");
+                tracing::error!("{msg}");
+                update_core_operation_state(
+                    CoreOperationKind::Download,
+                    CoreOperationStatus::Error,
+                    Some(msg.clone()),
+                    None,
+                    true,
+                )
+                .await;
+                return Json(ApiResponse {
+                    code: "core_download_failed".to_string(),
+                    message: msg,
+                    data: None,
+                });
+            }
         }
-    };
+    }
 
     // 解压或直接使用下载内容，取决于文件名后缀
     let core_bytes = match extract_core_binary(&bytes, &asset_name) {
@@ -675,6 +756,14 @@ pub async fn download_core(Json(body): Json<CoreDownloadRequest>) -> Json<ApiRes
                 asset_name.as_str()
             );
             tracing::error!("{msg}");
+            update_core_operation_state(
+                CoreOperationKind::Download,
+                CoreOperationStatus::Error,
+                Some(msg.clone()),
+                None,
+                true,
+            )
+            .await;
             return Json(ApiResponse {
                 code: "core_extract_failed".to_string(),
                 message: msg,
@@ -689,6 +778,14 @@ pub async fn download_core(Json(body): Json<CoreDownloadRequest>) -> Json<ApiRes
             tmp_path.display()
         );
         tracing::error!("{msg}");
+        update_core_operation_state(
+            CoreOperationKind::Download,
+            CoreOperationStatus::Error,
+            Some(msg.clone()),
+            None,
+            true,
+        )
+        .await;
         return Json(ApiResponse {
             code: "core_install_failed".to_string(),
             message: msg,
@@ -701,6 +798,14 @@ pub async fn download_core(Json(body): Json<CoreDownloadRequest>) -> Json<ApiRes
         if let Err(err) = std::fs::create_dir_all(parent) {
             let msg = format!("failed to create core dir {}: {err}", parent.display());
             tracing::error!("{msg}");
+            update_core_operation_state(
+                CoreOperationKind::Download,
+                CoreOperationStatus::Error,
+                Some(msg.clone()),
+                None,
+                true,
+            )
+            .await;
             return Json(ApiResponse {
                 code: "core_install_failed".to_string(),
                 message: msg,
@@ -712,6 +817,14 @@ pub async fn download_core(Json(body): Json<CoreDownloadRequest>) -> Json<ApiRes
     if let Err(err) = std::fs::rename(&tmp_path, &core_path) {
         let msg = format!("failed to move core file to {}: {err}", core_path.display());
         tracing::error!("{msg}");
+        update_core_operation_state(
+            CoreOperationKind::Download,
+            CoreOperationStatus::Error,
+            Some(msg.clone()),
+            None,
+            true,
+        )
+        .await;
         return Json(ApiResponse {
             code: "core_install_failed".to_string(),
             message: msg,
@@ -741,6 +854,14 @@ pub async fn download_core(Json(body): Json<CoreDownloadRequest>) -> Json<ApiRes
 
     if let Err(err) = save_core_meta(&state.data_root, &meta) {
         tracing::error!("{err}");
+        update_core_operation_state(
+            CoreOperationKind::Download,
+            CoreOperationStatus::Error,
+            Some(err.clone()),
+            None,
+            true,
+        )
+        .await;
         return Json(ApiResponse {
             code: "core_meta_save_failed".to_string(),
             message: err,
@@ -749,6 +870,15 @@ pub async fn download_core(Json(body): Json<CoreDownloadRequest>) -> Json<ApiRes
     }
 
     tracing::info!("core downloaded and installed at {}", core_path.display());
+
+    update_core_operation_state(
+        CoreOperationKind::Download,
+        CoreOperationStatus::Success,
+        Some("core downloaded and installed".to_string()),
+        Some(1.0),
+        true,
+    )
+    .await;
 
     let info = CoreInfo {
         version: meta.version.clone(),
@@ -776,6 +906,7 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
         CoreOperationKind::Start,
         CoreOperationStatus::Running,
         Some("starting core".to_string()),
+        None,
         false,
     )
     .await;
@@ -800,6 +931,7 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
             CoreOperationKind::Start,
             CoreOperationStatus::Error,
             Some("core binary not found".to_string()),
+            None,
             true,
         )
         .await;
@@ -817,6 +949,7 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
                 CoreOperationKind::Start,
                 CoreOperationStatus::Error,
                 Some(format!("core is already running with pid {}", pid)),
+                None,
                 true,
             )
             .await;
@@ -838,6 +971,7 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
             CoreOperationKind::Start,
             CoreOperationStatus::Error,
             Some(format!("failed to generate merged config: {err}")),
+            None,
             true,
         )
         .await;
@@ -858,6 +992,7 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
             CoreOperationKind::Start,
             CoreOperationStatus::Error,
             Some(msg.clone()),
+            None,
             true,
         )
         .await;
@@ -911,6 +1046,7 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
                 CoreOperationKind::Start,
                 CoreOperationStatus::Error,
                 Some(msg.clone()),
+                None,
                 true,
             )
             .await;
@@ -938,6 +1074,7 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
                 CoreOperationKind::Start,
                 CoreOperationStatus::Error,
                 Some(msg.clone()),
+                None,
                 true,
             )
             .await;
@@ -970,6 +1107,7 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
                 CoreOperationKind::Start,
                 CoreOperationStatus::Error,
                 Some(msg.clone()),
+                None,
                 true,
             )
             .await;
@@ -998,6 +1136,7 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
         CoreOperationKind::Start,
         CoreOperationStatus::Success,
         Some(format!("core started with pid {pid}")),
+        None,
         true,
     )
     .await;
@@ -1028,6 +1167,7 @@ pub async fn stop_core() -> Json<ApiResponse<serde_json::Value>> {
                 CoreOperationKind::Stop,
                 CoreOperationStatus::Success,
                 Some("core stopped via IPC".to_string()),
+                None,
                 true,
             )
             .await;
@@ -1050,6 +1190,7 @@ pub async fn stop_core() -> Json<ApiResponse<serde_json::Value>> {
                 CoreOperationKind::Stop,
                 CoreOperationStatus::Error,
                 Some("core is not running".to_string()),
+                None,
                 true,
             )
             .await;
@@ -1081,6 +1222,7 @@ pub async fn stop_core() -> Json<ApiResponse<serde_json::Value>> {
                     CoreOperationKind::Stop,
                     CoreOperationStatus::Success,
                     Some("core stopped via signal".to_string()),
+                    None,
                     true,
                 )
                 .await;
@@ -1097,6 +1239,7 @@ pub async fn stop_core() -> Json<ApiResponse<serde_json::Value>> {
                     CoreOperationKind::Stop,
                     CoreOperationStatus::Error,
                     Some(msg.clone()),
+                    None,
                     true,
                 )
                 .await;
@@ -1113,6 +1256,7 @@ pub async fn stop_core() -> Json<ApiResponse<serde_json::Value>> {
                     CoreOperationKind::Stop,
                     CoreOperationStatus::Error,
                     Some(msg.clone()),
+                    None,
                     true,
                 )
                 .await;

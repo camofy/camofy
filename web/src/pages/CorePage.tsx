@@ -8,6 +8,7 @@ function CorePage() {
     coreStatus,
     loading,
     actionLoading,
+    operationState,
     refresh,
     download,
     start,
@@ -24,6 +25,7 @@ function CorePage() {
       coreStatus={coreStatus}
       coreLoading={loading}
       coreActionLoading={actionLoading}
+      coreOperation={operationState}
       onRefresh={() => {
         void refresh()
       }}
@@ -41,4 +43,3 @@ function CorePage() {
 }
 
 export default CorePage
-

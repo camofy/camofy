@@ -30,7 +30,7 @@ export type CoreStatus = {
   pid?: number | null
 }
 
-export type CoreOperationKind = 'start' | 'stop'
+export type CoreOperationKind = 'start' | 'stop' | 'download'
 
 export type CoreOperationStatus = 'pending' | 'running' | 'success' | 'error'
 
@@ -38,6 +38,7 @@ export type CoreOperationState = {
   kind: CoreOperationKind
   status: CoreOperationStatus
   message?: string | null
+  progress?: number | null
   started_at: string
   finished_at?: string | null
 }
