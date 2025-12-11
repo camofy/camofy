@@ -21,18 +21,16 @@ sniffer:
     TLS:
       ports:
       - 1-65535
-      override-destination: true
     HTTP:
       ports:
       - 1-65535
-      override-destination: true
     QUIC:
       ports: [443, 8443]
   enable: true
   skip-domain:
   - Mijia Cloud
   - dlg.io.mi.com
-  parse-pure-ip: false
+  parse-pure-ip: true
   force-dns-mapping: true
   override-destination: true
 dns:
