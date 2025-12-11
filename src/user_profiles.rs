@@ -790,7 +790,7 @@ fn core_defaults_path(root: &PathBuf) -> PathBuf {
     path
 }
 
-const CORE_DEFAULTS_YAML: &str = include_str!("./clash.yaml");
+const CORE_DEFAULTS_YAML: &str = include_str!("./system.yaml");
 
 pub fn generate_merged_config(root: &PathBuf) -> Result<(), String> {
     let config = load_app_config(root)?;
