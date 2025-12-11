@@ -47,9 +47,9 @@ dns:
   - 8.8.4.4
   - 8.8.8.8
   nameserver:
-  - https://durable0762.com:44443/dns-query
-  - https://delirium9599.com:44443/dns-query
-  - https://cf-cdn.delirium9599.com:443/dns-query
+  - https://dns.cloudflare.com/dns-query
+  - https://1.0.0.1/dns-query
+  - https://1.1.1.1/dns-query
   enhanced-mode: fake-ip
   fake-ip-range: 198.18.0.1/15
   fake-ip-filter:
