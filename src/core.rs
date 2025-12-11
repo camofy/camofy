@@ -1182,7 +1182,15 @@ pub(crate) async fn auto_start_core_if_configured() {
         return;
     }
 
-    tracing::info!("auto-starting core because last state was running");
+    // 在系统自启动场景下，为了避免网络尚未就绪导致内核工作异常，
+    // 先等待网络连通性基本恢复后再尝试启动 Mihomo。
+    if let Err(err) = wait_for_network_ready_before_auto_start().await {
+        tracing::warn!(
+            "network did not become ready in time before core auto-start: {err}; proceeding anyway"
+        );
+    }
+
+    tracing::info!("auto-starting core because last state was running (after network ready)");
 
     let Json(resp) = start_core().await;
     if resp.code != "ok" {
@@ -1193,5 +1201,71 @@ pub(crate) async fn auto_start_core_if_configured() {
         );
     } else {
         tracing::info!("core auto-started successfully on camofy launch");
+    }
+}
+
+/// 在自动启动 Mihomo 内核前等待网络“基本就绪”。
+///
+/// 通过对外部镜像源发起一次简单 HTTP 请求来探测网络连通性：
+/// - 请求能成功建立连接并返回任意 HTTP 状态码，即视为网络已就绪；
+/// - 若在给定时间内始终无法连通，则返回 Err，但由调用方决定是否继续启动。
+async fn wait_for_network_ready_before_auto_start() -> Result<(), String> {
+    use tokio::time::{sleep, timeout, Duration, Instant};
+
+    const PROBE_URL: &str = "https://qq.com/";
+    const SINGLE_PROBE_TIMEOUT_SECS: u64 = 5;
+    const RETRY_INTERVAL_SECS: u64 = 5;
+    const MAX_WAIT_SECS: u64 = 300;
+
+    let client = app_state().http_client.clone();
+
+    let max_wait = Duration::from_secs(MAX_WAIT_SECS);
+    let probe_timeout = Duration::from_secs(SINGLE_PROBE_TIMEOUT_SECS);
+    let retry_interval = Duration::from_secs(RETRY_INTERVAL_SECS);
+
+    tracing::info!(
+        "core_auto_start enabled, waiting for network connectivity before starting core (up to {} seconds)",
+        MAX_WAIT_SECS
+    );
+
+    let start = Instant::now();
+
+    loop {
+        // 若已超过最大等待时间，则结束等待。
+        if start.elapsed() >= max_wait {
+            return Err(format!(
+                "network probe to {} did not succeed within {} seconds",
+                PROBE_URL, MAX_WAIT_SECS
+            ));
+        }
+
+        let fut = client.get(PROBE_URL).send();
+        match timeout(probe_timeout, fut).await {
+            Ok(Ok(_resp)) => {
+                tracing::info!(
+                    "network connectivity probe to {} succeeded, proceeding with core auto-start",
+                    PROBE_URL
+                );
+                return Ok(());
+            }
+            Ok(Err(err)) => {
+                tracing::warn!(
+                    "network probe to {} failed: {}; will retry in {} seconds",
+                    PROBE_URL,
+                    err,
+                    RETRY_INTERVAL_SECS
+                );
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "network probe to {} timed out after {} seconds; will retry in {} seconds",
+                    PROBE_URL,
+                    SINGLE_PROBE_TIMEOUT_SECS,
+                    RETRY_INTERVAL_SECS
+                );
+            }
+        }
+
+        sleep(retry_interval).await;
     }
 }
