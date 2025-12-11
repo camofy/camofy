@@ -243,6 +243,27 @@ pub(crate) fn is_process_running(pid: u32) -> bool {
 }
 
 #[cfg(target_family = "unix")]
+fn ensure_tun_module_loaded() {
+    use std::process::Command;
+
+    match Command::new("modprobe").arg("tun").status() {
+        Ok(status) if status.success() => {
+            tracing::info!("modprobe tun succeeded before core start");
+        }
+        Ok(status) => {
+            tracing::warn!("modprobe tun exited with status {status} before core start");
+        }
+        Err(err) => {
+            tracing::warn!("failed to execute modprobe tun before core start: {err}");
+        }
+    }
+}
+
+#[cfg(not(target_family = "unix"))]
+fn ensure_tun_module_loaded() {
+}
+
+#[cfg(target_family = "unix")]
 fn apply_dns_redirect_rule() {
     use std::process::Command;
 
@@ -927,6 +948,9 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
             });
         }
     };
+
+    // 在真正启动 Mihomo 内核前，尝试加载 tun 内核模块，保证 TUN 模式可用（失败仅记录日志，不中断启动）。
+    ensure_tun_module_loaded();
 
     let child = match TokioCommand::new(&core_path)
         .arg("-d")
