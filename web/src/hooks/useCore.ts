@@ -81,7 +81,7 @@ export function useCore() {
     }
   }, [authedFetch, notifyError, notifySuccess, refresh])
 
-  // 通过 WebSocket 订阅后端推送的核心状态/操作事件
+  // 通过 WebSocket 订阅后端推送的核心状态/操作事件（包括下载进度）
   useEffect(() => {
     if (!authReady) return
 
@@ -103,16 +103,31 @@ export function useCore() {
           })
         } else if (payload.type === 'core_operation_updated') {
           setOperationState(payload.state)
-          setActionLoading(payload.state.status === 'running')
+          const isCoreAction =
+            payload.state.kind === 'start' ||
+            payload.state.kind === 'stop'
+          setActionLoading(
+            isCoreAction && payload.state.status === 'running',
+          )
           if (payload.state.status === 'success') {
-            const op = payload.state.kind === 'start' ? '启动' : '停止'
+            const op =
+              payload.state.kind === 'start'
+                ? '启动'
+                : payload.state.kind === 'stop'
+                  ? '停止'
+                  : '下载 / 更新'
             notifySuccess(
               payload.state.message || `内核${op}完成`,
             )
             // 操作成功时刷新一次信息，保证 coreInfo 同步
             void refresh()
           } else if (payload.state.status === 'error') {
-            const op = payload.state.kind === 'start' ? '启动' : '停止'
+            const op =
+              payload.state.kind === 'start'
+                ? '启动'
+                : payload.state.kind === 'stop'
+                  ? '停止'
+                  : '下载 / 更新'
             notifyError(
               payload.state.message || `内核${op}失败`,
             )
@@ -139,8 +154,11 @@ export function useCore() {
 
   // 根据当前 operation 状态自动设置 actionLoading
   useEffect(() => {
+    const isCoreAction =
+      operationState &&
+      (operationState.kind === 'start' || operationState.kind === 'stop')
     setActionLoading(
-      !!(operationState && operationState.status === 'running'),
+      !!(isCoreAction && operationState?.status === 'running'),
     )
   }, [operationState])
 
@@ -149,6 +167,7 @@ export function useCore() {
     coreStatus,
     loading,
     actionLoading,
+    operationState,
     refresh,
     download,
     start,

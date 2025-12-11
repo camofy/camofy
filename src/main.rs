@@ -157,6 +157,7 @@ pub enum AppEvent {
 pub enum CoreOperationKind {
     Start,
     Stop,
+    Download,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -173,6 +174,8 @@ pub struct CoreOperationState {
     pub kind: CoreOperationKind,
     pub status: CoreOperationStatus,
     pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<f32>,
     pub started_at: String,
     pub finished_at: Option<String>,
 }

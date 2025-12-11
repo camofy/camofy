@@ -1,10 +1,11 @@
-import type { CoreInfo, CoreStatus } from '../types'
+import type { CoreInfo, CoreOperationState, CoreStatus } from '../types'
 
 type CoreSectionProps = {
   coreInfo: CoreInfo | null
   coreStatus: CoreStatus | null
   coreLoading: boolean
   coreActionLoading: boolean
+  coreOperation: CoreOperationState | null
   onRefresh: () => void
   onDownload: () => void
   onStart: () => void
@@ -16,11 +17,16 @@ function CoreSection({
   coreStatus,
   coreLoading,
   coreActionLoading,
+  coreOperation,
   onRefresh,
   onDownload,
   onStart,
   onStop,
 }: CoreSectionProps) {
+  const downloadRunning =
+    coreOperation?.kind === 'download' &&
+    coreOperation.status === 'running'
+
   return (
     <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-4">
       <div className="flex items-center justify-between gap-2">
@@ -77,7 +83,7 @@ function CoreSection({
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
-            disabled={coreActionLoading}
+            disabled={coreActionLoading || downloadRunning}
             onClick={onDownload}
             className="rounded bg-sky-600 px-3 py-1.5 text-[11px] font-medium text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-60"
           >
@@ -100,10 +106,34 @@ function CoreSection({
             停止内核
           </button>
         </div>
+        {coreOperation &&
+          coreOperation.kind === 'download' &&
+          coreOperation.status === 'running' && (
+            <div className="mt-2 space-y-1">
+              <p className="text-[11px] text-slate-400">
+                正在下载 / 更新内核…
+                {typeof coreOperation.progress === 'number'
+                  ? ` (${Math.round(coreOperation.progress * 100)}%)`
+                  : null}
+              </p>
+              {typeof coreOperation.progress === 'number' && (
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+                  <div
+                    className="h-full bg-sky-500 transition-[width]"
+                    style={{
+                      width: `${Math.max(
+                        0,
+                        Math.min(100, coreOperation.progress * 100),
+                      )}%`,
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+          )}
       </div>
     </div>
   )
 }
 
 export default CoreSection
-
