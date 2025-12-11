@@ -5,9 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::app::{app_state, current_timestamp};
-use crate::{
-    ApiResponse, AppConfig, ConfigChangeReason, ProfileMeta, ProfileType, config_manager,
-};
+use crate::{ApiResponse, AppConfig, ConfigChangeReason, ProfileMeta, ProfileType, config_manager};
 use crate::{load_app_config, save_app_config};
 
 #[derive(Serialize)]
@@ -87,10 +85,7 @@ pub async fn get_user_profile(Path(id): Path<String>) -> Json<ApiResponse<UserPr
 
     // 从全局配置中获取 profile 元数据和活跃状态
     let (profile_meta, active_id) = {
-        let guard = state
-            .app_config
-            .read()
-            .expect("app config rwlock poisoned");
+        let guard = state.app_config.read().expect("app config rwlock poisoned");
         let config: &AppConfig = &guard;
 
         let Some(profile) = config
@@ -108,7 +103,7 @@ pub async fn get_user_profile(Path(id): Path<String>) -> Json<ApiResponse<UserPr
         (profile.clone(), config.active_user_profile_id.clone())
     };
 
-   let path = profile_file_path(&state.data_root, &profile_meta);
+    let path = profile_file_path(&state.data_root, &profile_meta);
     let content = match fs::read_to_string(&path) {
         Ok(c) => c,
         Err(err) => {
@@ -142,10 +137,7 @@ pub async fn get_user_profile(Path(id): Path<String>) -> Json<ApiResponse<UserPr
 pub async fn list_user_profiles() -> Json<ApiResponse<UserProfileListResponse>> {
     let state = app_state();
 
-    let guard = state
-        .app_config
-        .read()
-        .expect("app config rwlock poisoned");
+    let guard = state.app_config.read().expect("app config rwlock poisoned");
     let config: &AppConfig = &guard;
 
     let user_profiles = config
@@ -275,10 +267,8 @@ pub async fn create_user_profile(
                 "failed to generate merged config after creating active user profile: {err}"
             );
         } else {
-            let _ = config_manager::reload_core_if_running(
-                ConfigChangeReason::UserProfileUpdated,
-            )
-            .await;
+            let _ = config_manager::reload_core_if_running(ConfigChangeReason::UserProfileUpdated)
+                .await;
         }
     }
 
@@ -400,10 +390,8 @@ pub async fn update_user_profile(
             });
         }
 
-        let _ = config_manager::reload_core_if_running(
-            ConfigChangeReason::UserProfileUpdated,
-        )
-        .await;
+        let _ =
+            config_manager::reload_core_if_running(ConfigChangeReason::UserProfileUpdated).await;
     }
 
     Json(ApiResponse {
@@ -483,10 +471,8 @@ pub async fn delete_user_profile(Path(id): Path<String>) -> Json<ApiResponse<ser
                 "failed to generate merged config after deleting active user profile: {err}"
             );
         } else {
-            let _ = config_manager::reload_core_if_running(
-                ConfigChangeReason::UserProfileDeleted,
-            )
-            .await;
+            let _ = config_manager::reload_core_if_running(ConfigChangeReason::UserProfileDeleted)
+                .await;
         }
     }
 
@@ -548,10 +534,8 @@ pub async fn activate_user_profile(Path(id): Path<String>) -> Json<ApiResponse<s
         });
     }
 
-    let _ = config_manager::reload_core_if_running(
-        ConfigChangeReason::ActiveUserProfileChanged,
-    )
-    .await;
+    let _ =
+        config_manager::reload_core_if_running(ConfigChangeReason::ActiveUserProfileChanged).await;
 
     Json(ApiResponse {
         code: "ok".to_string(),
@@ -806,67 +790,7 @@ fn core_defaults_path(root: &PathBuf) -> PathBuf {
     path
 }
 
-const CORE_DEFAULTS_YAML: &str = r#" # Core defaults for camofy (router)
-mode: rule
-mixed-port: 7897
-allow-lan: false
-log-level: warning
-ipv6: true
-external-controller: ''
-external-controller-unix: /tmp/verge/clash-verge-service.sock
-tun:
-  enable: true
-  stack: gvisor
-  auto-route: true
-  strict-route: false
-  auto-detect-interface: true
-  dns-hijack:
-    - any:53
-profile:
-  store-selected: true
-sniffer:
-  sniff:
-    TLS:
-      ports:
-      - 1-65535
-      override-destination: true
-    HTTP:
-      ports:
-      - 1-65535
-      override-destination: true
-  enable: true
-  skip-domain:
-  - Mijia Cloud
-  - dlg.io.mi.com
-  parse-pure-ip: false
-  force-dns-mapping: true
-  override-destination: true
-dns:
-  ipv6: true
-  enable: true
-  listen: 0.0.0.0:1053
-  use-hosts: false
-  default-nameserver:
-  - 119.29.29.29
-  - 223.5.5.5
-  - 223.6.6.6
-  - 8.8.4.4
-  - 8.8.8.8
-  nameserver:
-  - https://durable0762.com:44443/dns-query
-  - https://delirium9599.com:44443/dns-query
-  - https://cf-cdn.delirium9599.com:443/dns-query
-  fake-ip-range: 198.18.0.1/15
-  fake-ip-filter:
-  - '*.lan'
-  - '*.localdomain'
-  - '*.example'
-  - '*.invalid'
-  - '*.localhost'
-  - '*.test'
-  - '*.local'
-  - '*.home.arpa'
-"#;
+const CORE_DEFAULTS_YAML: &str = include_str!("./clash.yaml");
 
 pub fn generate_merged_config(root: &PathBuf) -> Result<(), String> {
     let config = load_app_config(root)?;

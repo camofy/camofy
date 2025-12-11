@@ -1,0 +1,62 @@
+# Core defaults for camofy (router)
+mode: rule
+mixed-port: 7897
+allow-lan: false
+log-level: warning
+ipv6: true
+external-controller: ''
+external-controller-unix: /tmp/verge/clash-verge-service.sock
+tun:
+  enable: true
+  stack: gvisor
+  auto-route: true
+  strict-route: false
+  auto-detect-interface: true
+  dns-hijack:
+    - any:53
+profile:
+  store-selected: true
+sniffer:
+  sniff:
+    TLS:
+      ports:
+      - 1-65535
+      override-destination: true
+    HTTP:
+      ports:
+      - 1-65535
+      override-destination: true
+    QUIC:
+      ports: [443, 8443]
+  enable: true
+  skip-domain:
+  - Mijia Cloud
+  - dlg.io.mi.com
+  parse-pure-ip: false
+  force-dns-mapping: true
+  override-destination: true
+dns:
+  ipv6: true
+  enable: true
+  listen: 0.0.0.0:1053
+  use-hosts: false
+  default-nameserver:
+  - 119.29.29.29
+  - 223.5.5.5
+  - 223.6.6.6
+  - 8.8.4.4
+  - 8.8.8.8
+  nameserver:
+  - https://durable0762.com:44443/dns-query
+  - https://delirium9599.com:44443/dns-query
+  - https://cf-cdn.delirium9599.com:443/dns-query
+  fake-ip-range: 198.18.0.1/15
+  fake-ip-filter:
+  - '*.lan'
+  - '*.localdomain'
+  - '*.example'
+  - '*.invalid'
+  - '*.localhost'
+  - '*.test'
+  - '*.local'
+  - '*.home.arpa'
