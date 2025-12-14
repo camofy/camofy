@@ -276,7 +276,6 @@ async fn main() {
 }
 
 fn init_tracing(data_root: &PathBuf) {
-    use std::fs::{self, OpenOptions};
     use std::io::{Result as IoResult, Write};
     use tracing_subscriber::{fmt, EnvFilter};
     use tracing_subscriber::fmt::writer::MakeWriter;
@@ -289,24 +288,21 @@ fn init_tracing(data_root: &PathBuf) {
     log_path.push("log");
     log_path.push("app.log");
 
+    let shared_state = crate::logs::new_shared_log_write_state();
+
     struct FileWriter {
         path: PathBuf,
+        state: crate::logs::SharedLogWriteState,
     }
 
     impl Write for FileWriter {
         fn write(&mut self, buf: &[u8]) -> IoResult<usize> {
-            if let Some(parent) = self.path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-
-            // 在写入前尝试进行简单日志轮转，防止单个日志文件过大。
-            let _ = crate::logs::rotate_log_file(&self.path);
-
-            let mut file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&self.path)?;
-            file.write(buf)
+            crate::logs::write_log_with_rotation_and_space_guard(
+                &self.path,
+                &self.state,
+                buf,
+                "app",
+            )
         }
 
         fn flush(&mut self) -> IoResult<()> {
@@ -316,6 +312,7 @@ fn init_tracing(data_root: &PathBuf) {
 
     struct FileMakeWriter {
         path: PathBuf,
+        state: crate::logs::SharedLogWriteState,
     }
 
     impl<'a> MakeWriter<'a> for FileMakeWriter {
@@ -324,13 +321,17 @@ fn init_tracing(data_root: &PathBuf) {
         fn make_writer(&'a self) -> Self::Writer {
             FileWriter {
                 path: self.path.clone(),
+                state: self.state.clone(),
             }
         }
     }
 
     fmt()
         .with_env_filter(env_filter)
-        .with_writer(FileMakeWriter { path: log_path })
+        .with_writer(FileMakeWriter {
+            path: log_path,
+            state: shared_state,
+        })
         .init();
 }
 
