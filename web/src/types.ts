@@ -98,6 +98,26 @@ export type ProxiesView = {
   groups: ProxyGroup[]
 }
 
+export type GroupDelayResult = {
+  node: string
+  delay_ms: number
+}
+
+export type GroupDelayResponse = {
+  group: string
+  url: string
+  timeout_ms: number
+  results: GroupDelayResult[]
+}
+
+export type ProxyDelayResponse = {
+  group: string
+  node: string
+  url: string
+  timeout_ms: number
+  delay_ms: number
+}
+
 export type ScheduledTaskConfig = {
   cron: string
   enabled: boolean
