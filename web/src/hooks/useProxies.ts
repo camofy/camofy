@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react'
 import type { ProxiesView } from '../types'
 import { useAuth } from '../context/AuthContext'
 import { useNotifications } from '../context/NotificationContext'
-import { getProxies, selectProxyNode } from '../api'
+import { getProxies, selectProxyNode, testProxyGroup } from '../api'
 
 export function useProxies() {
   const { authedFetch } = useAuth()
@@ -11,6 +11,7 @@ export function useProxies() {
   const [view, setView] = useState<ProxiesView | null>(null)
   const [loading, setLoading] = useState(false)
   const [selecting, setSelecting] = useState(false)
+  const [testing, setTesting] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -49,12 +50,32 @@ export function useProxies() {
     [authedFetch, load, notifyError, notifySuccess],
   )
 
+  const testGroup = useCallback(
+    async (groupName: string) => {
+      if (!groupName.trim()) return
+      setTesting(true)
+      try {
+        await testProxyGroup(authedFetch, groupName)
+        notifySuccess(`已完成代理组 ${groupName} 的延迟测试`)
+        await load()
+      } catch (err) {
+        const msg =
+          err instanceof Error ? err.message : '测试节点延迟失败'
+        notifyError(msg)
+      } finally {
+        setTesting(false)
+      }
+    },
+    [authedFetch, load, notifyError, notifySuccess],
+  )
+
   return {
     view,
     loading,
     selecting,
+    testing,
     load,
     select,
+    testGroup,
   }
 }
-

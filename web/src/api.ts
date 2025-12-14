@@ -13,6 +13,7 @@ import type {
   UserProfileListResponse,
   UserProfileSummary,
   ScheduledTaskConfig,
+  GroupDelayResponse,
 } from './types'
 
 export type AuthedFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -383,6 +384,25 @@ export async function selectProxyNode(
   if (body.code !== 'ok') {
     throw new Error(body.message || '切换节点失败')
   }
+}
+
+export async function testProxyGroup(
+  authedFetch: AuthedFetch,
+  groupName: string,
+): Promise<GroupDelayResponse> {
+  const body = await requestJson<GroupDelayResponse>(
+    authedFetch,
+    `/api/mihomo/proxies/${encodeURIComponent(groupName)}/test`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    },
+  )
+  if (body.code !== 'ok' || !body.data) {
+    throw new Error(body.message || '测试节点延迟失败')
+  }
+  return body.data
 }
 
 export async function updateSchedulerSettings(

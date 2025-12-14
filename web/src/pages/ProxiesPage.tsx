@@ -9,6 +9,8 @@ function ProxiesPage() {
     selecting,
     load,
     select,
+    testing,
+    testGroup,
   } = useProxies()
 
   useEffect(() => {
@@ -20,11 +22,15 @@ function ProxiesPage() {
       proxies={view}
       loading={loading}
       selecting={selecting}
+      testing={testing}
       onReload={() => {
         void load()
       }}
       onSelectNode={(groupName, nodeName) => {
         void select(groupName, nodeName)
+      }}
+      onTestGroup={(groupName) => {
+        void testGroup(groupName)
       }}
     />
   )
