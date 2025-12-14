@@ -31,4 +31,3 @@ function ProxiesPage() {
 }
 
 export default ProxiesPage
-

@@ -27,4 +27,3 @@ function LogsPage() {
 }
 
 export default LogsPage
-

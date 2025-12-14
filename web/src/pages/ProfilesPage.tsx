@@ -120,4 +120,3 @@ function ProfilesPage() {
 }
 
 export default ProfilesPage
-
