@@ -288,10 +288,14 @@ async fn fetch_proxies_view(secret: &str) -> Result<ProxiesViewDto, String> {
         return Err(msg);
     }
 
-    let raw: ProxiesRaw =
-        serde_json::from_str(&body).map_err(|err| format!("failed to parse mihomo /proxies response: {err}"))?;
+    let raw: ProxiesRaw = serde_json::from_str(&body)
+        .map_err(|err| format!("failed to parse mihomo /proxies response: {err}"))?;
 
-    let mut groups = Vec::new();
+    // 首先将所有“具备 all 字段的代理组（排除 GLOBAL）”收集到一个临时映射中，
+    // 键为组名，值为组的详细信息。这样后续可以根据 GLOBAL.all 的顺序来重建
+    // 代理组列表，最大程度接近 Mihomo / Clash Verge 的展示顺序。
+    let mut groups_map: std::collections::HashMap<String, ProxyGroupDto> =
+        std::collections::HashMap::new();
 
     for proxy in raw.proxies.values() {
         if proxy.name == "GLOBAL" {
@@ -309,13 +313,13 @@ async fn fetch_proxies_view(secret: &str) -> Result<ProxiesViewDto, String> {
                 .or_else(|| raw.proxies.get(node_name.as_str()));
 
             if let Some(node) = node_entry {
-                let delay = node
-                    .history
-                    .last()
-                    .and_then(|h| h.delay);
+                let delay = node.history.last().and_then(|h| h.delay);
                 nodes.push(ProxyNodeDto {
                     name: node.name.clone(),
-                    proxy_type: node.proxy_type.clone().unwrap_or_else(|| "unknown".to_string()),
+                    proxy_type: node
+                        .proxy_type
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string()),
                     delay,
                 });
             } else {
@@ -327,13 +331,37 @@ async fn fetch_proxies_view(secret: &str) -> Result<ProxiesViewDto, String> {
             }
         }
 
-        groups.push(ProxyGroupDto {
-            name: proxy.name.clone(),
-            group_type: proxy.proxy_type.clone().unwrap_or_else(|| "unknown".to_string()),
-            now: proxy.now.clone(),
-            nodes,
-        });
+        groups_map.insert(
+            proxy.name.clone(),
+            ProxyGroupDto {
+                name: proxy.name.clone(),
+                group_type: proxy
+                    .proxy_type
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+                now: proxy.now.clone(),
+                nodes,
+            },
+        );
     }
+
+    let mut groups: Vec<ProxyGroupDto> = Vec::new();
+
+    // 若存在 GLOBAL 组且其 all 字段中定义了其他组的顺序，则优先按该顺序
+    // 将对应的组提取出来，以接近 Clash Verge 中基于 GLOBAL.all 重排的效果。
+    if let Some(global) = raw.proxies.get("GLOBAL") {
+        if let Some(global_all) = global.all.as_ref() {
+            for group_name in global_all {
+                if let Some(group) = groups_map.remove(group_name) {
+                    groups.push(group);
+                }
+            }
+        }
+    }
+
+    // 其余未在 GLOBAL.all 中出现的组，按 HashMap 内部顺序追加。
+    // 这与 Clash Verge 中“剩余组保持原始顺序”的行为大致一致。
+    groups.extend(groups_map.into_values());
 
     Ok(ProxiesViewDto { groups })
 }
