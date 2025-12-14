@@ -1132,6 +1132,16 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
     // 记忆当前期望的状态为“已启动”，用于下次 camofy 启动时自动拉起内核。
     update_core_auto_start_flag(true);
 
+    // 在后台尝试根据当前配置组合恢复已保存的代理选择，
+    // 避免内核重启后用户手动选择的节点丢失。
+    tokio::spawn(async {
+        // 略微等待内核完成启动流程与配置加载。
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        if let Err(err) = crate::mihomo::apply_saved_proxy_selection().await {
+            tracing::warn!("failed to apply saved proxy selections after core start: {err}");
+        }
+    });
+
     update_core_operation_state(
         CoreOperationKind::Start,
         CoreOperationStatus::Success,

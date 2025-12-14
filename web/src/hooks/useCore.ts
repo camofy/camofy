@@ -13,6 +13,7 @@ import {
   getCoreStatus,
   startCore,
   stopCore,
+  restartCore,
 } from '../api'
 
 export function useCore() {
@@ -80,6 +81,17 @@ export function useCore() {
       notifyError(msg)
     }
   }, [authedFetch, notifyError, notifySuccess, refresh])
+
+  const restart = useCallback(async () => {
+    try {
+      await restartCore(authedFetch)
+      notifySuccess('已提交内核重启请求')
+    } catch (err) {
+      const msg =
+        err instanceof Error ? err.message : '重启内核失败'
+      notifyError(msg)
+    }
+  }, [authedFetch, notifyError, notifySuccess])
 
   // 通过 WebSocket 订阅后端推送的核心状态/操作事件（包括下载进度）
   useEffect(() => {
@@ -172,5 +184,6 @@ export function useCore() {
     download,
     start,
     stop,
+    restart,
   }
 }

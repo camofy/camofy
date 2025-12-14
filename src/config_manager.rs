@@ -53,6 +53,16 @@ pub async fn reload_core_if_running(
         tracing::debug!("failed to broadcast AppEvent::CoreStatusChanged: {err}");
     }
 
+    // 若配置重载成功，则在后台尝试基于当前配置组合恢复已保存的代理选择。
+    if matches!(result, CoreReloadResult::Reloaded) {
+        tokio::spawn(async {
+            if let Err(err) = crate::mihomo::apply_saved_proxy_selection().await {
+                tracing::warn!(
+                    "failed to apply saved proxy selections after config reload: {err}"
+                );
+            }
+        });
+    }
+
     result
 }
-

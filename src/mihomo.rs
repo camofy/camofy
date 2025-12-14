@@ -8,7 +8,7 @@ use tokio::net::UnixStream;
 
 use crate::app::app_state;
 use crate::core::ensure_controller_secret;
-use crate::ApiResponse;
+use crate::{ApiResponse, ProxySelectionRecord};
 
 const MIHOMO_SOCKET_PATH: &str = "/tmp/verge/clash-verge-service.sock";
 
@@ -367,6 +367,126 @@ async fn select_node_for_group(secret: &str, group: &str, node: &str) -> Result<
     Ok(())
 }
 
+/// 在 Mihomo 核心运行且配置已加载的前提下，根据当前活跃配置组合下保存的
+/// 代理选择快照，尝试恢复各个代理组的“已选节点”。
+///
+/// - 若当前没有任何保存的选择，则直接返回 Ok(())。
+/// - 若部分组或节点已不存在，则跳过并记录日志，不影响其他组的恢复。
+pub(crate) async fn apply_saved_proxy_selection() -> Result<(), String> {
+    let state = app_state();
+
+    let selections: Vec<ProxySelectionRecord> =
+        match crate::get_proxy_selections_for_active_profile() {
+            Some(list) if !list.is_empty() => list,
+            _ => {
+                tracing::debug!(
+                    "no saved proxy selections for current profile; skip apply"
+                );
+                return Ok(());
+            }
+        };
+
+    let secret = ensure_controller_secret(&state.data_root)
+        .map_err(|err| format!("failed to ensure controller secret: {err}"))?;
+
+    let view = match fetch_proxies_view(&secret).await {
+        Ok(v) => v,
+        Err(err) => {
+            return Err(format!(
+                "failed to fetch proxies view when applying saved selections: {err}"
+            ));
+        }
+    };
+
+    // 仅对常见可选代理组类型尝试恢复，避免对不可选组误操作。
+    const SELECTABLE_TYPES: [&str; 4] =
+        ["Selector", "URLTest", "Fallback", "LoadBalance"];
+
+    let mut errors: Vec<String> = Vec::new();
+    let mut applied_count: usize = 0;
+
+    for record in selections {
+        let Some(group) = view
+            .groups
+            .iter()
+            .find(|g| g.name == record.group)
+        else {
+            tracing::debug!(
+                "saved proxy selection group '{}' not found in current view; skip",
+                record.group
+            );
+            continue;
+        };
+
+        if !SELECTABLE_TYPES
+            .iter()
+            .any(|t| t.eq_ignore_ascii_case(group.group_type.as_str()))
+            && group.name != "GLOBAL"
+        {
+            tracing::debug!(
+                "group '{}' (type '{}') is not selectable; skip saved selection",
+                group.name,
+                group.group_type
+            );
+            continue;
+        }
+
+        let target = record.node;
+
+        // 已经是目标节点则无需重复切换。
+        if group.now.as_deref() == Some(target.as_str()) {
+            continue;
+        }
+
+        let exists = group
+            .nodes
+            .iter()
+            .any(|n| n.name == target);
+        if !exists {
+            tracing::debug!(
+                "saved proxy '{}' not found in group '{}'; skip",
+                target,
+                group.name
+            );
+            continue;
+        }
+
+        if let Err(err) =
+            select_node_for_group(&secret, &group.name, target.as_str()).await
+        {
+            let msg = format!(
+                "failed to apply saved selection for group '{}' -> '{}': {err}",
+                group.name, target
+            );
+            tracing::warn!("{msg}");
+            errors.push(msg);
+        } else {
+            applied_count += 1;
+            tracing::info!(
+                "applied saved proxy selection: group='{}', node='{}'",
+                group.name,
+                target
+            );
+        }
+    }
+
+    if applied_count > 0 {
+        tracing::info!(
+            "applied {} saved proxy selections for current profile",
+            applied_count
+        );
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "some saved proxy selections failed to apply: {}",
+            errors.join("; ")
+        ))
+    }
+}
+
 pub async fn get_proxies() -> Json<ApiResponse<ProxiesViewDto>> {
     let state = app_state();
 
@@ -431,11 +551,22 @@ pub async fn select_proxy(
     }
 
     match select_node_for_group(&secret, &group, &body.name).await {
-        Ok(()) => Json(ApiResponse {
-            code: "ok".to_string(),
-            message: "selected".to_string(),
-            data: Some(serde_json::json!({})),
-        }),
+        Ok(()) => {
+            // 选择节点成功后，记录当前配置组合下的代理选择快照，便于内核重启后恢复。
+            if let Err(err) =
+                crate::update_proxy_selection_for_current_profile(&group, &body.name)
+            {
+                tracing::error!(
+                    "failed to persist proxy selection for group {group}: {err}"
+                );
+            }
+
+            Json(ApiResponse {
+                code: "ok".to_string(),
+                message: "selected".to_string(),
+                data: Some(serde_json::json!({})),
+            })
+        }
         Err(err) => {
             tracing::error!("failed to select proxy for group {group}: {err}");
             Json(ApiResponse {
