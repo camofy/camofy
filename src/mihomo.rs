@@ -11,6 +11,8 @@ use crate::core::ensure_controller_secret;
 use crate::{ApiResponse, ProxySelectionRecord};
 
 const MIHOMO_SOCKET_PATH: &str = "/tmp/verge/clash-verge-service.sock";
+const DEFAULT_TEST_URL: &str = "https://www.gstatic.com/generate_204";
+const DEFAULT_TEST_TIMEOUT_MS: u32 = 5000;
 
 #[derive(Serialize)]
 pub struct ProxyNodeDto {
@@ -34,6 +36,29 @@ pub struct ProxyGroupDto {
 #[derive(Serialize)]
 pub struct ProxiesViewDto {
     pub groups: Vec<ProxyGroupDto>,
+}
+
+#[derive(Serialize)]
+pub struct GroupDelayResultDto {
+    pub node: String,
+    pub delay_ms: u32,
+}
+
+#[derive(Serialize)]
+pub struct GroupDelayResponseDto {
+    pub group: String,
+    pub url: String,
+    pub timeout_ms: u32,
+    pub results: Vec<GroupDelayResultDto>,
+}
+
+#[derive(Serialize)]
+pub struct ProxyDelayResponseDto {
+    pub group: String,
+    pub node: String,
+    pub url: String,
+    pub timeout_ms: u32,
+    pub delay_ms: u32,
 }
 
 #[derive(Deserialize)]
@@ -241,6 +266,64 @@ fn map_error_from_body(status: u16, body: &str) -> String {
             .message
             .unwrap_or_else(|| format!("mihomo returned status {status}")),
         Err(_) => format!("mihomo returned status {status}: {body}"),
+    }
+}
+
+async fn delay_group(
+    secret: &str,
+    group: &str,
+    url: &str,
+    timeout_ms: u32,
+) -> Result<HashMap<String, u32>, String> {
+    let group_enc = encode_path_segment(group);
+    let url_enc = encode_path_segment(url);
+    let path = format!(
+        "/group/{group_enc}/delay?url={}&timeout={}",
+        url_enc, timeout_ms
+    );
+
+    let (status, body) = send_mihomo_request("GET", &path, None, secret).await?;
+    if (200..300).contains(&status) {
+        serde_json::from_str::<HashMap<String, u32>>(&body).map_err(|err| {
+            format!("failed to parse group delay response for {group}: {err}")
+        })
+    } else {
+        Err(map_error_from_body(status, &body))
+    }
+}
+
+async fn delay_proxy(
+    secret: &str,
+    proxy: &str,
+    url: &str,
+    timeout_ms: u32,
+) -> Result<u32, String> {
+    let proxy_enc = encode_path_segment(proxy);
+    let url_enc = encode_path_segment(url);
+    let path = format!(
+        "/proxies/{proxy_enc}/delay?url={}&timeout={}",
+        url_enc, timeout_ms
+    );
+
+    let (status, body) = send_mihomo_request("GET", &path, None, secret).await?;
+    if (200..300).contains(&status) {
+        #[derive(Deserialize)]
+        struct DelayBody {
+            delay: u32,
+        }
+        serde_json::from_str::<DelayBody>(&body)
+            .map(|v| v.delay)
+            .map_err(|err| {
+                format!("failed to parse proxy delay response for {proxy}: {err}")
+            })
+    } else {
+        // 超时时 mihomo 可能返回错误体，这里统一映射为 delay=0。
+        tracing::debug!(
+            "proxy delay for '{}' returned non-success status {}; treating as timeout",
+            proxy,
+            status
+        );
+        Ok(0)
     }
 }
 
@@ -604,4 +687,214 @@ pub async fn select_proxy(
             })
         }
     }
+}
+
+#[derive(Deserialize)]
+pub struct GroupDelayRequest {
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub timeout_ms: Option<u32>,
+    /// "group" 使用 mihomo group delay 接口；"nodes" 针对节点逐个测试。
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// 当 mode 为 "nodes" 时，如指定则仅测试该列表中的节点。
+    #[serde(default)]
+    pub nodes: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+pub struct NodeDelayRequest {
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub timeout_ms: Option<u32>,
+}
+
+pub async fn test_group_delay(
+    Path(group): Path<String>,
+    Json(body): Json<GroupDelayRequest>,
+) -> Json<ApiResponse<GroupDelayResponseDto>> {
+    let state = app_state();
+
+    let (running, _) = crate::core::core_running_status(&state.data_root);
+    if !running {
+        return Json(ApiResponse {
+            code: "core_not_running".to_string(),
+            message: "core is not running".to_string(),
+            data: None,
+        });
+    }
+
+    let secret = match ensure_controller_secret(&state.data_root) {
+        Ok(s) => s,
+        Err(err) => {
+            tracing::error!("{err}");
+            return Json(ApiResponse {
+                code: "mihomo_secret_error".to_string(),
+                message: err,
+                data: None,
+            });
+        }
+    };
+
+    let url = body
+        .url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(DEFAULT_TEST_URL)
+        .to_string();
+    let timeout_ms = body.timeout_ms.unwrap_or(DEFAULT_TEST_TIMEOUT_MS);
+
+    let mut results: Vec<GroupDelayResultDto> = Vec::new();
+
+    // 逐个节点测试：先获取当前组所有节点，再按需要筛选。
+    let view = match fetch_proxies_view(&secret).await {
+        Ok(v) => v,
+        Err(err) => {
+            let msg = format!(
+                "failed to fetch proxies view before node-based delay test: {err}"
+            );
+            tracing::error!("{msg}");
+            return Json(ApiResponse {
+                code: "mihomo_proxies_failed".to_string(),
+                message: msg,
+                data: None,
+            });
+        }
+    };
+
+    let Some(group_view) = view.groups.iter().find(|g| g.name == group) else {
+        let msg = format!("proxy group '{}' not found", group);
+        return Json(ApiResponse {
+            code: "mihomo_group_not_found".to_string(),
+            message: msg,
+            data: None,
+        });
+    };
+
+    let filter_nodes: Option<std::collections::HashSet<String>> =
+        body.nodes.map(|ns| ns.into_iter().collect());
+
+    for node in &group_view.nodes {
+        if let Some(ref filter) = filter_nodes {
+            if !filter.contains(&node.name) {
+                continue;
+            }
+        }
+
+        match delay_proxy(&secret, &node.name, &url, timeout_ms).await {
+            Ok(delay_ms) => {
+                results.push(GroupDelayResultDto {
+                    node: node.name.clone(),
+                    delay_ms,
+                });
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "delay test for proxy '{}' in group '{}' failed: {err}",
+                    node.name,
+                    group
+                );
+                results.push(GroupDelayResultDto {
+                    node: node.name.clone(),
+                    delay_ms: 0,
+                });
+            }
+        }
+    }
+
+    tracing::info!(
+        "delay test for group '{}' finished: {} nodes, url={}, timeout_ms={}",
+        group,
+        results.len(),
+        url,
+        timeout_ms
+    );
+
+    Json(ApiResponse {
+        code: "ok".to_string(),
+        message: "success".to_string(),
+        data: Some(GroupDelayResponseDto {
+            group,
+            url,
+            timeout_ms,
+            results,
+        }),
+    })
+}
+
+pub async fn test_node_delay(
+    Path((group, node)): Path<(String, String)>,
+    Json(body): Json<NodeDelayRequest>,
+) -> Json<ApiResponse<ProxyDelayResponseDto>> {
+    let state = app_state();
+
+    let (running, _) = crate::core::core_running_status(&state.data_root);
+    if !running {
+        return Json(ApiResponse {
+            code: "core_not_running".to_string(),
+            message: "core is not running".to_string(),
+            data: None,
+        });
+    }
+
+    let secret = match ensure_controller_secret(&state.data_root) {
+        Ok(s) => s,
+        Err(err) => {
+            tracing::error!("{err}");
+            return Json(ApiResponse {
+                code: "mihomo_secret_error".to_string(),
+                message: err,
+                data: None,
+            });
+        }
+    };
+
+    let url = body
+        .url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(DEFAULT_TEST_URL)
+        .to_string();
+    let timeout_ms = body.timeout_ms.unwrap_or(DEFAULT_TEST_TIMEOUT_MS);
+
+    let delay_ms = match delay_proxy(&secret, &node, &url, timeout_ms).await {
+        Ok(d) => d,
+        Err(err) => {
+            let msg = format!(
+                "delay test for proxy '{}' in group '{}' failed: {err}",
+                node, group
+            );
+            tracing::error!("{msg}");
+            return Json(ApiResponse {
+                code: "mihomo_delay_proxy_failed".to_string(),
+                message: msg,
+                data: None,
+            });
+        }
+    };
+
+    tracing::info!(
+        "delay test for proxy '{}' in group '{}' finished: delay={}ms, url={}, timeout_ms={}",
+        node,
+        group,
+        delay_ms,
+        url,
+        timeout_ms
+    );
+
+    Json(ApiResponse {
+        code: "ok".to_string(),
+        message: "success".to_string(),
+        data: Some(ProxyDelayResponseDto {
+            group,
+            node,
+            url,
+            timeout_ms,
+            delay_ms,
+        }),
+    })
 }

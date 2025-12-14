@@ -383,6 +383,14 @@ fn build_router() -> Router {
             "/mihomo/proxies/:group/select",
             post(mihomo::select_proxy),
         )
+        .route(
+            "/mihomo/proxies/:group/test",
+            post(mihomo::test_group_delay),
+        )
+        .route(
+            "/mihomo/proxies/:group/nodes/:node/test",
+            post(mihomo::test_node_delay),
+        )
         .route("/events/ws", get(ws::events_ws));
 
     // 为 /api 路由增加认证中间件

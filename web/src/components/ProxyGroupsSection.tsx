@@ -1,19 +1,24 @@
+import { useState } from 'react'
 import type { ProxiesView, ProxyGroup, ProxyNode } from '../types'
 
 type ProxyGroupsSectionProps = {
   proxies: ProxiesView | null
   loading: boolean
   selecting: boolean
+  testing: boolean
   onReload: () => void
   onSelectNode: (groupName: string, nodeName: string) => void
+  onTestGroup: (groupName: string) => void
 }
 
 function ProxyGroupsSection({
   proxies,
   loading,
   selecting,
+  testing,
   onReload,
   onSelectNode,
+  onTestGroup,
 }: ProxyGroupsSectionProps) {
   const groups = proxies?.groups ?? []
 
@@ -116,9 +121,28 @@ function ProxyGroupsSection({
                 ? `代理组：${selectedGroup.name}（${selectedGroup.type})`
                 : '代理组节点'}
             </span>
-            {selecting && (
-              <span className="text-[11px] text-sky-300">正在切换节点…</span>
-            )}
+            <div className="flex items-center gap-2">
+              {testing && (
+                <span className="text-[11px] text-sky-300">
+                  正在测试延迟…
+                </span>
+              )}
+              {selecting && (
+                <span className="text-[11px] text-emerald-300">
+                  正在切换节点…
+                </span>
+              )}
+              {selectedGroup && (
+                <button
+                  type="button"
+                  disabled={loading || testing}
+                  onClick={() => onTestGroup(selectedGroup.name)}
+                  className="rounded border border-sky-700 bg-slate-900 px-2 py-1 text-[10px] text-sky-200 hover:bg-sky-900/40 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  测试当前组延迟
+                </button>
+              )}
+            </div>
           </div>
           <div className="flex-1 min-h-0 overflow-auto rounded border border-slate-800 bg-slate-950/60">
             {loading ? (
@@ -195,7 +219,5 @@ function ProxyGroupsSection({
     </div>
   )
 }
-
-import { useState } from 'react'
 
 export default ProxyGroupsSection
