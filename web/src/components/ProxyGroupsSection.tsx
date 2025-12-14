@@ -35,7 +35,7 @@ function ProxyGroupsSection({
   }
 
   return (
-    <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-4">
+    <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-slate-800 bg-slate-900/60 p-4">
       <div className="flex items-center justify-between gap-2">
         <div>
           <h3 className="text-sm font-semibold text-slate-100">
@@ -54,12 +54,12 @@ function ProxyGroupsSection({
         </button>
       </div>
 
-      <div className="mt-3 grid gap-3 md:grid-cols-[12rem_1fr]">
-        <div className="space-y-2">
+      <div className="mt-3 grid min-h-0 flex-1 gap-3 md:grid-cols-[12rem_1fr]">
+        <div className="flex min-h-0 flex-col space-y-2">
           <p className="text-[11px] text-slate-500">
             共 {groups.length} 个代理组
           </p>
-          <div className="min-h-[3rem] max-h-56 overflow-auto rounded border border-slate-800 bg-slate-950/60 p-2">
+          <div className="min-h-[3rem] flex-1 min-h-0 overflow-auto rounded border border-slate-800 bg-slate-950/60 p-2">
             {loading ? (
               <p className="text-[11px] text-slate-400">正在加载代理组…</p>
             ) : groups.length === 0 ? (
@@ -109,7 +109,7 @@ function ProxyGroupsSection({
           </div>
         </div>
 
-        <div className="space-y-2">
+        <div className="flex min-h-0 flex-col space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-slate-300">
               {selectedGroup
@@ -120,7 +120,7 @@ function ProxyGroupsSection({
               <span className="text-[11px] text-sky-300">正在切换节点…</span>
             )}
           </div>
-          <div className="max-h-64 overflow-auto rounded border border-slate-800 bg-slate-950/60">
+          <div className="flex-1 min-h-0 overflow-auto rounded border border-slate-800 bg-slate-950/60">
             {loading ? (
               <p className="p-2 text-[11px] text-slate-400">
                 正在加载节点列表…
@@ -199,4 +199,3 @@ function ProxyGroupsSection({
 import { useState } from 'react'
 
 export default ProxyGroupsSection
-

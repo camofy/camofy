@@ -46,7 +46,7 @@ function UserProfilesSection({
   onReloadMergedConfig,
 }: UserProfilesSectionProps) {
   return (
-    <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-4">
+    <div className="flex min-h-0 flex-1 flex-col rounded-lg border border-slate-800 bg-slate-900/60 p-4">
       <h3 className="text-sm font-semibold text-slate-100">
         配置管理（订阅配置 + 用户配置）
       </h3>
@@ -55,8 +55,8 @@ function UserProfilesSection({
         <code className="rounded bg-slate-800 px-1 text-[11px]">merged.yaml</code>。
       </p>
 
-      <div className="mt-3 grid gap-4 md:grid-cols-[15rem_1fr]">
-        <div className="space-y-3">
+      <div className="mt-3 grid min-h-0 flex-1 gap-4 md:grid-cols-[15rem_1fr]">
+        <div className="flex min-h-0 flex-col space-y-3">
           <div>
             <label className="block text-xs font-medium text-slate-300">
               新建用户 profile
@@ -92,7 +92,7 @@ function UserProfilesSection({
                 刷新
               </button>
             </div>
-            <div className="min-h-[3rem] rounded border border-slate-800 bg-slate-950/60 p-2">
+            <div className="min-h-[3rem] flex-1 min-h-0 overflow-auto rounded border border-slate-800 bg-slate-950/60 p-2">
               {userProfilesLoading ? (
                 <p className="text-[11px] text-slate-400">
                   正在加载用户配置列表…
@@ -155,8 +155,8 @@ function UserProfilesSection({
           </div>
         </div>
 
-        <div className="space-y-3">
-          <div>
+        <div className="flex min-h-0 flex-col space-y-3">
+          <div className="flex-shrink-0">
             <label className="block text-xs font-medium text-slate-300">
               当前编辑的用户 profile
             </label>
@@ -167,12 +167,12 @@ function UserProfilesSection({
               placeholder="先在左侧选择或新建一个用户 profile"
             />
           </div>
-          <div>
+          <div className="flex min-h-[8rem] flex-1 flex-col">
             <label className="block text-xs font-medium text-slate-300">
               用户 YAML 配置
             </label>
             <textarea
-              className="mt-1 h-72 w-full resize-y rounded border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-[11px] text-slate-100 outline-none ring-0 focus:border-sky-500"
+              className="mt-1 flex-1 min-h-[6rem] w-full resize-none overflow-auto rounded border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-[11px] text-slate-100 outline-none ring-0 focus:border-sky-500"
               value={userProfileContent}
               onChange={(e) => onUserProfileContentChange(e.target.value)}
               placeholder="# 在这里编写用户配置，支持 prepend-rules / append-rules / prepend-proxies / append-proxies 等字段"
@@ -193,7 +193,7 @@ function UserProfilesSection({
               </span>
             )}
           </div>
-          <div>
+          <div className="flex min-h-0 flex-1 flex-col">
             <div className="mb-1 flex items-center justify-between">
               <span className="text-xs font-medium text-slate-300">
                 合并后的 merged.yaml 预览
@@ -206,7 +206,7 @@ function UserProfilesSection({
                 刷新
               </button>
             </div>
-            <div className="max-h-[60vh] overflow-auto rounded border border-slate-800 bg-slate-950/60 p-2">
+            <div className="flex-1 min-h-0 overflow-auto rounded border border-slate-800 bg-slate-950/60 p-2">
               {mergedConfigLoading ? (
                 <p className="text-[11px] text-slate-400">
                   正在加载 merged.yaml…

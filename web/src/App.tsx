@@ -15,7 +15,7 @@ function App() {
   if (!authReady) {
     return (
       <div className="app-root bg-slate-950 text-slate-100">
-        <div className="mx-auto flex min-h-screen max-w-5xl flex-col px-4 py-8">
+        <div className="mx-auto flex h-screen max-w-5xl flex-col px-4 py-8">
           <p className="text-xs text-slate-400">正在初始化面板…</p>
         </div>
       </div>

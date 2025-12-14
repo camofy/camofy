@@ -51,7 +51,7 @@ function Layout() {
         </NavLink>
       </nav>
 
-      <main className="flex flex-1 flex-col gap-4">
+      <main className="flex flex-1 flex-col gap-4 min-h-0">
         <Outlet />
       </main>
     </AppShell>
