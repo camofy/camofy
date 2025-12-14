@@ -10,6 +10,7 @@ function ProxiesPage() {
     load,
     select,
     testing,
+    testingNodes,
     testGroup,
   } = useProxies()
 
@@ -23,6 +24,7 @@ function ProxiesPage() {
       loading={loading}
       selecting={selecting}
       testing={testing}
+      testingNodes={testingNodes}
       onReload={() => {
         void load()
       }}

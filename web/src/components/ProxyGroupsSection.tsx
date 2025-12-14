@@ -6,6 +6,7 @@ type ProxyGroupsSectionProps = {
   loading: boolean
   selecting: boolean
   testing: boolean
+  testingNodes: Record<string, boolean>
   onReload: () => void
   onSelectNode: (groupName: string, nodeName: string) => void
   onTestGroup: (groupName: string) => void
@@ -16,6 +17,7 @@ function ProxyGroupsSection({
   loading,
   selecting,
   testing,
+  testingNodes,
   onReload,
   onSelectNode,
   onTestGroup,
@@ -172,6 +174,12 @@ function ProxyGroupsSection({
                 <tbody>
                   {selectedGroup.nodes.map((node) => {
                     const isCurrent = selectedGroup.now === node.name
+                    const testingKey =
+                      selectedGroup.name && node.name
+                        ? `${selectedGroup.name}::${node.name}`
+                        : ''
+                    const isTestingNode =
+                      testingKey && testingNodes[testingKey]
                     return (
                       <tr
                         key={node.name}
@@ -191,9 +199,16 @@ function ProxyGroupsSection({
                           {node.type}
                         </td>
                         <td className="px-2 py-1 text-slate-400">
-                          {typeof node.delay === 'number' && node.delay > 0
-                            ? `${node.delay} ms`
-                            : '未知'}
+                          {isTestingNode ? (
+                            <span className="inline-flex items-center gap-1 text-sky-300">
+                              <span className="inline-block h-3 w-3 animate-spin rounded-full border border-sky-500 border-t-transparent" />
+                              测试中…
+                            </span>
+                          ) : typeof node.delay === 'number' && node.delay > 0 ? (
+                            `${node.delay} ms`
+                          ) : (
+                            '未知'
+                          )}
                         </td>
                         <td className="px-2 py-1 text-right">
                           <button
