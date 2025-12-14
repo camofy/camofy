@@ -12,12 +12,14 @@ function AppShell({ children }: AppShellProps) {
 
   return (
     <div className="app-root bg-slate-950 text-slate-100">
-      <div className="mx-auto flex min-h-screen max-w-5xl flex-col px-4 py-8">
+      <div className="mx-auto flex h-screen max-w-5xl flex-col px-4 py-8">
         <AppHeader passwordSet={passwordSet} authToken={token} onLogout={logout} />
 
         <NotificationBar />
 
-        {children}
+        <div className="mt-4 flex flex-1 min-h-0 flex-col gap-4 overflow-hidden">
+          {children}
+        </div>
 
         <footer className="mt-6 border-t border-slate-800 pt-4">
           <p className="text-xs text-slate-500">
@@ -31,4 +33,3 @@ function AppShell({ children }: AppShellProps) {
 }
 
 export default AppShell
-
