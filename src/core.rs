@@ -1010,92 +1010,22 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
         config_file.display()
     );
 
-    // 准备 Mihomo 日志输出文件
+    // 准备 Mihomo 日志输出路径
     use std::process::Stdio;
     let log_path = mihomo_log_path(&state.data_root);
-    // 启动前尝试轮转 mihomo.log，避免单个文件无限增长
-    let _ = crate::logs::rotate_log_file(&log_path);
-    if let Some(parent) = log_path.parent() {
-        if let Err(err) = std::fs::create_dir_all(parent) {
-            let msg = format!(
-                "failed to create mihomo log dir {}: {err}",
-                parent.display()
-            );
-            tracing::error!("{msg}");
-            return Json(ApiResponse {
-                code: "core_start_failed".to_string(),
-                message: msg,
-                data: None,
-            });
-        }
-    }
-
-    let stdout_file = match std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-    {
-        Ok(f) => f,
-        Err(err) => {
-            let msg = format!(
-                "failed to open mihomo log file {}: {err}",
-                log_path.display()
-            );
-            tracing::error!("{msg}");
-            update_core_operation_state(
-                CoreOperationKind::Start,
-                CoreOperationStatus::Error,
-                Some(msg.clone()),
-                None,
-                true,
-            )
-            .await;
-            return Json(ApiResponse {
-                code: "core_start_failed".to_string(),
-                message: msg,
-                data: None,
-            });
-        }
-    };
-
-    let stderr_file = match std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-    {
-        Ok(f) => f,
-        Err(err) => {
-            let msg = format!(
-                "failed to open mihomo log file {}: {err}",
-                log_path.display()
-            );
-            tracing::error!("{msg}");
-            update_core_operation_state(
-                CoreOperationKind::Start,
-                CoreOperationStatus::Error,
-                Some(msg.clone()),
-                None,
-                true,
-            )
-            .await;
-            return Json(ApiResponse {
-                code: "core_start_failed".to_string(),
-                message: msg,
-                data: None,
-            });
-        }
-    };
+    // 为 Mihomo 日志创建共享写入状态，用于在磁盘空间不足时统一关闭文件写入。
+    let log_state = crate::logs::new_shared_log_write_state();
 
     // 在真正启动 Mihomo 内核前，尝试加载 tun 内核模块，保证 TUN 模式可用（失败仅记录日志，不中断启动）。
     ensure_tun_module_loaded();
 
-    let child = match TokioCommand::new(&core_path)
+    let mut child = match TokioCommand::new(&core_path)
         .arg("-d")
         .arg(config_dir.as_os_str())
         .arg("-f")
         .arg(config_file.as_os_str())
-        .stdout(Stdio::from(stdout_file))
-        .stderr(Stdio::from(stderr_file))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
         .kill_on_drop(false)
         .spawn()
     {
@@ -1118,6 +1048,27 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
             });
         }
     };
+
+    // 在后台消费 Mihomo 的 stdout/stderr，并通过统一的日志写入封装落盘。
+    if let Some(stdout) = child.stdout.take() {
+        crate::logs::spawn_log_pipe_task(
+            stdout,
+            log_path.clone(),
+            log_state.clone(),
+            "mihomo",
+            "stdout",
+        );
+    }
+
+    if let Some(stderr) = child.stderr.take() {
+        crate::logs::spawn_log_pipe_task(
+            stderr,
+            log_path.clone(),
+            log_state.clone(),
+            "mihomo",
+            "stderr",
+        );
+    }
 
     let pid = child.id().unwrap_or(0);
     if pid == 0 {
