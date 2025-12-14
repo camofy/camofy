@@ -184,6 +184,21 @@ export async function stopCore(authedFetch: AuthedFetch): Promise<void> {
   }
 }
 
+export async function restartCore(
+  authedFetch: AuthedFetch,
+): Promise<void> {
+  const body = await requestJson<{ operation?: string }>(
+    authedFetch,
+    '/api/core/restart',
+    {
+      method: 'POST',
+    },
+  )
+  if (body.code !== 'ok') {
+    throw new Error(body.message || '重启内核失败')
+  }
+}
+
 export async function listUserProfiles(
   authedFetch: AuthedFetch,
 ): Promise<UserProfileSummary[]> {

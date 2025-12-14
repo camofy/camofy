@@ -10,6 +10,7 @@ type CoreSectionProps = {
   onDownload: () => void
   onStart: () => void
   onStop: () => void
+  onRestart: () => void
 }
 
 function CoreSection({
@@ -22,6 +23,7 @@ function CoreSection({
   onDownload,
   onStart,
   onStop,
+  onRestart,
 }: CoreSectionProps) {
   const downloadRunning =
     coreOperation?.kind === 'download' &&
@@ -104,6 +106,14 @@ function CoreSection({
             className="rounded border border-red-700 bg-slate-900 px-3 py-1.5 text-[11px] text-red-300 hover:bg-red-800/40 disabled:cursor-not-allowed disabled:opacity-60"
           >
             停止内核
+          </button>
+          <button
+            type="button"
+            disabled={coreActionLoading || !coreStatus?.running}
+            onClick={onRestart}
+            className="rounded border border-sky-700 bg-slate-900 px-3 py-1.5 text-[11px] text-sky-300 hover:bg-sky-800/40 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            重启内核
           </button>
         </div>
         {coreOperation &&

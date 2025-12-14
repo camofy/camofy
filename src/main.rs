@@ -86,6 +86,26 @@ struct ScheduledTaskConfig {
     last_run_message: Option<String>,
 }
 
+/// 记录某个代理组当前选择的节点。
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub(crate) struct ProxySelectionRecord {
+    pub group: String,
+    pub node: String,
+}
+
+/// 针对一组配置组合（订阅 + 用户配置）的代理选择快照。
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub(crate) struct ProxySelectionSet {
+    /// 对应 AppConfig.active_subscription_id
+    #[serde(default)]
+    pub subscription_id: Option<String>,
+    /// 对应 AppConfig.active_user_profile_id
+    #[serde(default)]
+    pub user_profile_id: Option<String>,
+    #[serde(default)]
+    pub selections: Vec<ProxySelectionRecord>,
+}
+
 #[derive(Serialize, Deserialize, Default, Clone)]
 pub(crate) struct AppConfig {
     #[serde(default)]
@@ -105,6 +125,9 @@ pub(crate) struct AppConfig {
     /// 自动更新 GeoIP 数据库的定时任务配置
     #[serde(default)]
     geoip_auto_update: Option<ScheduledTaskConfig>,
+    /// 针对不同订阅 + 用户配置组合保存的代理选择快照。
+    #[serde(default)]
+    proxy_selections: Vec<ProxySelectionSet>,
 }
 
 /// 对应“是什么导致了配置需要被应用 / 重新加载”的高层原因，
@@ -351,6 +374,7 @@ fn build_router() -> Router {
         .route("/core/download", post(core::download_core))
         .route("/core/start", post(core_async::start_core_async))
         .route("/core/stop", post(core_async::stop_core_async))
+        .route("/core/restart", post(core_async::restart_core_async))
         .route("/config/merged", get(user_profiles::get_merged_config))
         .route("/logs/app", get(logs::get_app_log))
         .route("/logs/mihomo", get(logs::get_mihomo_log))
@@ -516,4 +540,63 @@ where
     save_app_config(&state.data_root, &guard)?;
 
     Ok(result)
+}
+
+/// 在当前活跃配置组合下，更新指定代理组的已选节点并持久化到 app.json。
+pub(crate) fn update_proxy_selection_for_current_profile(
+    group: &str,
+    node: &str,
+) -> Result<(), String> {
+    with_app_config_mut(|config: &mut AppConfig| {
+        let sub_id = config.active_subscription_id.clone();
+        let user_id = config.active_user_profile_id.clone();
+
+        // 先尝试找到当前组合对应的快照，没有则新建。
+        let set = if let Some(existing) = config
+            .proxy_selections
+            .iter_mut()
+            .find(|s| s.subscription_id == sub_id && s.user_profile_id == user_id)
+        {
+            existing
+        } else {
+            config.proxy_selections.push(ProxySelectionSet {
+                subscription_id: sub_id,
+                user_profile_id: user_id,
+                selections: Vec::new(),
+            });
+            config
+                .proxy_selections
+                .last_mut()
+                .expect("proxy_selections just pushed must exist");
+            config.proxy_selections.last_mut().unwrap()
+        };
+
+        if let Some(rec) = set
+            .selections
+            .iter_mut()
+            .find(|r| r.group == group)
+        {
+            rec.node = node.to_string();
+        } else {
+            set.selections.push(ProxySelectionRecord {
+                group: group.to_string(),
+                node: node.to_string(),
+            });
+        }
+    })?;
+
+    Ok(())
+}
+
+/// 读取当前活跃配置组合下保存的代理选择快照。
+pub(crate) fn get_proxy_selections_for_active_profile(
+) -> Option<Vec<ProxySelectionRecord>> {
+    let cfg = get_app_config_snapshot();
+    let sub_id = cfg.active_subscription_id.clone();
+    let user_id = cfg.active_user_profile_id.clone();
+
+    cfg.proxy_selections
+        .into_iter()
+        .find(|s| s.subscription_id == sub_id && s.user_profile_id == user_id)
+        .map(|s| s.selections)
 }

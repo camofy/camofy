@@ -13,6 +13,7 @@ function CorePage() {
     download,
     start,
     stop,
+    restart,
   } = useCore()
 
   useEffect(() => {
@@ -37,6 +38,9 @@ function CorePage() {
       }}
       onStop={() => {
         void stop()
+      }}
+      onRestart={() => {
+        void restart()
       }}
     />
   )
