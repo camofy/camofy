@@ -2,7 +2,11 @@ import { useCallback, useState } from 'react'
 import type { ProxiesView } from '../types'
 import { useAuth } from '../context/AuthContext'
 import { useNotifications } from '../context/NotificationContext'
-import { getProxies, selectProxyNode, testProxyGroup } from '../api'
+import {
+  getProxies,
+  selectProxyNode,
+  testProxyNode,
+} from '../api'
 
 export function useProxies() {
   const { authedFetch } = useAuth()
@@ -12,6 +16,7 @@ export function useProxies() {
   const [loading, setLoading] = useState(false)
   const [selecting, setSelecting] = useState(false)
   const [testing, setTesting] = useState(false)
+  const [testingNodes, setTestingNodes] = useState<Record<string, boolean>>({})
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -53,20 +58,100 @@ export function useProxies() {
   const testGroup = useCallback(
     async (groupName: string) => {
       if (!groupName.trim()) return
+
+      const current = view
+      if (!current) {
+        notifyError('当前无代理组数据，无法测试延迟')
+        return
+      }
+      const group = current.groups.find((g) => g.name === groupName)
+      if (!group) {
+        notifyError(`未找到代理组 ${groupName}`)
+        return
+      }
+
+      const nodes = group.nodes
+      if (!nodes.length) {
+        notifyError(`代理组 ${groupName} 下暂无节点`)
+        return
+      }
+
       setTesting(true)
+      let firstError: string | null = null
+
       try {
-        await testProxyGroup(authedFetch, groupName)
-        notifySuccess(`已完成代理组 ${groupName} 的延迟测试`)
-        await load()
-      } catch (err) {
-        const msg =
-          err instanceof Error ? err.message : '测试节点延迟失败'
-        notifyError(msg)
+        const concurrency = 5
+        let index = 0
+
+        const runWorker = async () => {
+          // eslint-disable-next-line no-constant-condition
+          while (true) {
+            const currentIndex = index
+            if (currentIndex >= nodes.length) break
+            index += 1
+
+            const node = nodes[currentIndex]
+            const key = `${groupName}::${node.name}`
+
+            setTestingNodes((prev) => ({ ...prev, [key]: true }))
+            try {
+              const resp = await testProxyNode(
+                authedFetch,
+                groupName,
+                node.name,
+              )
+              const delayMs = resp.delay_ms
+              setView((prev) => {
+                if (!prev) return prev
+                const groups = prev.groups.map((g) => {
+                  if (g.name !== groupName) return g
+                  return {
+                    ...g,
+                    nodes: g.nodes.map((n) =>
+                      n.name === node.name ? { ...n, delay: delayMs } : n,
+                    ),
+                  }
+                })
+                return { ...prev, groups }
+              })
+            } catch (err) {
+              console.error(
+                '测试节点延迟失败',
+                groupName,
+                node.name,
+                err,
+              )
+              if (!firstError) {
+                firstError =
+                  err instanceof Error
+                    ? err.message
+                    : '测试节点延迟失败'
+              }
+            } finally {
+              setTestingNodes((prev) => {
+                const next = { ...prev }
+                delete next[key]
+                return next
+              })
+            }
+          }
+        }
+
+        const workerCount = Math.min(concurrency, nodes.length)
+        await Promise.all(
+          Array.from({ length: workerCount }, () => runWorker()),
+        )
+
+        if (firstError) {
+          notifyError(firstError)
+        } else {
+          notifySuccess(`已完成代理组 ${groupName} 的延迟测试`)
+        }
       } finally {
         setTesting(false)
       }
     },
-    [authedFetch, load, notifyError, notifySuccess],
+    [authedFetch, notifyError, notifySuccess, view],
   )
 
   return {
@@ -74,6 +159,7 @@ export function useProxies() {
     loading,
     selecting,
     testing,
+    testingNodes,
     load,
     select,
     testGroup,
