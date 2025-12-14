@@ -13,7 +13,7 @@ import type {
   UserProfileListResponse,
   UserProfileSummary,
   ScheduledTaskConfig,
-  GroupDelayResponse,
+  ProxyDelayResponse,
 } from './types'
 
 export type AuthedFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
@@ -386,13 +386,16 @@ export async function selectProxyNode(
   }
 }
 
-export async function testProxyGroup(
+export async function testProxyNode(
   authedFetch: AuthedFetch,
   groupName: string,
-): Promise<GroupDelayResponse> {
-  const body = await requestJson<GroupDelayResponse>(
+  nodeName: string,
+): Promise<ProxyDelayResponse> {
+  const body = await requestJson<ProxyDelayResponse>(
     authedFetch,
-    `/api/mihomo/proxies/${encodeURIComponent(groupName)}/test`,
+    `/api/mihomo/proxies/${encodeURIComponent(
+      groupName,
+    )}/nodes/${encodeURIComponent(nodeName)}/test`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
