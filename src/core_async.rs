@@ -127,3 +127,77 @@ pub async fn stop_core_async() -> Json<ApiResponse<serde_json::Value>> {
         data: Some(serde_json::json!({ "operation": "stop" })),
     })
 }
+
+/// 提供一个“重启 Mihomo 内核”的异步接口：
+/// - 若当前已有启动/停止任务在执行，则返回错误；
+/// - 否则在后台依次执行 stop_core（若正在运行）和 start_core。
+pub async fn restart_core_async() -> Json<ApiResponse<serde_json::Value>> {
+    let app = app_state();
+
+    // 与 start/stop 接口共享同一并发控制：一次仅允许一个核心操作在执行。
+    {
+        let guard = app.core_operation.lock().await;
+        if let Some(state) = guard.as_ref() {
+            if matches!(state.status, CoreOperationStatus::Running)
+                && matches!(state.kind, CoreOperationKind::Start | CoreOperationKind::Stop)
+            {
+                return Json(ApiResponse {
+                    code: "core_operation_in_progress".to_string(),
+                    message: "another core operation is in progress".to_string(),
+                    data: None,
+                });
+            }
+        }
+    }
+
+    {
+        let mut guard = app.core_operation.lock().await;
+        let started_at = crate::app::current_timestamp();
+        let state = CoreOperationState {
+            kind: CoreOperationKind::Start,
+            status: CoreOperationStatus::Running,
+            message: Some("restarting core".to_string()),
+            progress: None,
+            started_at: started_at.clone(),
+            finished_at: None,
+        };
+        *guard = Some(state.clone());
+        let event = AppEvent::CoreOperationUpdated { state };
+        let _ = app.events_tx.send(event);
+    }
+
+    // 后台任务：若核心正在运行则先停止，再重新启动。
+    tokio::spawn(async {
+        let state = app_state();
+        let (running, _) = crate::core::core_running_status(&state.data_root);
+
+        if running {
+            let Json(resp) = crate::core::stop_core().await;
+            if resp.code != "ok" {
+                tracing::error!(
+                    "core restart: stop_core failed: code={}, message={}",
+                    resp.code,
+                    resp.message
+                );
+                return;
+            }
+        } else {
+            tracing::info!("core restart requested but core not running; skip stop step");
+        }
+
+        let Json(resp) = crate::core::start_core().await;
+        if resp.code != "ok" {
+            tracing::error!(
+                "core restart: start_core failed: code={}, message={}",
+                resp.code,
+                resp.message
+            );
+        }
+    });
+
+    Json(ApiResponse {
+        code: "ok".to_string(),
+        message: "restart_requested".to_string(),
+        data: Some(serde_json::json!({ "operation": "restart" })),
+    })
+}
