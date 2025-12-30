@@ -143,3 +143,9 @@ export type AppEvent =
       type: 'core_operation_updated'
       state: CoreOperationState
     }
+  | {
+      type: 'mihomo_log_chunk'
+      stream: string
+      chunk: string
+      timestamp: string
+    }

@@ -2,8 +2,8 @@ use axum::Json;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use crate::app::app_state;
-use crate::ApiResponse;
+use crate::app::{app_state, current_timestamp};
+use crate::{ApiResponse, AppEvent};
 
 pub const LOG_MAX_BYTES: u64 = 1_024 * 1_024; // 1MB
 pub const LOG_MAX_ROTATED_FILES: usize = 5;
@@ -175,11 +175,19 @@ pub fn spawn_log_pipe_task<R>(
     state: SharedLogWriteState,
     log_name: &'static str,
     direction: &'static str,
+    broadcast: bool,
 ) where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
         use tokio::io::AsyncReadExt;
+
+        let tx = if broadcast {
+            let app = app_state();
+            Some(app.events_tx.clone())
+        } else {
+            None
+        };
 
         let mut buf = [0u8; 4096];
 
@@ -199,6 +207,20 @@ pub fn spawn_log_pipe_task<R>(
                             direction
                         );
                         break;
+                    }
+
+                    if let Some(tx) = &tx {
+                        let chunk = String::from_utf8_lossy(&buf[..n]).to_string();
+                        let event = AppEvent::MihomoLogChunk {
+                            stream: direction.to_string(),
+                            chunk,
+                            timestamp: current_timestamp(),
+                        };
+                        if let Err(err) = tx.send(event) {
+                            tracing::debug!(
+                                "failed to broadcast mihomo log chunk via websocket: {err}"
+                            );
+                        }
                     }
                 }
                 Err(err) => {
