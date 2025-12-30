@@ -14,9 +14,9 @@ function App() {
 
   if (!authReady) {
     return (
-      <div className="app-root bg-slate-950 text-slate-100">
+      <div className="app-root bg-[color:var(--color-bg-app)] text-[color:var(--color-text-main)]">
         <div className="mx-auto flex h-screen max-w-5xl flex-col px-4 py-8">
-          <p className="text-xs text-slate-400">正在初始化面板…</p>
+          <p className="text-xs text-[color:var(--color-text-muted)]">正在初始化面板…</p>
         </div>
       </div>
     )
@@ -40,4 +40,3 @@ function App() {
 }
 
 export default App
-

@@ -10,11 +10,11 @@ function NotificationBar() {
   return (
     <div className="mb-3 space-y-1 text-xs">
       {error && (
-        <div className="flex items-start justify-between rounded-md border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-rose-100">
+        <div className="flex items-start justify-between rounded-md border border-[color:var(--color-danger)] bg-[color:var(--color-danger-soft)] px-3 py-2 text-[color:var(--color-danger)]">
           <p className="mr-2 break-words">{error}</p>
           <button
             type="button"
-            className="ml-auto text-rose-200/80 hover:text-rose-50"
+            className="ml-auto text-[color:var(--color-danger)] hover:text-[#a85f51]"
             onClick={clearError}
           >
             关闭
@@ -22,11 +22,11 @@ function NotificationBar() {
         </div>
       )}
       {success && (
-        <div className="flex items-start justify-between rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-emerald-100">
+        <div className="flex items-start justify-between rounded-md border border-[color:var(--color-success)] bg-[color:var(--color-success-soft)] px-3 py-2 text-[color:var(--color-success)]">
           <p className="mr-2 break-words">{success}</p>
           <button
             type="button"
-            className="ml-auto text-emerald-200/80 hover:text-emerald-50"
+            className="ml-auto text-[color:var(--color-success)] hover:text-[#5f7757]"
             onClick={clearSuccess}
           >
             关闭
@@ -38,4 +38,3 @@ function NotificationBar() {
 }
 
 export default NotificationBar
-

@@ -11,7 +11,7 @@ function AppShell({ children }: AppShellProps) {
   const { passwordSet, token, logout } = useAuth()
 
   return (
-    <div className="app-root bg-slate-950 text-slate-100">
+    <div className="app-root bg-[color:var(--color-bg-app)] text-[color:var(--color-text-main)]">
       <div className="mx-auto flex h-screen max-w-5xl flex-col px-4 py-8">
         <AppHeader passwordSet={passwordSet} authToken={token} onLogout={logout} />
 
@@ -21,8 +21,8 @@ function AppShell({ children }: AppShellProps) {
           {children}
         </div>
 
-        <footer className="mt-6 border-t border-slate-800 pt-4">
-          <p className="text-xs text-slate-500">
+        <footer className="mt-6 border-t border-[color:var(--color-border-subtle)] pt-4">
+          <p className="text-xs text-[color:var(--color-text-soft)]">
             当前进度：已完成里程碑 1–5（HTTP 服务与静态页面、订阅管理、内核下载与运行控制、用户
             profile 管理与配置合并、面板访问密码与日志监控）。
           </p>
