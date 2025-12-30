@@ -72,7 +72,7 @@
 }
 
 .ansi-bg-black {
-  background-color: #020617;
+  background-color: var(--color-log-bg);
 }
 
 .ansi-bg-red {

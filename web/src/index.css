@@ -1,3 +1,45 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+:root {
+  /* 基础背景与表面 */
+  --color-bg-app: #ffffff;
+  --color-surface: #f6f2ec;
+  --color-surface-soft: #fbf7f1;
+
+  /* 边框 */
+  --color-border-subtle: #e0d4c6;
+  --color-border-strong: #c1ab9d;
+
+  /* 文本 */
+  --color-text-main: #2b2a28;
+  --color-text-muted: #7c7369;
+  --color-text-soft: #ada397;
+
+  /* 主色（绿叶） */
+  --color-primary: #818375;
+  --color-primary-soft: #b7c1a9;
+  --color-primary-on: #ffffff;
+
+  /* 花朵强调色 */
+  --color-accent: #f1ded0;
+  --color-accent-strong: #c1ab9d;
+
+  /* 状态色 */
+  --color-success: #6f8b63;
+  --color-success-soft: #d7e2cf;
+  --color-danger: #bb6e5e;
+  --color-danger-soft: #f7e0da;
+
+  /* 日志区域深色块 */
+  --color-log-bg: #111827;
+  --color-log-border: #1f2937;
+  --color-log-text-main: #e5e7eb;
+  --color-log-text-muted: #9ca3af;
+}
+
+body {
+  background-color: var(--color-bg-app);
+  color: var(--color-text-main);
+}

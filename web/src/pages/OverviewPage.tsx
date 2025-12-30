@@ -46,7 +46,7 @@ function OverviewPage() {
         saving={saving}
       />
       {coreLoading && (
-        <p className="text-xs text-slate-500">
+        <p className="text-xs text-[color:var(--color-text-soft)]">
           正在刷新内核状态…
         </p>
       )}
@@ -55,4 +55,3 @@ function OverviewPage() {
 }
 
 export default OverviewPage
-

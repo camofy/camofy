@@ -24,13 +24,13 @@ function Layout() {
     [
       'rounded-md px-3 py-1 text-xs font-medium transition-colors border',
       isActive
-        ? 'border-sky-500/70 bg-slate-800 text-sky-300'
-        : 'border-transparent text-slate-300 hover:text-sky-300 hover:bg-slate-900',
+        ? 'border-[color:var(--color-border-strong)] bg-[color:var(--color-primary)] text-[color:var(--color-primary-on)]'
+        : 'border-transparent text-[color:var(--color-text-muted)] hover:text-[color:var(--color-text-main)] hover:bg-[color:var(--color-surface-soft)]',
     ].join(' ')
 
   return (
     <AppShell>
-      <nav className="mb-4 flex flex-wrap items-center gap-2 border-b border-slate-800 pb-2 text-xs">
+      <nav className="mb-4 flex flex-wrap items-center gap-2 border-b border-[color:var(--color-border-subtle)] pb-2 text-xs">
         <NavLink to="/overview" className={navLinkClass}>
           总览
         </NavLink>
@@ -59,4 +59,3 @@ function Layout() {
 }
 
 export default Layout
-
