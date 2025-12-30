@@ -1057,6 +1057,7 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
             log_state.clone(),
             "mihomo",
             "stdout",
+            true,
         );
     }
 
@@ -1067,6 +1068,7 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
             log_state.clone(),
             "mihomo",
             "stderr",
+            true,
         );
     }
 

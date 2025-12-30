@@ -173,6 +173,13 @@ pub enum AppEvent {
     CoreOperationUpdated {
         state: CoreOperationState,
     },
+    MihomoLogChunk {
+        /// "stdout" or "stderr"
+        stream: String,
+        /// 原始日志数据（按 UTF-8 近似解码的块）
+        chunk: String,
+        timestamp: String,
+    },
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
