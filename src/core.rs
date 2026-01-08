@@ -318,15 +318,26 @@ fn remove_dns_redirect_rule() {
         "1053",
     ];
 
-    match Command::new("iptables").args(&rule).status() {
-        Ok(status) if status.success() => {
-            tracing::info!("iptables dns redirect rule removed successfully");
-        }
-        Ok(status) => {
-            tracing::warn!("failed to remove iptables dns redirect rule, exit status: {status}");
-        }
-        Err(err) => {
-            tracing::warn!("failed to execute iptables to remove dns redirect rule: {err}");
+    // 若存在多条相同的 DNS 重定向规则，需要循环删除直到全部清理完毕。
+    loop {
+        match Command::new("iptables").args(&rule).status() {
+            Ok(status) if status.success() => {
+                tracing::info!("iptables dns redirect rule removed successfully");
+                continue;
+            }
+            Ok(status) => {
+                // 规则不存在或删除失败，停止继续尝试，避免产生大量无意义日志。
+                tracing::info!(
+                    "no more iptables dns redirect rule to remove (exit status: {status})"
+                );
+                break;
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "failed to execute iptables to remove dns redirect rule: {err}"
+                );
+                break;
+            }
         }
     }
 }
@@ -1078,6 +1089,60 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
     } else if let Err(err) = write_core_pid(&state.data_root, pid) {
         tracing::error!("{err}");
     }
+
+    // 在后台监控 Mihomo 进程的生命周期：
+    // - 若进程异常退出（未通过 stop_core 正常停止），
+    //   则清理 PID 文件并移除所有 DNS 重定向规则，避免 1053 端口仍被转发。
+    let data_root_for_watcher = state.data_root.clone();
+    tokio::spawn(async move {
+        use tokio::process::Child;
+
+        let mut child: Child = child;
+
+        match child.wait().await {
+            Ok(status) => {
+                tracing::info!("core process (pid {pid}) exited with status: {status}");
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "failed to wait for core process (pid {pid}): {err}"
+                );
+            }
+        }
+
+        // 仅当 PID 文件仍指向同一个进程时才执行清理，
+        // 避免与后续再次启动的内核产生竞争。
+        match read_core_pid(&data_root_for_watcher) {
+            Ok(current_pid) if current_pid == pid => {
+                remove_core_pid(&data_root_for_watcher);
+                remove_dns_redirect_rule();
+
+                let state = app_state();
+                let event = AppEvent::CoreStatusChanged {
+                    running: false,
+                    pid: None,
+                    timestamp: current_timestamp(),
+                };
+                if let Err(err) = state.events_tx.send(event) {
+                    tracing::debug!(
+                        "failed to broadcast CoreStatusChanged after core exit: {err}"
+                    );
+                }
+            }
+            Ok(_) => {
+                tracing::info!(
+                    "core pid file changed after process exit; skip dns redirect cleanup for pid {pid}"
+                );
+            }
+            Err(reason) => {
+                if reason != "pid_file_not_found" {
+                    tracing::warn!(
+                        "failed to read core pid in watcher after process exit: {reason}"
+                    );
+                }
+            }
+        }
+    });
 
     // 内核进程成功拉起后，再配置 DNS 重定向 iptables 规则。
     apply_dns_redirect_rule();
