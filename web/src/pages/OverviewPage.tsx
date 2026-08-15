@@ -46,9 +46,7 @@ function OverviewPage() {
         saving={saving}
       />
       {coreLoading && (
-        <p className="text-xs text-[color:var(--color-text-soft)]">
-          正在刷新内核状态…
-        </p>
+        <p className="text-lg text-[color:var(--color-text-muted)]">刷新中…</p>
       )}
     </>
   )

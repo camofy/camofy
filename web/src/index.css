@@ -3,43 +3,137 @@
 @tailwind utilities;
 
 :root {
-  /* 基础背景与表面 */
-  --color-bg-app: #ffffff;
-  --color-surface: #f6f2ec;
-  --color-surface-soft: #fbf7f1;
+  --color-bg-app: #f4f4f2;
+  --color-surface: #ffffff;
+  --color-surface-soft: #ecece8;
+  --color-header: #f4f4f2;
+  --color-sidebar: #efefec;
 
-  /* 边框 */
-  --color-border-subtle: #e0d4c6;
-  --color-border-strong: #c1ab9d;
+  --color-border-subtle: transparent;
+  --color-border-strong: transparent;
 
-  /* 文本 */
-  --color-text-main: #2b2a28;
-  --color-text-muted: #7c7369;
-  --color-text-soft: #ada397;
+  --color-text-main: #171717;
+  --color-text-muted: #737373;
+  --color-text-soft: #a3a3a3;
 
-  /* 主色（绿叶） */
-  --color-primary: #818375;
-  --color-primary-soft: #b7c1a9;
+  --color-primary: #171717;
+  --color-primary-hover: #404040;
+  --color-primary-soft: #e7e7e4;
   --color-primary-on: #ffffff;
 
-  /* 花朵强调色 */
-  --color-accent: #f1ded0;
-  --color-accent-strong: #c1ab9d;
+  --color-accent: #e7e7e4;
+  --color-accent-strong: #171717;
 
-  /* 状态色 */
-  --color-success: #6f8b63;
-  --color-success-soft: #d7e2cf;
-  --color-danger: #bb6e5e;
-  --color-danger-soft: #f7e0da;
+  --color-success: #3f7a4e;
+  --color-success-soft: #e4f0e6;
+  --color-danger: #b42318;
+  --color-danger-soft: #f8e4e2;
 
-  /* 日志区域深色块 */
-  --color-log-bg: #111827;
-  --color-log-border: #1f2937;
-  --color-log-text-main: #e5e7eb;
-  --color-log-text-muted: #9ca3af;
+  --color-log-bg: #171717;
+  --color-log-border: transparent;
+  --color-log-text-main: #e5e5e5;
+  --color-log-text-muted: #a3a3a3;
+
+  --font-sans: Inter, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'IBM Plex Mono', 'SFMono-Regular', ui-monospace, Menlo, Consolas, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
 }
 
 body {
+  margin: 0;
   background-color: var(--color-bg-app);
   color: var(--color-text-main);
+  font-family: var(--font-sans);
+  font-size: 1.125rem;
+  line-height: 1.5;
+}
+
+.app-root {
+  background-color: var(--color-bg-app);
+}
+
+.brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-primary);
+  color: #fff;
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
+.log-pre {
+  font-family: var(--font-mono);
+  font-size: 1rem;
+  line-height: 1.6;
+  font-variant-ligatures: none;
+  tab-size: 4;
+}
+
+@layer components {
+  .ui-card {
+    @apply rounded-[28px] bg-[color:var(--color-surface)];
+    box-shadow: 0 12px 40px rgba(23, 23, 23, 0.05);
+  }
+
+  .ui-input {
+    @apply w-full rounded-2xl border-0 bg-[color:var(--color-surface-soft)] px-4 py-3 text-lg text-[color:var(--color-text-main)] outline-none;
+  }
+
+  .ui-input:focus {
+    background: #e4e4e0;
+  }
+
+  .ui-input::placeholder {
+    color: var(--color-text-soft);
+  }
+
+  .ui-btn-primary,
+  .ui-btn-default,
+  .ui-btn-success,
+  .ui-btn-danger {
+    @apply inline-flex items-center justify-center rounded-2xl border-0 px-5 py-3 text-lg font-medium transition;
+  }
+
+  .ui-btn-primary:disabled,
+  .ui-btn-default:disabled,
+  .ui-btn-success:disabled,
+  .ui-btn-danger:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+
+  .ui-btn-primary {
+    background: var(--color-primary);
+    color: #fff;
+  }
+
+  .ui-btn-primary:hover:not(:disabled) {
+    background: var(--color-primary-hover);
+  }
+
+  .ui-btn-default {
+    background: var(--color-surface-soft);
+    color: var(--color-text-main);
+  }
+
+  .ui-btn-default:hover:not(:disabled) {
+    background: #e2e2de;
+  }
+
+  .ui-btn-success {
+    background: var(--color-success-soft);
+    color: var(--color-success);
+  }
+
+  .ui-btn-danger {
+    background: var(--color-danger-soft);
+    color: var(--color-danger);
+  }
 }
