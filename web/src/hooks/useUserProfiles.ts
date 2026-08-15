@@ -59,7 +59,7 @@ export function useUserProfiles() {
     async (name: string, content: string): Promise<UserProfileSummary | null> => {
       const trimmed = name.trim()
       if (!trimmed) {
-        notifyError('用户 profile 名称不能为空')
+        notifyError('名称不能为空')
         return null
       }
       setCreating(true)
@@ -91,7 +91,7 @@ export function useUserProfiles() {
     }): Promise<UserProfileDetail | null> => {
       const trimmed = params.name.trim()
       if (!trimmed) {
-        notifyError('用户 profile 名称不能为空')
+        notifyError('名称不能为空')
         return null
       }
       setSaving(true)

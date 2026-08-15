@@ -64,7 +64,7 @@ function ProfilesPage() {
   }
 
   const handleDelete = async (id: string) => {
-    if (!window.confirm('确认删除该用户 profile？')) return
+    if (!window.confirm('确认删除该配置？')) return
     await remove(id)
     if (editingId === id) {
       setEditingId(null)

@@ -19,11 +19,6 @@ type SubscriptionsSectionProps = {
   onFetch: (id: string) => void
 }
 
-function activeLabel(sub: Subscription) {
-  if (sub.is_active) return '当前订阅'
-  return '设为当前'
-}
-
 function SubscriptionsSection({
   subscriptions,
   loading,
@@ -42,136 +37,110 @@ function SubscriptionsSection({
   onFetch,
 }: SubscriptionsSectionProps) {
   return (
-    <section className="rounded-lg border border-[color:var(--color-border-subtle)] bg-[color:var(--color-surface)] p-4">
-      <div className="flex items-center justify-between gap-2">
-        <h2 className="text-base font-medium text-[color:var(--color-text-main)]">订阅管理</h2>
-        <button
-          type="button"
-          className="rounded border border-[color:var(--color-border-subtle)] bg-[color:var(--color-surface-soft)] px-3 py-1 text-xs text-[color:var(--color-text-main)] hover:bg-[color:var(--color-accent)]"
-          onClick={onReload}
-        >
-          刷新
-        </button>
-      </div>
+    <section className="space-y-5">
+      <form onSubmit={onSubmit} className="ui-card p-8">
+        <div className="flex items-center justify-between gap-4">
+          <h2 className="text-lg font-semibold">
+            {editingId ? '编辑' : '新增'}
+          </h2>
+          <button type="button" className="ui-btn-default" onClick={onReload}>
+            刷新
+          </button>
+        </div>
 
-      <div className="mt-4 grid gap-6 md:grid-cols-[18rem_1fr]">
-        <form onSubmit={onSubmit} className="space-y-3">
+        <div className="mt-6 grid gap-5 md:grid-cols-2">
           <div>
-            <label className="block text-xs font-medium text-[color:var(--color-text-main)]">
-              订阅名称
-            </label>
+            <label className="text-lg text-[color:var(--color-text-muted)] block">名称</label>
             <input
-              className="mt-1 w-full rounded border border-[color:var(--color-border-subtle)] bg-[color:var(--color-surface-soft)] px-3 py-1.5 text-sm text-[color:var(--color-text-main)] outline-none ring-0 focus:border-[color:var(--color-primary)]"
+              className="ui-input mt-2"
               value={name}
               onChange={(e) => onChangeName(e.target.value)}
-              placeholder="例如：主订阅"
+              placeholder="主订阅"
             />
           </div>
-
           <div>
-            <label className="block text-xs font-medium text-[color:var(--color-text-main)]">
-              订阅 URL
-            </label>
+            <label className="text-lg text-[color:var(--color-text-muted)] block">地址</label>
             <input
-              className="mt-1 w-full rounded border border-[color:var(--color-border-subtle)] bg-[color:var(--color-surface-soft)] px-3 py-1.5 text-sm text-[color:var(--color-text-main)] outline-none ring-0 focus:border-[color:var(--color-primary)]"
+              className="ui-input mt-2"
               value={url}
               onChange={(e) => onChangeUrl(e.target.value)}
-              placeholder="例如：https://example.com/subscription"
+              placeholder="https://"
             />
           </div>
+        </div>
 
-          <div className="flex items-center gap-2 pt-1">
-            <button
-              type="submit"
-              disabled={saving}
-              className="whitespace-nowrap rounded bg-[color:var(--color-primary)] px-3 py-1.5 text-xs font-medium text-[color:var(--color-primary-on)] hover:bg-[#6b6f63] disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {editingId ? '保存修改' : '新增订阅'}
+        <div className="mt-6 flex items-center gap-3">
+          <button type="submit" disabled={saving} className="ui-btn-primary">
+            {editingId ? '保存' : '添加'}
+          </button>
+          {editingId && (
+            <button type="button" className="ui-btn-default" onClick={onResetForm}>
+              取消
             </button>
-            {editingId && (
-              <button
-                type="button"
-                className="rounded border border-[color:var(--color-border-subtle)] bg-[color:var(--color-surface-soft)] px-3 py-1.5 text-xs text-[color:var(--color-text-main)] hover:bg-[color:var(--color-accent)]"
-                onClick={onResetForm}
-              >
-                取消编辑
-              </button>
-            )}
-          </div>
-        </form>
-
-        <div className="min-w-0 space-y-2">
-          {loading ? (
-            <p className="text-xs text-[color:var(--color-text-muted)]">正在加载订阅列表…</p>
-          ) : subscriptions.length === 0 ? (
-            <p className="text-xs text-[color:var(--color-text-soft)]">
-              暂无订阅，请在左侧添加新的订阅。
-            </p>
-          ) : (
-            <ul className="space-y-2">
-              {subscriptions.map((sub) => (
-                <li
-                  key={sub.id}
-                  className="flex flex-col gap-2 rounded border border-[color:var(--color-border-subtle)] bg-[color:var(--color-surface-soft)] px-3 py-2 text-xs md:flex-row md:items-center md:justify-between"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="truncate font-semibold text-[color:var(--color-text-main)]">
-                        {sub.name}
-                      </span>
-                      {sub.is_active && (
-                        <span className="rounded-full bg-[color:var(--color-success-soft)] px-2 py-0.5 text-[10px] font-medium text-[color:var(--color-success)]">
-                          当前
-                        </span>
-                      )}
-                    </div>
-                    <p className="mt-0.5 truncate text-[11px] text-[color:var(--color-text-muted)]">
-                      {sub.url}
-                    </p>
-                    {sub.last_fetch_time && (
-                      <p className="mt-0.5 text-[11px] text-[color:var(--color-text-soft)]">
-                        最近拉取：{sub.last_fetch_time}（状态：
-                        {sub.last_fetch_status ?? '未知'}）
-                      </p>
-                    )}
-                  </div>
-
-                  <div className="flex flex-wrap items-center gap-1 md:flex-nowrap">
-                    <button
-                      type="button"
-                      className="rounded border border-[color:var(--color-border-subtle)] bg-[color:var(--color-surface-soft)] px-2 py-1 text-[11px] text-[color:var(--color-text-main)] hover:bg-[color:var(--color-accent)]"
-                      onClick={() => onEdit(sub)}
-                    >
-                      编辑
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded border border-[color:var(--color-danger)] bg-[color:var(--color-danger-soft)] px-2 py-1 text-[11px] text-[color:var(--color-danger)] hover:bg-[#f0c7bc]"
-                      onClick={() => onDelete(sub.id)}
-                    >
-                      删除
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded border border-[color:var(--color-success)] bg-[color:var(--color-success-soft)] px-2 py-1 text-[11px] text-[color:var(--color-success)] hover:bg-[#c6d7bd] disabled:cursor-default disabled:opacity-60"
-                      disabled={sub.is_active}
-                      onClick={() => onActivate(sub.id)}
-                    >
-                      {activeLabel(sub)}
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded border border-[color:var(--color-primary)] bg-[color:var(--color-surface-soft)] px-2 py-1 text-[11px] text-[color:var(--color-primary)] hover:bg-[color:var(--color-accent)]"
-                      onClick={() => onFetch(sub.id)}
-                    >
-                      拉取
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
           )}
         </div>
+      </form>
+
+      <div className="ui-card overflow-hidden p-4">
+        {loading ? (
+          <p className="text-lg text-[color:var(--color-text-muted)] px-4 py-8">加载中…</p>
+        ) : subscriptions.length === 0 ? (
+          <p className="text-lg text-[color:var(--color-text-muted)] px-4 py-8">暂无订阅</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="text-lg min-w-full">
+              <thead className="text-lg text-[color:var(--color-text-muted)] text-left">
+                <tr>
+                  <th className="px-4 py-4 font-medium">名称</th>
+                  <th className="px-4 py-4 font-medium">地址</th>
+                  <th className="px-4 py-4 text-right font-medium">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {subscriptions.map((sub) => (
+                  <tr key={sub.id} className="even:bg-[color:var(--color-surface-soft)]">
+                    <td className="px-4 py-5">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">{sub.name}</span>
+                        {sub.is_active && (
+                          <span className="inline-flex items-center rounded-full px-3 py-1 text-lg bg-[color:var(--color-success-soft)] text-[color:var(--color-success)]">
+                            当前
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="max-w-[22rem] px-4 py-5">
+                      <span className="block truncate text-[color:var(--color-text-muted)]">
+                        {sub.url}
+                      </span>
+                    </td>
+                    <td className="px-4 py-5">
+                      <div className="flex flex-wrap justify-end gap-2">
+                        <button type="button" className="ui-btn-default" onClick={() => onEdit(sub)}>
+                          编辑
+                        </button>
+                        <button type="button" className="ui-btn-danger" onClick={() => onDelete(sub.id)}>
+                          删除
+                        </button>
+                        <button
+                          type="button"
+                          className="ui-btn-success"
+                          disabled={sub.is_active}
+                          onClick={() => onActivate(sub.id)}
+                        >
+                          {sub.is_active ? '当前' : '启用'}
+                        </button>
+                        <button type="button" className="ui-btn-default" onClick={() => onFetch(sub.id)}>
+                          拉取
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
     </section>
   )

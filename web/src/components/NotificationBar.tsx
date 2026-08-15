@@ -8,27 +8,19 @@ function NotificationBar() {
   }
 
   return (
-    <div className="mb-3 space-y-1 text-xs">
+    <div className="shrink-0 space-y-2 px-6 pb-2">
       {error && (
-        <div className="flex items-start justify-between rounded-md border border-[color:var(--color-danger)] bg-[color:var(--color-danger-soft)] px-3 py-2 text-[color:var(--color-danger)]">
-          <p className="mr-2 break-words">{error}</p>
-          <button
-            type="button"
-            className="ml-auto text-[color:var(--color-danger)] hover:text-[#a85f51]"
-            onClick={clearError}
-          >
+        <div className="text-lg flex items-start justify-between rounded-2xl bg-[color:var(--color-danger-soft)] px-5 py-3 text-[color:var(--color-danger)]">
+          <p className="mr-3 break-words">{error}</p>
+          <button type="button" className="text-lg shrink-0 font-medium" onClick={clearError}>
             关闭
           </button>
         </div>
       )}
       {success && (
-        <div className="flex items-start justify-between rounded-md border border-[color:var(--color-success)] bg-[color:var(--color-success-soft)] px-3 py-2 text-[color:var(--color-success)]">
-          <p className="mr-2 break-words">{success}</p>
-          <button
-            type="button"
-            className="ml-auto text-[color:var(--color-success)] hover:text-[#5f7757]"
-            onClick={clearSuccess}
-          >
+        <div className="text-lg flex items-start justify-between rounded-2xl bg-[color:var(--color-success-soft)] px-5 py-3 text-[color:var(--color-success)]">
+          <p className="mr-3 break-words">{success}</p>
+          <button type="button" className="text-lg shrink-0 font-medium" onClick={clearSuccess}>
             关闭
           </button>
         </div>
