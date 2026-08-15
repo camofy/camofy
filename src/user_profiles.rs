@@ -1046,4 +1046,61 @@ mod tests {
         // 用户新增的自定义字段应当被保留
         assert_eq!(value.get("custom-key").and_then(|v| v.as_i64()), Some(42));
     }
+
+    #[test]
+    fn subscription_local_dns_endpoint_cannot_override_router_dns() {
+        let root = temp_root("subscription-local-dns");
+
+        let profile_id = "remote1".to_string();
+        let profile = ProfileMeta {
+            id: profile_id.clone(),
+            name: "remote".to_string(),
+            profile_type: ProfileType::Remote,
+            path: "subscriptions/remote1/subscription.yaml".to_string(),
+            url: None,
+            last_fetch_time: None,
+            last_fetch_status: None,
+            last_modified_time: None,
+        };
+
+        let mut app_cfg = AppConfig::default();
+        app_cfg.profiles.push(profile);
+        app_cfg.active_subscription_id = Some(profile_id);
+        save_app_config(&root, &app_cfg).expect("save_app_config failed");
+
+        let mut profile_dir = root.clone();
+        profile_dir.push("config");
+        profile_dir.push("subscriptions");
+        profile_dir.push("remote1");
+        fs::create_dir_all(&profile_dir).unwrap();
+
+        let profile_path = profile_dir.join("subscription.yaml");
+        fs::write(
+            &profile_path,
+            "dns:\n  listen: 127.0.0.1:7874\n  proxy-server-nameserver:\n    - udp://127.0.0.1:7874\n",
+        )
+        .expect("write remote profile");
+
+        generate_merged_config(&root).expect("generate_merged_config failed");
+
+        let content = fs::read_to_string(merged_config_path(&root)).expect("read merged.yaml");
+        let value: serde_yaml::Value = serde_yaml::from_str(&content).expect("parse merged.yaml");
+        let dns = value.get("dns").expect("merged config should contain dns");
+
+        assert_eq!(
+            dns.get("listen").and_then(|v| v.as_str()),
+            Some("0.0.0.0:1053")
+        );
+        assert_eq!(
+            dns.get("proxy-server-nameserver")
+                .and_then(|v| v.as_sequence())
+                .map(|servers| {
+                    servers
+                        .iter()
+                        .filter_map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                }),
+            Some(vec!["119.29.29.29", "223.5.5.5"])
+        );
+    }
 }
