@@ -14,10 +14,8 @@ function App() {
 
   if (!authReady) {
     return (
-      <div className="app-root bg-[color:var(--color-bg-app)] text-[color:var(--color-text-main)]">
-        <div className="mx-auto flex h-screen max-w-5xl flex-col px-4 py-8">
-          <p className="text-xs text-[color:var(--color-text-muted)]">正在初始化面板…</p>
-        </div>
+      <div className="app-root flex h-full items-center justify-center text-[color:var(--color-text-main)]">
+        <p className="text-lg text-[color:var(--color-text-muted)]">初始化中…</p>
       </div>
     )
   }

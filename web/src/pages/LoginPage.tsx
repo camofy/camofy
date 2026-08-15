@@ -2,8 +2,8 @@ import { type FormEvent, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../context/AuthContext'
 import { useNotifications } from '../context/NotificationContext'
-import AppShell from '../components/AppShell'
 import LoginPanel from '../components/LoginPanel'
+import NotificationBar from '../components/NotificationBar'
 
 function LoginPage() {
   const { login, authReady, passwordSet, token } = useAuth()
@@ -39,8 +39,11 @@ function LoginPage() {
   }
 
   return (
-    <AppShell>
-      <main className="flex flex-1 items-center justify-center">
+    <div className="app-root flex h-full flex-col overflow-auto">
+      <div className="mx-auto w-full max-w-sm px-4 pt-4">
+        <NotificationBar />
+      </div>
+      <main className="flex flex-1 items-center justify-center px-4 pb-16">
         <LoginPanel
           loginPassword={password}
           onLoginPasswordChange={setPassword}
@@ -48,9 +51,8 @@ function LoginPage() {
           loading={loading}
         />
       </main>
-    </AppShell>
+    </div>
   )
 }
 
 export default LoginPage
-

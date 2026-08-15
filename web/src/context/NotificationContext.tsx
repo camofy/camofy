@@ -5,6 +5,7 @@ import {
   useContext,
   useState,
 } from 'react'
+import { localizeNotice } from '../format'
 
 type NotificationContextValue = {
   error: string | null
@@ -25,12 +26,12 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
   const [success, setSuccess] = useState<string | null>(null)
 
   const notifyError = useCallback((message: string) => {
-    setError(message)
+    setError(localizeNotice(message))
     setSuccess(null)
   }, [])
 
   const notifySuccess = useCallback((message: string) => {
-    setSuccess(message)
+    setSuccess(localizeNotice(message))
     setError(null)
   }, [])
 
