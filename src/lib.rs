@@ -1,4 +1,5 @@
 pub mod engine;
+pub mod protocol;
 
 pub fn digest(bytes: impl AsRef<[u8]>) -> String {
     use sha2::{Digest, Sha256};

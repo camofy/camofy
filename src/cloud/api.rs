@@ -288,8 +288,29 @@ async fn save(
                 data["selections"].clone(),
             )
             .map_err(|_| Error::bad("selections must map group names to node names"))?;
+            let selections = serde_json::from_value(data["selections"].clone())?;
+            camofy::protocol::validate_selections(&selections)
+                .map_err(|e| Error::bad(e.to_string()))?;
+            data["selection_version"] = json!(
+                old.as_ref().map(crate::control::version).unwrap_or(0)
+                    + u64::from(
+                        old.as_ref()
+                            .is_none_or(|o| o.data["selections"] != data["selections"])
+                    )
+            );
         }
         "device" => {
+            for key in [
+                "rpc_jobs",
+                "selection_overrides",
+                "selection_version",
+                "binding_generation",
+            ] {
+                data[key] = old
+                    .as_ref()
+                    .map(|o| o.data[key].clone())
+                    .unwrap_or(Value::Null);
+            }
             reference(&data["bundle_id"], "bundle")?;
             if old
                 .as_ref()
@@ -309,6 +330,10 @@ async fn save(
                 .await?;
                 data["command"] = Value::Null;
                 data["reported"] = Value::Null;
+                data["binding_generation"] = json!(Uuid::new_v4());
+                data["rpc_jobs"] = json!([]);
+                data["selection_overrides"] = json!({});
+                data["selection_version"] = json!(0);
             }
         }
         _ => unreachable!(),
@@ -801,6 +826,21 @@ pub async fn control_device(
     let mut d = store::get(&app, &mut tx, user, id).await?;
     if d.kind != "device" {
         return Err(Error::bad("device required"));
+    }
+    if d.data["reported"]["protocol"].as_u64().unwrap_or(0) >= 2 {
+        tx.rollback().await?;
+        let result = crate::control::enqueue(
+            State(app),
+            h,
+            Path(id),
+            Json(camofy::protocol::RpcRequest {
+                method: format!("core.{}", c.action),
+                params: Value::Null,
+                idempotency_key: Uuid::new_v4().to_string(),
+            }),
+        )
+        .await?;
+        return Ok(Json(serde_json::to_value(result.0)?));
     }
     if d.data["command"]["expires_at"].as_u64().unwrap_or(0) > crate::now() {
         return Err(Error::new(

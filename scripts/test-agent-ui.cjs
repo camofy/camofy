@@ -17,6 +17,7 @@ function fixture(initial) {
         value: "",
         dataset: {},
         listeners: {},
+        replaceChildren() {},
         classList: {
           toggle(c, on) {
             on ? classes.add(c) : classes.delete(c);
@@ -93,6 +94,7 @@ function fixture(initial) {
 }
 const bound = () => ({
   bound: true,
+  authorized: true,
   cloud_url: "https://camofy.app",
   identity_name: "<home>",
   agent_version: "0.1.3",
@@ -167,4 +169,11 @@ test("expired binding can retry without terminal polling hiding the form", async
     cloud_url: "https://camofy.app/",
   });
   assert.equal(f.calls[1].redirect, "https://cloud.camofy.app/authorize");
+});
+test("bound LAN visitors cannot control the device without unlocking",async()=>{
+  const f=fixture({...bound(),authorized:false});await f.flush();
+  assert.equal(f.element("unlock").hidden,false);
+  assert.equal(f.element("dashboard").hidden,true);
+  assert.equal(f.element("proxy-panel").hidden,true);
+  assert.ok(f.buttons.every(b=>b.disabled));
 });
