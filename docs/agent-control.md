@@ -81,3 +81,21 @@ Verification covers migration of old overrides, first snapshot without RPC,
 readback-confirmed activity, tenant isolation, stable ordering, responsive browser
 interaction and a Unix child cleanup trap before termination returns. Use an isolated
 database/mock core for automated tests and real hardware for rollout verification.
+
+### v0.1.5 rollout verification
+
+The main and tag Linux CI suites and all release builds passed. A physical ARMv7
+router upgraded from v0.1.4 using the published, checksum-verified release asset.
+Its historical device override was discarded and its identity selection was
+automatically read back without a manual snapshot request. Changing the identity
+to a nested select group updated the router's actual group and leaf selection,
+produced a confirmed activity event and a successful device-side latency result.
+The running YAML hash and core PID stayed unchanged during this selection update;
+group/member ordering also stayed unchanged.
+
+The old-core upgrade and new-Agent stop operation both removed the TUN interface
+and policy routes before proceeding. Starting the core restored the original
+identity selection and running state. No force signal or global firewall flush was
+used. Production desktop/mobile checks covered read-only preview, nested path,
+search, sorting and URL persistence after reload. Unrelated services were not
+restarted during the cloud-only image update.
