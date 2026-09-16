@@ -20,6 +20,7 @@ jobs:
           components: rustfmt
       - uses: oven-sh/setup-bun@v2
       - run: node --check site/site-assets/site.js && node --test site/tests/site.test.cjs
+      - run: node --check src/agent/pair.js && node --test scripts/test-agent-ui.cjs
       - run: cargo fmt --all -- --check
       - run: sh scripts/test-installer.sh "$PWD/install.sh"
       - run: cargo test --locked --lib --bin camofy-cloud
@@ -30,6 +31,7 @@ jobs:
         env:
           TEST_DATABASE_URL: postgres://postgres:test-only@localhost:5432/camofy_test
       - run: cargo build --locked --no-default-features --features agent --bin camofy-agent --example mock-core
+      - run: cargo test --locked --no-default-features --features agent --bin camofy-agent
       - run: cargo test --locked --bin camofy-cloud cloud_end_to_end -- --ignored
         env:
           TEST_DATABASE_URL: postgres://postgres:test-only@localhost:5432/camofy_test
