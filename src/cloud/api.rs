@@ -19,6 +19,7 @@ pub async fn resources(State(app): State<App>, h: HeaderMap) -> Result<Json<Valu
         .await?;
     let mut records = store::list(&app, &mut conn, user).await?;
     let snapshot = records.clone();
+    records.retain(|r| r.kind != "proxy");
     for r in &mut records {
         if r.kind == "bundle" {
             r.data["system_profile"] = store::system_profile(&app.origin)?;
@@ -29,6 +30,7 @@ pub async fn resources(State(app): State<App>, h: HeaderMap) -> Result<Json<Valu
             crate::provider::redact(&mut r.data);
         }
         if r.kind == "profile" && r.data["type"] == "source" {
+            redact_source(&mut r.data);
             r.data["usage_summary"] = json!(crate::usage::profile_view(&app, user, r));
             r.data.as_object_mut().unwrap().remove("content");
             for key in ["usage", "usage_previous", "content_fingerprint"] {
@@ -36,8 +38,17 @@ pub async fn resources(State(app): State<App>, h: HeaderMap) -> Result<Json<Valu
             }
         }
     }
+    if auth::role(&app, user).await? == "admin" {
+        records.extend(crate::admin::list_records(&app, &mut conn).await?);
+    }
     conn.commit().await?;
     Ok(Json(json!(records)))
+}
+
+fn redact_source(data: &mut Value) {
+    for key in ["proxy_id", "last_proxy", "last_proxy_at"] {
+        data.as_object_mut().unwrap().remove(key);
+    }
 }
 
 #[derive(Deserialize)]
@@ -85,7 +96,7 @@ async fn save(
     app: App,
     h: HeaderMap,
     id: Uuid,
-    mut e: Edit,
+    e: Edit,
     new: bool,
 ) -> Result<Json<Resource>, Error> {
     let user = auth::user(&app, &h, true).await?;
@@ -94,29 +105,8 @@ async fn save(
         return Err(Error::bad("unknown resource kind"));
     }
     if e.kind == "proxy" {
-        if !e.data.is_object()
-            || e.data["name"]
-                .as_str()
-                .is_none_or(|s| s.trim().is_empty() || s.len() > 120)
-        {
-            return Err(Error::bad("proxy data and name required"));
-        }
-        let old = if new {
-            None
-        } else {
-            let mut conn = app.db.acquire().await?;
-            let r = store::get(&app, &mut conn, user, id).await?;
-            if r.kind != "proxy" || e.version != Some(r.version) {
-                return Err(Error::new(
-                    StatusCode::CONFLICT,
-                    "resource changed; reload before saving",
-                ));
-            }
-            Some(r)
-        };
-        crate::provider::provision(&app, user, &mut e.data, old.as_ref().map(|r| &r.data))
-            .await
-            .map_err(|e| Error::bad(e.to_string()))?;
+        auth::admin(&app, &h, true).await?;
+        return Err(Error::bad("use the platform proxy administration API"));
     }
     let mut tx = app.db.begin().await?;
     store::lock(&mut tx, user).await?;
@@ -213,6 +203,11 @@ async fn save(
                 return Err(Error::bad("profile type cannot be changed"));
             }
             if t == "source" {
+                // Preserve the legacy association, but never accept or apply tenant overrides.
+                data.as_object_mut().unwrap().remove("proxy_id");
+                if let Some(value) = old.as_ref().and_then(|r| r.data.get("proxy_id")) {
+                    data["proxy_id"] = value.clone();
+                }
                 let u = url::Url::parse(
                     data["url"]
                         .as_str()
@@ -227,9 +222,6 @@ async fn save(
                     return Err(Error::bad(
                         "subscription must use HTTP(S) without URL userinfo",
                     ));
-                }
-                if !data["proxy_id"].is_null() {
-                    reference(&data["proxy_id"], "proxy")?;
                 }
                 let interval = data["interval_seconds"].as_i64().unwrap_or(3600);
                 if !(300..=604800).contains(&interval) {
@@ -357,9 +349,7 @@ async fn save(
     }
     if r.kind == "profile" && r.data["type"] == "source" {
         // Save schedules even when auto refresh is off: one initial/manual refresh is allowed.
-        let fetch_changed = old.as_ref().is_some_and(|o| {
-            o.data["url"] != r.data["url"] || o.data["proxy_id"] != r.data["proxy_id"]
-        });
+        let fetch_changed = old.as_ref().is_some_and(|o| o.data["url"] != r.data["url"]);
         if new || fetch_changed {
             sqlx::query("INSERT INTO fetch_jobs(profile_id,user_id,reason) VALUES($1,$2,$3) ON CONFLICT(profile_id) DO UPDATE SET next_run=now(),reason=EXCLUDED.reason,request_id=gen_random_uuid()")
                 .bind(id).bind(user).bind(if new { "initial" } else { "settings" }).execute(&mut *tx).await?;
@@ -400,6 +390,7 @@ async fn save(
         crate::provider::redact(&mut r.data);
     }
     if r.kind == "profile" && r.data["type"] == "source" {
+        redact_source(&mut r.data);
         r.data.as_object_mut().unwrap().remove("content");
     }
     Ok(Json(r))
@@ -413,7 +404,13 @@ pub async fn delete(
     let user = auth::user(&app, &h, true).await?;
     let mut tx = app.db.begin().await?;
     store::lock(&mut tx, user).await?;
-    store::get(&app, &mut tx, user, id).await?;
+    let target = store::get(&app, &mut tx, user, id).await?;
+    if target.kind == "proxy" {
+        auth::admin(&app, &h, true).await?;
+        return Err(Error::bad(
+            "legacy proxies are retained; use platform proxy administration",
+        ));
+    }
     for r in store::list(&app, &mut tx, user).await? {
         if ["proxy_id", "bundle_id"]
             .iter()

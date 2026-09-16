@@ -82,7 +82,7 @@ pub fn failure(error: &anyhow::Error, stage: &str) -> (&'static str, String) {
         ),
         "proxy" => (
             "proxy_failure",
-            "代理解析、提取或连接失败，请检查供应商额度、白名单及代理可用性。".into(),
+            "平台订阅出口暂不可用，已保留上次成功配置，请稍后重试。".into(),
         ),
         "timeout" => (
             "timeout",

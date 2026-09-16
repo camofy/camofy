@@ -117,6 +117,74 @@ pub async fn addresses(url: &url::Url, private: bool) -> Result<Vec<SocketAddr>>
     Ok(addrs)
 }
 
+/// User-controlled subscription names never enter the host's recursive resolver.
+/// The fixed HTTPS resolver receives the query; ECS is explicitly disabled.
+async fn subscription_addresses(target: &url::Url, private: bool) -> Result<Vec<SocketAddr>> {
+    let host = target
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("missing host"))?
+        .trim_matches(['[', ']']);
+    if private || host.parse::<IpAddr>().is_ok() {
+        return addresses(target, private).await;
+    }
+    let port = target
+        .port_or_known_default()
+        .ok_or_else(|| anyhow::anyhow!("missing port"))?;
+    let query = async |kind: u16| -> Result<Vec<SocketAddr>> {
+        let mut u = url::Url::parse("https://dns.google/resolve")?;
+        u.query_pairs_mut()
+            .append_pair("name", host)
+            .append_pair("type", &kind.to_string())
+            .append_pair("edns_client_subnet", "0.0.0.0/0");
+        dns_result(&fetch_text(&u, false).await?, host, kind, port)
+    };
+    let (mut a, aaaa) = tokio::try_join!(query(1), query(28))?;
+    a.extend(aaaa);
+    ensure!(!a.is_empty(), "subscription DNS has no public addresses");
+    Ok(a)
+}
+fn dns_result(body: &str, host: &str, kind: u16, port: u16) -> Result<Vec<SocketAddr>> {
+    let v: Value = serde_json::from_str(body)?;
+    ensure!(
+        v["Status"] == 0
+            && v["Question"][0]["type"] == kind
+            && v["Question"][0]["name"]
+                .as_str()
+                .is_some_and(|s| s.trim_end_matches('.').eq_ignore_ascii_case(host)),
+        "invalid DNS response"
+    );
+    let entries = v["Answer"].as_array().cloned().unwrap_or_default();
+    let mut names = std::collections::HashSet::from([host.trim_end_matches('.').to_lowercase()]);
+    for _ in 0..16 {
+        for e in &entries {
+            if e["type"] == 5
+                && e["name"]
+                    .as_str()
+                    .is_some_and(|s| names.contains(&s.trim_end_matches('.').to_lowercase()))
+                && let Some(s) = e["data"].as_str()
+            {
+                names.insert(s.trim_end_matches('.').to_lowercase());
+            }
+        }
+    }
+    let mut result = Vec::new();
+    for e in entries {
+        if e["type"] == kind
+            && e["name"]
+                .as_str()
+                .is_some_and(|s| names.contains(&s.trim_end_matches('.').to_lowercase()))
+        {
+            let ip: IpAddr = e["data"].as_str().unwrap_or("").parse()?;
+            ensure!(
+                public_ip(ip) && ((kind == 1 && ip.is_ipv4()) || (kind == 28 && ip.is_ipv6())),
+                "DNS returned an unsafe address"
+            );
+            result.push(SocketAddr::new(ip, port));
+        }
+    }
+    Ok(result)
+}
+
 /// Small provider/egress responses, never redirects, environment proxies or unpinned DNS.
 /// Intentionally sanitizes transport errors: API URLs contain credentials.
 pub async fn fetch_text(target: &url::Url, private: bool) -> Result<String> {
@@ -204,7 +272,7 @@ pub async fn fetch(url: &str, proxy: Option<&str>, private: bool) -> Result<Fetc
             && target.password().is_none(),
         "subscription URL must be HTTP(S), without userinfo"
     );
-    let addrs = addresses(&target, private).await?;
+    let addrs = subscription_addresses(&target, private).await?;
     let mut bridge = None;
     let mut builder = reqwest::Client::builder()
         .no_proxy()
@@ -414,6 +482,36 @@ async fn socks_handshake(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn trusted_dns_validates_question_chain_family_and_public_addresses() {
+        let mut d = json!({"Status":0,"Question":[{"name":"example.com.","type":1}],"Answer":[
+            {"name":"example.com.","type":5,"data":"cdn.example."},
+            {"name":"cdn.example.","type":1,"data":"8.8.8.8"},
+            {"name":"unrelated.example.","type":1,"data":"127.0.0.1"}]});
+        assert_eq!(
+            dns_result(&d.to_string(), "example.com", 1, 443).unwrap(),
+            vec!["8.8.8.8:443".parse::<SocketAddr>().unwrap()]
+        );
+        for ip in [
+            "127.0.0.1",
+            "169.254.169.254",
+            "10.0.0.1",
+            "::ffff:127.0.0.1",
+            "2001:4860:4860::8888",
+        ] {
+            d["Answer"][1]["data"] = json!(ip);
+            assert!(dns_result(&d.to_string(), "example.com", 1, 443).is_err());
+        }
+        d["Answer"] = json!([]);
+        assert!(
+            dns_result(&d.to_string(), "example.com", 1, 443)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(dns_result(&d.to_string(), "attacker.example", 1, 443).is_err());
+        d["Status"] = json!(3);
+        assert!(dns_result(&d.to_string(), "example.com", 1, 443).is_err());
+    }
     #[tokio::test]
     async fn socks_proxy_pins_target_and_direct_fetch_rejects_redirects() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

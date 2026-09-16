@@ -53,25 +53,12 @@ pub async fn once(app: &App) -> Result<bool, Error> {
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
-    let (profile, proxy) = {
+    let (profile, policy) = {
         let mut conn = app.db.acquire().await?;
         let p = store::get(app, &mut conn, user, id).await?;
-        let proxy = if let Some(s) = p.data["proxy_id"].as_str() {
-            Some(
-                store::get(
-                    app,
-                    &mut conn,
-                    user,
-                    Uuid::parse_str(s).map_err(|_| Error::bad("invalid proxy ID"))?,
-                )
-                .await?,
-            )
-        } else {
-            None
-        };
+        let proxy = crate::admin::snapshot(app, &mut conn).await?;
         (p, proxy)
     };
-    let mut last_proxy = None;
     let mut stage = "proxy";
     let mut attempts = 0;
     let mut failures = Vec::new();
@@ -81,20 +68,16 @@ pub async fn once(app: &App) -> Result<bool, Error> {
             attempts += 1;
             stage = "proxy";
             let attempt = async {
-                let endpoint = if let Some(p) = &proxy {
-                    crate::provider::extraction_slot(app, &p.data).await?;
-                    let endpoint = crate::provider::resolve(&p.data, app.private_egress).await?;
-                    if p.data["provider"] == "xiequ" {
-                        last_proxy = Some((endpoint.clone(), crate::now()));
-                    }
-                    Some(endpoint)
-                } else {
-                    None
-                };
+                let p = policy
+                    .proxy
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("platform egress unavailable"))?;
+                crate::provider::extraction_slot(app, &p.data).await?;
+                let endpoint = crate::provider::resolve(&p.data, app.private_egress).await?;
                 stage = "fetch";
                 security::fetch(
                     profile.data["url"].as_str().unwrap_or(""),
-                    endpoint.as_deref(),
+                    Some(&endpoint),
                     app.private_egress,
                 )
                 .await
@@ -142,19 +125,34 @@ pub async fn once(app: &App) -> Result<bool, Error> {
             let unchanged = store::get(app, &mut conn, user, id)
                 .await
                 .is_ok_and(|p| p.version == profile.version);
-            let same_proxy = if let Some(p) = &proxy {
-                store::get(app, &mut conn, user, p.id)
+            let same_proxy = policy.same(
+                &crate::admin::snapshot(app, &mut conn)
                     .await
-                    .is_ok_and(|r| r.version == p.version)
-            } else {
-                true
-            };
+                    .map_err(|_| anyhow::anyhow!("platform egress unavailable"))?,
+            );
             if !active || !unchanged || !same_proxy {
                 break result;
             }
         }
     };
-    let result = match tokio::time::timeout(retry::TOTAL_TIMEOUT, fetch).await {
+    let changed = async {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            let mut conn = app.db.acquire().await?;
+            if !policy.same(&crate::admin::snapshot(app, &mut conn).await?) {
+                break;
+            }
+        }
+        Ok::<(), Error>(())
+    };
+    let result = match tokio::time::timeout(retry::TOTAL_TIMEOUT, async {
+        tokio::select! {
+            result = fetch => result,
+            _ = changed => Err(anyhow::anyhow!("platform egress changed or unavailable")),
+        }
+    })
+    .await
+    {
         Ok(result) => result,
         Err(_) => {
             stage = "timeout";
@@ -162,6 +160,10 @@ pub async fn once(app: &App) -> Result<bool, Error> {
         }
     };
     let mut tx = app.db.begin().await?;
+    // Serialize result publication with policy changes, across all tenants/replicas.
+    sqlx::query("SELECT pg_advisory_xact_lock_shared(739214801)")
+        .execute(&mut *tx)
+        .await?;
     store::lock(&mut tx, user).await?;
     let pending: Option<bool> = sqlx::query_scalar(
         "SELECT request_id<>$3 FROM fetch_jobs WHERE profile_id=$1 AND claim=$2 FOR UPDATE",
@@ -185,13 +187,7 @@ pub async fn once(app: &App) -> Result<bool, Error> {
         return Ok(true);
     };
     let mut current = store::get(app, &mut tx, user, id).await?;
-    let proxy_unchanged = if let Some(p) = &proxy {
-        store::get(app, &mut tx, user, p.id)
-            .await
-            .is_ok_and(|x| x.version == p.version)
-    } else {
-        true
-    };
+    let proxy_unchanged = policy.same(&crate::admin::snapshot(app, &mut tx).await?);
     if current.version != profile.version || !proxy_unchanged {
         history::finish(
             &mut tx,
@@ -209,8 +205,12 @@ pub async fn once(app: &App) -> Result<bool, Error> {
         return Ok(true);
     }
     current.data["last_fetch"] = json!(crate::now());
-    current.data["last_proxy"] = json!(last_proxy.as_ref().map(|p| &p.0));
-    current.data["last_proxy_at"] = json!(last_proxy.map(|p| p.1));
+    current.data.as_object_mut().unwrap().remove("last_proxy");
+    current
+        .data
+        .as_object_mut()
+        .unwrap()
+        .remove("last_proxy_at");
     let old_content = current.data["content"].clone();
     let failure = match result {
         Ok(fetched) => {

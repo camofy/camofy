@@ -290,7 +290,7 @@ export function Editor({
                       ip: string;
                       proof: unknown;
                       expires_at: number;
-                    }>("/proxies/egress-preview", "POST", {})
+                    }>("/admin/proxies/egress-preview", "POST", {})
                       .then(setEgress)
                       .catch((e) => setError(e.message))
                       .finally(() => setPreviewing(false));
@@ -347,25 +347,9 @@ export function Editor({
                 onChange={(e) => set("url", e.target.value)}
               />
             </label>
-            <label>
-              拉取代理
-              <select
-                value={data.proxy_id ?? ""}
-                onChange={(e) => set("proxy_id", e.target.value || null)}
-              >
-                <option value="">直连</option>
-                {options("proxy").map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.data.type === "source"
-                      ? "订阅源 · "
-                      : r.data.type === "overlay"
-                        ? "配置 · "
-                        : ""}
-                    {r.data.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <p className="muted">
+              订阅出口由平台统一管理；暂不可用时保留上次成功配置。
+            </p>
             <label className="check">
               <input
                 type="checkbox"
@@ -388,7 +372,7 @@ export function Editor({
               />
             </label>
             <p className="muted">
-              定时刷新与立即刷新均通过上面选择的代理。失败会保留上次成功内容。
+              定时刷新与立即刷新均使用平台统一出口。失败会保留上次成功内容。
             </p>
             <label>
               共用额度池（可选）

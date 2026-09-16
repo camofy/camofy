@@ -14,6 +14,7 @@ import {
   ConfigPreview,
   Copy,
   Empty,
+  FieldActionRow,
   Icon,
   Modal,
   Panel,
@@ -113,6 +114,7 @@ export function CollectionPage({ section }: { section: Section }) {
   return (
     <>
       <Heading section={section}>{create}</Heading>
+      {section === "proxies" && <GlobalEgress />}
       {section === "identities" && (
         <div className="identity-intro">
           <div>
@@ -311,17 +313,11 @@ export function CollectionPage({ section }: { section: Section }) {
                   )}
                   <td>
                     {section === "subscriptions" ? (
-                      r.data.proxy_id ? (
-                        <ResourceLink
-                          r={resources.find((p) => p.id === r.data.proxy_id)}
-                        />
-                      ) : (
-                        "直连"
-                      )
+                      "平台统一管理"
                     ) : section === "profiles" ? (
                       `${refCount(r.id)} 个身份引用`
                     ) : section === "proxies" ? (
-                      `${resources.filter((p) => p.data.proxy_id === r.id).length} 个订阅源`
+                      "平台共享"
                     ) : (
                       <ResourceLink
                         r={resources.find((p) => p.id === r.data.bundle_id)}
@@ -370,6 +366,99 @@ export function CollectionPage({ section }: { section: Section }) {
         </p>
       )}
     </>
+  );
+}
+function GlobalEgress() {
+  const { resources, busy, run } = useWorkspace();
+  const [policy, setPolicy] = useState<{
+    proxy_id: string | null;
+    version: number;
+  }>();
+  const [selected, setSelected] = useState("");
+  const [error, setError] = useState("");
+  const [confirm, setConfirm] = useState(false);
+  const reload = () => {
+    void api<{ proxy_id: string | null; version: number }>(
+      "/admin/subscription-egress",
+    )
+      .then((p) => {
+        setError("");
+        setPolicy(p);
+        setSelected(p.proxy_id ?? "");
+      })
+      .catch((e: Error) => setError(e.message));
+  };
+  useEffect(reload, []);
+  const proxies = resources.filter((r) => r.kind === "proxy");
+  return (
+    <Panel
+      title="全局订阅出口"
+      description="所有用户的首次拉取、手动和定时刷新均使用此出口。"
+      actions={
+        <span className="chip">
+          {policy ? (policy.proxy_id ? "统一代理" : "刷新已暂停") : "读取中"}
+        </span>
+      }
+    >
+      <PanelBody>
+        {error && (
+          <p role="alert" className="inline-error">
+            {error} <button onClick={reload}>重新读取</button>
+          </p>
+        )}
+        <FieldActionRow>
+          <label>
+            生效代理
+            <select
+              value={selected}
+              disabled={!policy || busy}
+              onChange={(e) => setSelected(e.target.value)}
+            >
+              <option value="">暂停订阅拉取（不直连）</option>
+              {proxies.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.data.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            className="primary"
+            disabled={!policy || busy || selected === (policy.proxy_id ?? "")}
+            onClick={() => setConfirm(true)}
+          >
+            应用出口
+          </button>
+        </FieldActionRow>
+        <p className="muted">
+          代理故障时保留上次成功配置，不会回退直连。切换不改变设备流量，也不会立即刷新全部订阅。
+        </p>
+      </PanelBody>
+      {confirm && policy && (
+        <Confirm
+          title={selected ? "切换全局订阅出口？" : "暂停全平台订阅拉取？"}
+          text="此操作影响所有用户的后续订阅刷新；已下发配置继续有效。在途任务将取消并重新排队。"
+          close={() => setConfirm(false)}
+          action={async () => {
+            const next = await run(
+              () =>
+                api<{ proxy_id: string | null; version: number }>(
+                  "/admin/subscription-egress",
+                  "PUT",
+                  { version: policy.version, proxy_id: selected || null },
+                ),
+              "全局订阅出口已更新。",
+            );
+            if (next) {
+              setPolicy(next);
+              setSelected(next.proxy_id ?? "");
+            } else {
+              reload();
+            }
+          }}
+        />
+      )}
+    </Panel>
   );
 }
 function Facts({ items }: { items: [string, ReactNode][] }) {
@@ -1022,18 +1111,7 @@ export function DetailPage({ section }: { section: Section }) {
                         ["上游站点", host(r.data.url)],
                         ["自动刷新", interval(r)],
                         ["最近刷新", displayTime(r.data.last_fetch)],
-                        [
-                          "拉取出口",
-                          r.data.proxy_id ? (
-                            <ResourceLink
-                              r={resources.find(
-                                (x) => x.id === r.data.proxy_id,
-                              )}
-                            />
-                          ) : (
-                            "直连"
-                          ),
-                        ],
+                        ["拉取出口", "平台统一管理"],
                         ["配置版本", `v${r.version}`],
                       ]}
                     />
@@ -1070,7 +1148,6 @@ export function DetailPage({ section }: { section: Section }) {
                       ["固定出口", r.data.endpoint ?? "—"],
                       ["白名单 IP", r.data.whitelist_ip ?? "—"],
                       ["白名单确认", displayTime(r.data.whitelist_at)],
-                      ["最近提取", displayTime(r.data.last_proxy_at)],
                     ]}
                   />
                 ) : (
@@ -1173,7 +1250,9 @@ export function DetailPage({ section }: { section: Section }) {
                 )}
               </section>
             )}
-            {section !== "devices" && <References r={r} />}
+            {section !== "devices" && section !== "proxies" && (
+              <References r={r} />
+            )}
           </div>
           <aside className="panel guidance">
             <Icon name={meta(section).icon} size={24} />
@@ -1256,7 +1335,12 @@ export function DetailPage({ section }: { section: Section }) {
           close={() => setRemove(false)}
           action={async () => {
             const result = await run(async () => {
-              await api(`/resources/${r.id}`, "DELETE");
+              await api(
+                r.kind === "proxy"
+                  ? `/admin/proxies/${r.id}`
+                  : `/resources/${r.id}`,
+                "DELETE",
+              );
               return true;
             }, "已删除。");
             if (result) navigate(`/${section}`);
@@ -1297,7 +1381,6 @@ export function EditPage({
         ? {
             type: "source",
             url: "",
-            proxy_id: null,
             auto_refresh: true,
             interval_seconds: 3600,
           }
@@ -1345,10 +1428,12 @@ export function EditPage({
             {section === "identities"
               ? "启用开关属于此身份中的关联。一个 Profile 可以在不同身份中采用不同的启用状态。"
               : section === "subscriptions"
-                ? "填写机场提供的 Clash YAML 地址，选择云端拉取代理。源内容更新后，关联身份自动重新生成。"
+                ? "填写机场提供的 Clash YAML 地址，拉取出口由平台统一管理。源内容更新后，关联身份自动重新生成。"
                 : section === "profiles"
                   ? "建议每份 Profile 负责一个用途，例如自定义规则、专用节点或关闭 TUN，便于复用和排查。"
-                  : "配置将保存在当前工作区，与其他账号隔离。"}
+                  : section === "proxies"
+                    ? "此配置由管理员共同管理，供全平台订阅拉取使用。保存后还需在出口列表中选为全局生效代理。"
+                    : "配置将保存在当前工作区，与其他账号隔离。"}
           </p>
           <div className="guidance-rule" />
           <p className="muted">
