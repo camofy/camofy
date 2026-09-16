@@ -1,5 +1,6 @@
 mod api;
 mod auth;
+mod catalog;
 mod downloads;
 mod oauth;
 mod provider;
@@ -102,6 +103,23 @@ pub fn router(app: App) -> Router {
         .route("/api/auth/register", post(auth::register))
         .route("/api/auth/login", post(auth::login))
         .route("/api/auth/me", get(auth::me))
+        .route("/api/account", axum::routing::patch(auth::update_account))
+        .route(
+            "/api/store/packages",
+            get(catalog::listing).post(catalog::publish),
+        )
+        .route("/api/store/packages/:slug", get(catalog::detail))
+        .route("/api/store/install", post(catalog::install))
+        .route(
+            "/api/store/identity-preview",
+            post(catalog::identity_preview),
+        )
+        .route(
+            "/api/profiles/:id/upgrade-preview",
+            post(catalog::upgrade_preview),
+        )
+        .route("/api/profiles/:id/upgrade", post(catalog::upgrade))
+        .route("/api/profiles/:id/fork", post(catalog::fork))
         .route("/api/auth/logout", post(auth::logout))
         .route(
             "/api/oauth/device_authorization",

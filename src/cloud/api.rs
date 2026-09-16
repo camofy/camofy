@@ -108,6 +108,26 @@ async fn save(
     let object = data
         .as_object_mut()
         .ok_or_else(|| Error::bad("data must be an object"))?;
+    object.remove("_package");
+    if new && (object.contains_key("store") || object.get("origin").is_some_and(|v| v == "store")) {
+        return Err(Error::bad("install managed profiles through the store"));
+    }
+    if let Some(old) = &old {
+        if old.data["store"].is_object() {
+            if data["content"] != old.data["content"]
+                || data["store"] != old.data["store"]
+                || data["type"] != old.data["type"]
+            {
+                return Err(Error::bad(
+                    "managed content is immutable; use upgrade or fork",
+                ));
+            }
+            data["origin"] = json!("store");
+        } else if data.get("store").is_some() || data["origin"] == "store" {
+            return Err(Error::bad("cannot forge managed profile metadata"));
+        }
+    }
+    let object = data.as_object_mut().unwrap();
     for key in [
         "error",
         "last_fetch",
@@ -188,12 +208,14 @@ async fn save(
                     .map(|r| r.data["content"].clone())
                     .unwrap_or(Value::Null);
             } else if t == "overlay" {
-                camofy::engine::parse(
-                    data["content"]
-                        .as_str()
-                        .ok_or_else(|| Error::bad("overlay YAML required"))?,
-                )
-                .map_err(|e| Error::bad(e.to_string()))?;
+                if !data["store"].is_object() {
+                    camofy::engine::parse(
+                        data["content"]
+                            .as_str()
+                            .ok_or_else(|| Error::bad("overlay YAML required"))?,
+                    )
+                    .map_err(|e| Error::bad(e.to_string()))?;
+                }
             } else {
                 return Err(Error::bad("profile type must be source or overlay"));
             }
@@ -254,6 +276,21 @@ async fn save(
         data,
     };
     store::put(&app, &mut tx, user, &r).await?;
+    // A managed identity edit must be valid before its association can be committed.
+    if r.kind == "bundle"
+        && r.data["profiles"].as_array().is_some_and(|bs| {
+            bs.iter().any(|b| {
+                b["enabled"] == true
+                    && records.iter().any(|p| {
+                        p.id.to_string() == b["profile_id"].as_str().unwrap_or("")
+                            && p.data["store"].is_object()
+                    })
+            })
+        })
+    {
+        store::render_bundle(&records, &r.data, &app.origin)
+            .map_err(|e| Error::bad(e.to_string()))?;
+    }
     if new && r.kind == "bundle" {
         let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
         sqlx::query("INSERT INTO access_tokens(hash,user_id,bundle_id,label) VALUES($1,$2,$3,$4)")

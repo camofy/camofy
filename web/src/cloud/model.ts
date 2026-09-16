@@ -1,4 +1,7 @@
 export type Data = {
+  origin?: string;
+  store?: { slug: string; version_id: string; update_policy: string };
+  _package?: { version: string; manifest: import("./Store").PackageManifest };
   name: string;
   type?: string;
   url?: string;
@@ -17,7 +20,11 @@ export type Data = {
   proxy_id?: string | null;
   interval_seconds?: number;
   auto_refresh?: boolean;
-  profiles?: { profile_id: string; enabled: boolean }[];
+  profiles?: {
+    profile_id: string;
+    enabled: boolean;
+    parameters?: { policy?: string };
+  }[];
   subscription_url?: string;
   selections?: Record<string, string>;
   bundle_id?: string;
@@ -56,7 +63,7 @@ export type Issued = {
   subscription_base: string;
   device_id?: string;
 };
-export type User = { email: string };
+export type User = { email: string; nickname?: string };
 export const formats = ["clash", "shadowrocket", "shadowrocket-nodes"];
 export const labels: Record<string, string> = {
   profile: "配置 Profile",
