@@ -720,13 +720,6 @@ p {
   background: #fff;
   padding: 23px 22px 0;
   min-width: 0;
-  transition:
-    border-color 0.15s,
-    box-shadow 0.15s;
-}
-.identity-card:hover {
-  border-color: #c2d0ba;
-  box-shadow: 0 6px 16px #26482b05;
 }
 .card-top {
   display: flex;
