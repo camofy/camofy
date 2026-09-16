@@ -53,6 +53,26 @@ fn strict_rule_parameters_and_dependency_checks() {
     );
 }
 
+#[test]
+fn provenance_cannot_inject_yaml_through_comment_line_separators() {
+    let p = Resource {
+        id: Uuid::new_v4(),
+        kind: "profile".into(),
+        version: 1,
+        data: json!({"type":"overlay","content":"rules: ['MATCH,DIRECT']","provenance":[{"license_text":"MIT\rmode: global\u{85}mixed-port: 22\u{2028}rules: []\u{2029}secret: injected"}]}),
+    };
+    let (a, _) = crate::store::render_bundle(
+        &[p.clone()],
+        &json!({"profiles":[{"profile_id":p.id,"enabled":true}]}),
+        "https://cloud.example",
+    )
+    .unwrap();
+    let v = camofy::engine::parse(a["clash"]["content"].as_str().unwrap()).unwrap();
+    assert_eq!(v["mode"], "rule");
+    assert!(v["secret"].is_null());
+    assert_eq!(v["rules"][0], "DOMAIN,cloud.example,DIRECT");
+}
+
 /// Isolated database only; real HTTP/auth/SQL/compiler, no external network or subscriber traffic.
 #[tokio::test]
 #[ignore = "requires TEST_DATABASE_URL pointing to disposable PostgreSQL"]
