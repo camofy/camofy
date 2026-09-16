@@ -19,6 +19,7 @@ import {
 import { WorkspaceContext } from "./cloud/context";
 import { Login } from "./cloud/Forms";
 import Authorize from "./cloud/Authorize";
+import { StorePage, StoreDetail, AccountPage } from "./cloud/Store";
 import { Icon, Modal, Copy } from "./cloud/ui";
 import { sections, sectionOf } from "./cloud/navigation";
 import { CollectionPage, DetailPage, EditPage, NotFound } from "./cloud/pages";
@@ -225,6 +226,16 @@ function CloudWorkspace() {
           </div>
           <div className="nav-caption">配置管理</div>
           <nav aria-label="主导航">
+            <NavLink
+              to="/store"
+              className={({ isActive }) =>
+                `nav-item ${isActive ? "active" : ""}`
+              }
+              onClick={() => setMobile(false)}
+            >
+              <Icon name="layers" />
+              <span>Profile 商店</span>
+            </NavLink>
             {sections.map((s, i) => (
               <NavLink
                 key={s.key}
@@ -256,7 +267,13 @@ function CloudWorkspace() {
             <span className="account-avatar">
               {user.email[0].toUpperCase()}
             </span>
-            <span title={user.email}>{user.email}</span>
+            <Link
+              to="/account"
+              title="个人资料"
+              onClick={() => setMobile(false)}
+            >
+              {user.nickname || "个人资料"}
+            </Link>
             <button
               className="icon-button"
               aria-label="退出登录"
@@ -285,7 +302,12 @@ function CloudWorkspace() {
             </button>
             <div className="topbar-breadcrumb">
               工作区<span>/</span>
-              {current?.name ?? "页面"}
+              {current?.name ??
+                (location.pathname.startsWith("/store")
+                  ? "Profile 商店"
+                  : location.pathname === "/account"
+                    ? "个人资料"
+                    : "页面")}
             </div>
             <div className={`live-indicator ${connected ? "connected" : ""}`}>
               <i />
@@ -316,6 +338,12 @@ function CloudWorkspace() {
               </div>
             ) : (
               <Routes>
+                <Route path="/store" element={<StorePage />} />
+                <Route path="/store/:slug" element={<StoreDetail />} />
+                <Route
+                  path="/account"
+                  element={<AccountPage user={user} onChange={setUser} />}
+                />
                 <Route
                   path="/"
                   element={<Navigate to="/identities" replace />}

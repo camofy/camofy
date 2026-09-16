@@ -61,9 +61,10 @@ pub async fn list(app: &App, conn: &mut PgConnection, user: Uuid) -> Result<Vec<
         "SELECT id,kind,version,data FROM resources WHERE user_id=$1 ORDER BY updated_at,id",
     )
     .bind(user)
-    .fetch_all(conn)
+    .fetch_all(&mut *conn)
     .await?;
-    rows.into_iter()
+    let mut records: Vec<Resource> = rows
+        .into_iter()
         .map(|r| {
             Ok(Resource {
                 id: r.get("id"),
@@ -72,7 +73,9 @@ pub async fn list(app: &App, conn: &mut PgConnection, user: Uuid) -> Result<Vec<
                 data: canonical_data(app.vault.open(r.get("data"))?, &app.origin),
             })
         })
-        .collect()
+        .collect::<Result<_, Error>>()?;
+    crate::catalog::hydrate(conn, &mut records).await?;
+    Ok(records)
 }
 pub async fn get(
     app: &App,
@@ -83,15 +86,17 @@ pub async fn get(
     let row = sqlx::query("SELECT id,kind,version,data FROM resources WHERE user_id=$1 AND id=$2")
         .bind(user)
         .bind(id)
-        .fetch_optional(conn)
+        .fetch_optional(&mut *conn)
         .await?
         .ok_or_else(Error::not_found)?;
-    Ok(Resource {
+    let mut record = Resource {
         id: row.get("id"),
         kind: row.get("kind"),
         version: row.get("version"),
         data: canonical_data(app.vault.open(row.get("data"))?, &app.origin),
-    })
+    };
+    crate::catalog::hydrate(conn, std::slice::from_mut(&mut record)).await?;
+    Ok(record)
 }
 pub async fn put(
     app: &App,
@@ -99,8 +104,10 @@ pub async fn put(
     user: Uuid,
     r: &Resource,
 ) -> Result<(), Error> {
+    let mut data = r.data.clone();
+    data.as_object_mut().unwrap().remove("_package");
     sqlx::query("INSERT INTO resources(id,user_id,kind,data,version) VALUES($1,$2,$3,$4,$5) ON CONFLICT(id) DO UPDATE SET data=EXCLUDED.data,version=EXCLUDED.version,updated_at=now() WHERE resources.user_id=EXCLUDED.user_id")
-        .bind(r.id).bind(user).bind(&r.kind).bind(app.vault.seal(&r.data)?).bind(r.version).execute(conn).await?;
+        .bind(r.id).bind(user).bind(&r.kind).bind(app.vault.seal(&data)?).bind(r.version).execute(conn).await?;
     Ok(())
 }
 pub async fn lock(conn: &mut PgConnection, user: Uuid) -> Result<(), Error> {
@@ -119,15 +126,29 @@ pub async fn notify(conn: &mut PgConnection, user: Uuid) -> Result<(), Error> {
 }
 
 pub async fn rebuild(app: &App, conn: &mut PgConnection, user: Uuid) -> Result<(), Error> {
+    rebuild_selected(app, conn, user, None).await
+}
+pub async fn rebuild_selected(
+    app: &App,
+    conn: &mut PgConnection,
+    user: Uuid,
+    ids: Option<&[Uuid]>,
+) -> Result<(), Error> {
     let resources = list(app, conn, user).await?;
-    for original in resources.iter().filter(|r| r.kind == "bundle") {
+    for original in resources
+        .iter()
+        .filter(|r| r.kind == "bundle" && ids.is_none_or(|ids| ids.contains(&r.id)))
+    {
         let mut bundle = original.clone();
         let result = render_bundle(&resources, &bundle.data, &app.origin);
         match result {
             Ok((artifacts, selections)) => {
                 bundle.data["system_profile"] = system_profile(&app.origin)?;
-                let content_hash =
-                    camofy::digest(serde_json::to_vec(&json!([&artifacts, &selections]))?);
+                let content_hash = camofy::digest(serde_json::to_vec(&json!([
+                    &artifacts,
+                    &selections,
+                    crate::catalog::lock_manifest(&resources, &bundle.data)
+                ]))?);
                 if bundle.data["published_hash"] == content_hash {
                     bundle.data["error"] = Value::Null;
                     put(app, conn, user, &bundle).await?;
@@ -135,6 +156,11 @@ pub async fn rebuild(app: &App, conn: &mut PgConnection, user: Uuid) -> Result<(
                 }
                 let revision = Uuid::new_v4();
                 sqlx::query("INSERT INTO revisions(id,user_id,bundle_id,artifacts,selections) VALUES($1,$2,$3,$4,$5)").bind(revision).bind(user).bind(bundle.id).bind(app.vault.seal(&artifacts)?).bind(selections).execute(&mut *conn).await?;
+                sqlx::query("UPDATE revisions SET catalog_lock=$2 WHERE id=$1")
+                    .bind(revision)
+                    .bind(crate::catalog::lock_manifest(&resources, &bundle.data))
+                    .execute(&mut *conn)
+                    .await?;
                 bundle.data["published_revision"] = json!(revision);
                 bundle.data["published_hash"] = json!(content_hash);
                 bundle.data["outputs"] = json!(
@@ -182,17 +208,21 @@ pub fn render_bundle(
                     && r.id.to_string() == binding["profile_id"].as_str().unwrap_or("")
             })
             .ok_or_else(|| anyhow::anyhow!("profile binding not found"))?;
-        profiles.push(
-            p.data["content"]
-                .as_str()
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "profile {} has no successfully fetched content",
-                        p.data["name"]
-                    )
-                })?
-                .to_string(),
-        );
+        if p.data["store"].is_object() {
+            profiles.push(crate::catalog::compile(p, binding)?);
+        } else {
+            profiles.push(
+                p.data["content"]
+                    .as_str()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "profile {} has no successfully fetched content",
+                            p.data["name"]
+                        )
+                    })?
+                    .to_string(),
+            );
+        }
     }
     anyhow::ensure!(
         !profiles.is_empty(),
@@ -217,6 +247,11 @@ pub fn render_bundle(
         artifacts.insert(
             format.into(),
             match result.and_then(|content| {
+                let content = if format == "shadowrocket-nodes" {
+                    content
+                } else {
+                    format!("{}{}", crate::catalog::notices(resources, data), content)
+                };
                 anyhow::ensure!(
                     content.len() <= 4 * 1024 * 1024,
                     "merged output exceeds 4 MiB"

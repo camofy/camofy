@@ -344,6 +344,16 @@ pub fn validate(v: &Value) -> Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("rule must be string"))?;
             let parts: Vec<_> = rule.split(',').map(str::trim).collect();
             ensure!(parts.len() >= 2, "invalid rule: {rule}");
+            if parts[0] == "RULE-SET" {
+                ensure!(
+                    parts.len() >= 3
+                        && v.get("rule-providers")
+                            .and_then(|p| p.get(parts[1]))
+                            .is_some(),
+                    "unknown rule provider: {}",
+                    parts[1]
+                );
+            }
             let policy = parts[parts.len() - 1 - usize::from(parts.last() == Some(&"no-resolve"))];
             // Complex logical/sub-rule syntax is passed through to Mihomo.
             if !["AND", "OR", "NOT", "SUB-RULE"].contains(&parts[0]) {
