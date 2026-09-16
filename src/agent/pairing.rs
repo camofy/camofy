@@ -119,7 +119,7 @@ async fn guard(
     h.insert(header::CACHE_CONTROL, "no-store".parse().unwrap());
     h.insert(header::REFERRER_POLICY, "no-referrer".parse().unwrap());
     h.insert(header::X_CONTENT_TYPE_OPTIONS, "nosniff".parse().unwrap());
-    h.insert(header::CONTENT_SECURITY_POLICY,"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'".parse().unwrap());
+    h.insert(header::CONTENT_SECURITY_POLICY,"default-src 'self'; script-src 'self'; style-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'".parse().unwrap());
     response
 }
 pub(super) async fn start(
@@ -180,6 +180,8 @@ pub(super) async fn start(
         .route("/bind", get(page))
         .route("/bind/complete", get(complete))
         .route("/pair.js", get(script))
+        .route("/pair.css", get(styles))
+        .route("/flower.png", get(logo))
         .route("/api/pair/status", get(status))
         .route("/api/pair/start", post(begin))
         .route("/api/core/control", post(control))
@@ -242,6 +244,18 @@ async fn script() -> impl IntoResponse {
         include_str!("pair.js"),
     )
 }
+async fn styles() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        include_str!("pair.css"),
+    )
+}
+async fn logo() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "image/png")],
+        include_bytes!("flower.png").as_slice(),
+    )
+}
 #[derive(Deserialize)]
 struct Callback {
     state: String,
@@ -270,7 +284,7 @@ async fn status(State(w): State<Web>, h: HeaderMap) -> Json<Value> {
         json!({"core_state":"locked"})
     };
     Json(
-        json!({"authorized":authorized,"bound":inner.bound,"cloud_url":inner.cloud,"identity_name":runtime["identity_name"].as_str().unwrap_or(&inner.identity),"runtime":runtime,"phase":if own{inner.phase.as_str()}else{"idle"}}),
+        json!({"agent_version":env!("CARGO_PKG_VERSION"),"authorized":authorized,"bound":inner.bound,"cloud_url":inner.cloud,"identity_name":runtime["identity_name"].as_str().unwrap_or(&inner.identity),"runtime":runtime,"phase":if own{inner.phase.as_str()}else{"idle"}}),
     )
 }
 #[derive(Deserialize)]
@@ -623,6 +637,12 @@ mod tests {
         assert_eq!(root.headers()["location"], "/bind");
         let page = http.get(format!("{base}/bind")).send().await.unwrap();
         assert_eq!(page.status(), 200);
+        assert!(
+            !page.headers()["content-security-policy"]
+                .to_str()
+                .unwrap()
+                .contains("unsafe-inline")
+        );
         let cookie = page.headers()["set-cookie"]
             .to_str()
             .unwrap()
@@ -634,6 +654,33 @@ mod tests {
         assert!(html.contains("<details>"));
         assert!(html.contains(CLOUD));
         assert!(html.contains("local-admin-key"));
+        assert!(html.contains("/pair.css"));
+        assert!(html.contains("confirm-dialog"));
+        assert!(!html.contains("subscription_url"));
+        for (asset, content_type) in [
+            ("pair.css", "text/css"),
+            ("pair.js", "text/javascript"),
+            ("flower.png", "image/png"),
+        ] {
+            let response = http.get(format!("{base}/{asset}")).send().await.unwrap();
+            assert_eq!(response.status(), 200);
+            assert!(
+                response.headers()["content-type"]
+                    .to_str()
+                    .unwrap()
+                    .starts_with(content_type)
+            );
+            assert!(!response.bytes().await.unwrap().is_empty());
+        }
+        let state: Value = http
+            .get(format!("{base}/api/pair/status"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(state["agent_version"], env!("CARGO_PKG_VERSION"));
         let denied = http
             .post(format!("{base}/api/pair/start"))
             .header("cookie", &cookie)
