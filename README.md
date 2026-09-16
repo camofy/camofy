@@ -68,6 +68,22 @@ cd web && bun run build && bun run lint
 
 ## 轻量 Agent 与本地应急控制
 
+全新安装（Linux amd64 / ARMv7）：
+
+```sh
+curl -fsSL https://camofy.app/install.sh | sh
+# 只查看安装计划，不修改设备
+curl -fsSL https://camofy.app/install.sh | sh -s -- --plan
+```
+
+脚本、版本查询、Agent 和 Mihomo 下载均经同一云端域名完成；设备不需要访问 GitHub。
+安装器校验 GitHub 提供的 SHA256，仅接受新版 Agent 发布包，不会覆盖既有安装。
+初始 Mihomo 为停止状态；打开安装完成时显示的本地地址，授权绑定后再明确启动。
+若最新 Release 尚无新版 Agent，安装器会停止并保留设备原状，不能使用旧版单体替代。
+自托管、发布要求及镜像 API 见 [安装与下载分发](docs/downloads.md)。
+
+从源码构建：
+
 ```sh
 cargo build --release --no-default-features --features agent --bin camofy-agent
 # 安装和运行必须由设备所有者主动执行；不会自动部署到路由器
@@ -76,7 +92,7 @@ camofy-agent /etc/camofy/agent.json
 
 配置参考 [agent.json](examples/agent.json) 和 [本地覆盖](examples/local.yaml)。
 绑定和设备控制见 [设备授权](docs/device-authorization.md)。本地界面不提供订阅编辑；初次访问跳转绑定页，绑定后显示运行状态和内核控制。
-Mihomo 需预先安装，Agent 不执行内核下载/升级。设备配置和令牌文件应只允许
+手动部署需预先安装 Mihomo；一键安装器会下载它，Agent 运行时不执行内核下载/升级。设备配置和令牌文件应只允许
 服务账号读取。TUN/防火墙适配必须在目标硬件验证后再启用。
 
 旧的路由器 Web 单体不再是构建目标。工作树中原有的本地未提交路由器源码修改

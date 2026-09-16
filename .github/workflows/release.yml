@@ -33,10 +33,13 @@ jobs:
           cp target/${{ matrix.target }}/release/${{ matrix.binary }} package/
           if [ "${{ matrix.binary }}" = "camofy-cloud" ]; then mkdir -p package/web; cp -r web/dist package/web/; fi
           tar -czf ${{ matrix.binary }}-${{ matrix.target }}.tar.gz -C package .
+          sha256sum ${{ matrix.binary }}-${{ matrix.target }}.tar.gz > ${{ matrix.binary }}-${{ matrix.target }}.tar.gz.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.binary }}-${{ matrix.target }}
-          path: "*.tar.gz"
+          path: |
+            *.tar.gz
+            *.tar.gz.sha256
   release:
     needs: build
     runs-on: ubuntu-latest
@@ -50,4 +53,6 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/*.tar.gz
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.tar.gz.sha256
