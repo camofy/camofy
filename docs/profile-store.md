@@ -109,7 +109,10 @@ The existing cloud/Agent integration test remains in CI. `scripts/verify-catalog
 requires an explicitly supplied test account, output directory and local Mihomo binary
 (see its header). It creates temporary Profiles/identities, tests actual subscription
 HTTP 200/304, expected domains/policies, notices and the cloud protection, invokes
-Mihomo `-t`, checks Shadowrocket exports, and removes only its created resources.
+Mihomo `-t`, starts an isolated no-TUN/no-DNS core and verifies real loopback proxy
+requests match the expected domain and policy, checks Shadowrocket exports, and
+removes only its created resources. The routing probe maps test domains to loopback;
+it tests rule selection, not reachability or performance of the actual remote service.
 It never binds a device or refreshes a paid upstream proxy. Shadowrocket output tests
 do not substitute for physical iOS import/playback testing.
 
