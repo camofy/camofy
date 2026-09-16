@@ -135,6 +135,7 @@ pub async fn rebuild_selected(
     ids: Option<&[Uuid]>,
 ) -> Result<(), Error> {
     let resources = list(app, conn, user).await?;
+    let mut changed = false;
     for original in resources
         .iter()
         .filter(|r| r.kind == "bundle" && ids.is_none_or(|ids| ids.contains(&r.id)))
@@ -143,24 +144,48 @@ pub async fn rebuild_selected(
         let result = render_bundle(&resources, &bundle.data, &app.origin);
         match result {
             Ok((artifacts, selections)) => {
+                let usage_sources =
+                    json!(crate::usage::sources(app, user, &resources, &bundle.data));
                 bundle.data["system_profile"] = system_profile(&app.origin)?;
-                let content_hash = camofy::digest(serde_json::to_vec(&json!([
-                    &artifacts,
-                    &selections,
-                    crate::catalog::lock_manifest(&resources, &bundle.data)
-                ]))?);
-                if bundle.data["published_hash"] == content_hash {
+                let catalog_lock = crate::catalog::lock_manifest(&resources, &bundle.data);
+                // Preserve existing fingerprints for identities without store components.
+                let hash_input = if catalog_lock.as_array().is_some_and(Vec::is_empty) {
+                    json!([&artifacts, &selections])
+                } else {
+                    json!([&artifacts, &selections, &catalog_lock])
+                };
+                let content_hash = camofy::digest(serde_json::to_vec(&hash_input)?);
+                let current = bundle.data["published_revision"]
+                    .as_str()
+                    .and_then(|s| Uuid::parse_str(s).ok());
+                let previous: Option<Value> = sqlx::query_scalar(
+                    "SELECT usage_sources FROM revisions WHERE id=$1 AND user_id=$2",
+                )
+                .bind(current)
+                .bind(user)
+                .fetch_optional(&mut *conn)
+                .await?
+                .flatten();
+                if bundle.data["published_hash"] == content_hash
+                    && (previous.is_none() || previous.as_ref() == Some(&usage_sources))
+                {
+                    if previous.is_none() {
+                        sqlx::query(
+                            "UPDATE revisions SET usage_sources=$3 WHERE id=$1 AND user_id=$2",
+                        )
+                        .bind(current)
+                        .bind(user)
+                        .bind(&usage_sources)
+                        .execute(&mut *conn)
+                        .await?;
+                    }
                     bundle.data["error"] = Value::Null;
                     put(app, conn, user, &bundle).await?;
                     continue;
                 }
                 let revision = Uuid::new_v4();
-                sqlx::query("INSERT INTO revisions(id,user_id,bundle_id,artifacts,selections) VALUES($1,$2,$3,$4,$5)").bind(revision).bind(user).bind(bundle.id).bind(app.vault.seal(&artifacts)?).bind(selections).execute(&mut *conn).await?;
-                sqlx::query("UPDATE revisions SET catalog_lock=$2 WHERE id=$1")
-                    .bind(revision)
-                    .bind(crate::catalog::lock_manifest(&resources, &bundle.data))
-                    .execute(&mut *conn)
-                    .await?;
+                sqlx::query("INSERT INTO revisions(id,user_id,bundle_id,artifacts,selections,usage_sources,catalog_lock) VALUES($1,$2,$3,$4,$5,$6,$7)").bind(revision).bind(user).bind(bundle.id).bind(app.vault.seal(&artifacts)?).bind(selections).bind(usage_sources).bind(catalog_lock).execute(&mut *conn).await?;
+                changed = true;
                 bundle.data["published_revision"] = json!(revision);
                 bundle.data["published_hash"] = json!(content_hash);
                 bundle.data["outputs"] = json!(
@@ -179,7 +204,10 @@ pub async fn rebuild_selected(
         }
         put(app, conn, user, &bundle).await?;
     }
-    notify(conn, user).await
+    if changed {
+        notify(conn, user).await?;
+    }
+    Ok(())
 }
 
 /// Computed, immutable final profile: it is not a user-editable resource/binding.

@@ -476,7 +476,7 @@ mod tests {
             let yaml = security::fetch("http://127.0.0.1:1/source", Some(&endpoint), true)
                 .await
                 .unwrap();
-            assert!(yaml.contains(&format!("proxy-{index}")));
+            assert!(yaml.content.contains(&format!("proxy-{index}")));
         }
         assert!(extract(&u, "http", true).await.is_err());
         assert_eq!(count.load(Ordering::SeqCst), 3);

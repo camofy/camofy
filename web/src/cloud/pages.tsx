@@ -19,6 +19,7 @@ import {
   Status,
 } from "./ui";
 import { resourcePath, sectionOf, sections, type Section } from "./navigation";
+import { UsageCompact, UsagePanel, RefreshHistory } from "./Usage";
 
 const meta = (section: Section) => sections.find((s) => s.key === section)!;
 const host = (url?: string) => {
@@ -227,6 +228,7 @@ export function CollectionPage({ section }: { section: Section }) {
                   <span className="muted">尚未关联配置</span>
                 )}
               </div>
+              <UsageCompact summary={r.data.usage_summary} />
               <div className="card-footer">
                 <span>版本 {r.version}</span>
                 <Link className="text-link" to={resourcePath(r)}>
@@ -244,6 +246,7 @@ export function CollectionPage({ section }: { section: Section }) {
               <tr>
                 <th>名称</th>
                 <th>{section === "tokens" ? "关联身份" : "状态 / 类型"}</th>
+                {section === "subscriptions" && <th>套餐使用量</th>}
                 <th>
                   {section === "subscriptions"
                     ? "拉取出口"
@@ -332,6 +335,11 @@ export function CollectionPage({ section }: { section: Section }) {
                           <Status r={r} />
                         )}
                       </td>
+                      {section === "subscriptions" && (
+                        <td>
+                          <UsageCompact summary={r.data.usage_summary} />
+                        </td>
+                      )}
                       <td>
                         {section === "subscriptions" ? (
                           r.data.proxy_id ? (
@@ -814,12 +822,14 @@ export function DetailPage({ section }: { section: Section }) {
     ? [
         { id: "composition", label: "配置组合" },
         { id: "preview", label: "合并预览" },
+        { id: "usage", label: "套餐用量" },
         { id: "history", label: "发布历史" },
         { id: "settings", label: "设置" },
       ]
     : [
         { id: "overview", label: section === "profiles" ? "配置内容" : "概览" },
         ...(isSource ? [{ id: "content", label: "订阅内容" }] : []),
+        ...(isSource ? [{ id: "refresh-history", label: "刷新历史" }] : []),
         { id: "settings", label: "设置" },
       ];
   const tab = tabs.some((t) => t.id === params.get("tab"))
@@ -891,10 +901,13 @@ export function DetailPage({ section }: { section: Section }) {
       {tab === "composition" && <Composition key={r.id} r={r} />}
       {tab === "preview" && <Preview r={r} />}
       {tab === "history" && <History key={r.id} r={r} />}
+      {tab === "usage" && <UsagePanel r={r} />}
+      {tab === "refresh-history" && <RefreshHistory key={r.id} r={r} />}
       {tab === "content" && <Preview source r={r} />}
       {tab === "overview" && (
         <div className="detail-columns">
           <div className="detail-main">
+            {isSource && <UsagePanel r={r} />}
             {section === "profiles" && r.data.store ? (
               <ManagedProfile key={`${r.id}-${r.version}`} resource={r} />
             ) : section === "profiles" ? (

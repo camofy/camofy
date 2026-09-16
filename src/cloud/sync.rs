@@ -114,7 +114,7 @@ pub async fn download(
     .fetch_optional(&app.db)
     .await?
     .ok_or_else(Error::not_found)?;
-    artifact_response(app.vault.open(sealed)?, &format, &h, id)
+    artifact_response(app.vault.open(sealed)?, &format, &h, id, None)
 }
 pub async fn subscription(
     State(app): State<App>,
@@ -126,8 +126,29 @@ pub async fn subscription(
     let mut conn = app.db.acquire().await?;
     let b = store::get(&app, &mut conn, a.user, a.bundle).await?;
     drop(conn);
-    let (id, artifacts, _) = current(&app, a.user, a.bundle, &b).await?;
-    artifact_response(artifacts, &format, &h, id)
+    // Complete any legacy safety migration before taking the read snapshot.
+    current(&app, a.user, a.bundle, &b).await?;
+    let mut tx = app.db.begin().await?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        .execute(&mut *tx)
+        .await?;
+    let b = store::get(&app, &mut tx, a.user, a.bundle).await?;
+    let id = b.data["published_revision"]
+        .as_str()
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .ok_or_else(Error::not_found)?;
+    let sealed: Value = sqlx::query_scalar(
+        "SELECT artifacts FROM revisions WHERE id=$1 AND user_id=$2 AND bundle_id=$3",
+    )
+    .bind(id)
+    .bind(a.user)
+    .bind(a.bundle)
+    .fetch_one(&mut *tx)
+    .await?;
+    let records = store::list(&app, &mut tx, a.user).await?;
+    let usage = crate::usage::published(&app, &mut tx, a.user, &records, &b).await?;
+    tx.commit().await?;
+    artifact_response(app.vault.open(sealed)?, &format, &h, id, Some(&usage))
 }
 
 /// Platform-neutral identity URL. Preserve the existing complete YAML and hash contract;
@@ -149,12 +170,17 @@ fn artifact_response(
     format: &str,
     h: &HeaderMap,
     revision: Uuid,
+    usage: Option<&crate::usage::Summary>,
 ) -> Result<Response, Error> {
     let a = artifacts.get(format).ok_or_else(Error::not_found)?;
     if let Some(e) = a["error"].as_str() {
         return Err(Error::new(StatusCode::UNPROCESSABLE_ENTITY, e));
     }
-    let etag = format!("\"{}\"", a["hash"].as_str().unwrap());
+    let digest = match usage {
+        Some(u) => camofy::digest(serde_json::to_vec(&json!([a["hash"], u.header, u.status]))?),
+        None => a["hash"].as_str().unwrap().to_owned(),
+    };
+    let etag = format!("\"{digest}\"");
     let mut r = if h.get(header::IF_NONE_MATCH).and_then(|h| h.to_str().ok()) == Some(&etag) {
         StatusCode::NOT_MODIFIED.into_response()
     } else {
@@ -174,6 +200,15 @@ fn artifact_response(
         .unwrap(),
     );
     headers.insert("profile-update-interval", "1".parse().unwrap());
+    if let Some(usage) = usage {
+        if let Some(value) = &usage.header {
+            headers.insert("subscription-userinfo", value.parse().unwrap());
+        }
+        headers.insert("x-camofy-usage-status", usage.status.parse().unwrap());
+        if let Some(at) = usage.updated_at {
+            headers.insert("x-camofy-usage-updated-at", at.to_string().parse().unwrap());
+        }
+    }
     headers.insert("x-camofy-revision", revision.to_string().parse().unwrap());
     headers.insert(
         header::CONTENT_DISPOSITION,
