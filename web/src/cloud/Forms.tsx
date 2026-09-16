@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback } from "react";
 import { useBlocker, useBeforeUnload } from "react-router-dom";
 import { api, type Data, type Resource, type User } from "./model";
-import { Modal } from "./ui";
+import { Modal, ConfigPreview, Icon } from "./ui";
 import { type IdentityPreview } from "./Store";
 
 export function Login({ onLogin }: { onLogin: (u: User) => void }) {
@@ -128,12 +128,23 @@ export function Editor({
   const [initialSelections] = useState(selections);
   const saved = useRef(false);
   const [preview, setPreview] = useState<IdentityPreview | null>(null),
+    [previewBusy, setPreviewBusy] = useState(false),
     [previewData, setPreviewData] = useState("");
   const managedIdentity =
     resource.kind === "bundle" &&
     data.profiles?.some(
       (b) => b.enabled && all.find((r) => r.id === b.profile_id)?.data.store,
     );
+  let currentPreviewKey = "";
+  try {
+    currentPreviewKey = JSON.stringify({
+      ...data,
+      selections: JSON.parse(selections),
+    });
+  } catch {
+    /* Invalid draft JSON cannot match a successfully generated preview. */
+  }
+  const currentPreview = currentPreviewKey === previewData ? preview : null;
   const dirty =
     JSON.stringify(data) !== baseline || selections !== initialSelections;
   const blocker = useBlocker(() => dirty && !saved.current);
@@ -536,57 +547,70 @@ export function Editor({
               会立即应用；第三方客户端将收到首选节点顺序，已有本地选择可能优先。
             </p>
             {managedIdentity && (
-              <section className="store-draft">
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => {
-                    setError("");
-                    setPreview(null);
-                    try {
-                      const next = {
-                        ...data,
-                        selections: JSON.parse(selections),
-                      };
-                      void api<IdentityPreview>(
-                        "/store/identity-preview",
-                        "POST",
-                        { data: next },
-                      )
-                        .then((p) => {
-                          setPreview(p);
-                          setPreviewData(JSON.stringify(next));
-                        })
-                        .catch((e) => setError(e.message));
-                    } catch {
-                      setError("节点选择 JSON 无效");
-                    }
-                  }}
-                >
-                  预览合并与最终规则
-                </button>
-                {preview && (
-                  <>
-                    <h3>预览完成 · 保存后才发布</h3>
-                    {preview.warnings.map((w, i) => (
-                      <p className="inline-error" key={i}>
-                        {w}
-                      </p>
-                    ))}
-                    {Object.entries(preview.artifacts)
-                      .filter(([, a]) => a.error)
-                      .map(([f, a]) => (
-                        <p className="inline-error" key={f}>
-                          {f}：{a.error}
-                        </p>
-                      ))}
-                    <details>
-                      <summary>最终 YAML（包含私有节点，请勿公开）</summary>
-                      <pre>{preview.artifacts.router.content}</pre>
-                    </details>
-                  </>
-                )}
-              </section>
+              <ConfigPreview
+                title="合并预览"
+                description={
+                  currentPreview
+                    ? "预览完成 · 保存后才发布。内容含私有节点，请勿公开。"
+                    : preview
+                      ? "配置已变化，请重新预览后保存。"
+                      : "先验证规则与客户端兼容性，再保存发布。"
+                }
+                actions={
+                  <button
+                    type="button"
+                    disabled={busy || previewBusy}
+                    onClick={() => {
+                      setError("");
+                      setPreview(null);
+                      try {
+                        const next = {
+                          ...data,
+                          selections: JSON.parse(selections),
+                        };
+                        setPreviewBusy(true);
+                        void api<IdentityPreview>(
+                          "/store/identity-preview",
+                          "POST",
+                          { data: next },
+                        )
+                          .then((p) => {
+                            setPreview(p);
+                            setPreviewData(JSON.stringify(next));
+                          })
+                          .catch((e) => setError(e.message))
+                          .finally(() => setPreviewBusy(false));
+                      } catch {
+                        setError("节点选择 JSON 无效");
+                      }
+                    }}
+                  >
+                    <Icon name="refresh" size={16} />
+                    {previewBusy
+                      ? "正在验证…"
+                      : preview
+                        ? "重新预览"
+                        : "预览合并与最终规则"}
+                  </button>
+                }
+                loading={previewBusy}
+                content={currentPreview?.artifacts.router.content}
+                warnings={currentPreview?.warnings}
+                compatibility={Object.entries(currentPreview?.artifacts ?? {})
+                  .filter(([, a]) => a.error)
+                  .map(([f, a]) => ({
+                    target:
+                      (
+                        {
+                          router: "完整 YAML",
+                          clash: "Clash / Mihomo",
+                          shadowrocket: "Shadowrocket 完整配置",
+                          "shadowrocket-nodes": "Shadowrocket 节点",
+                        } as Record<string, string>
+                      )[f] ?? f,
+                    message: a.error!,
+                  }))}
+              />
             )}
           </>
         )}
