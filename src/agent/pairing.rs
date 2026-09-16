@@ -22,6 +22,9 @@ const CLOUD: &str = "https://camofy.app";
 const CLIENT: &str = "camofy-agent";
 #[derive(Clone)]
 struct Web {
+    key_hash: String,
+    admins: Arc<Mutex<Vec<(String, Instant)>>>,
+    login_attempt: Arc<Mutex<Instant>>,
     settings: PathBuf,
     http: reqwest::Client,
     inner: Arc<Mutex<Inner>>,
@@ -137,6 +140,21 @@ pub(super) async fn start(
         .and_then(|v| v["identity_name"].as_str().map(str::to_owned))
         .unwrap_or_default();
     let web = Web {
+        key_hash: {
+            let path = s.data_dir.join("local-admin-key");
+            let key = match tokio::fs::read_to_string(&path).await {
+                Ok(k) => k,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    let k = secret();
+                    super::atomic(&path, k.as_bytes()).await?;
+                    k
+                }
+                Err(e) => return Err(e.into()),
+            };
+            camofy::digest(key.trim())
+        },
+        admins: Arc::new(Mutex::new(Vec::new())),
+        login_attempt: Arc::new(Mutex::new(Instant::now() - Duration::from_secs(2))),
         settings,
         http: reqwest::Client::builder()
             .no_proxy()
@@ -167,6 +185,8 @@ pub(super) async fn start(
         .route("/api/pair/status", get(status))
         .route("/api/pair/start", post(begin))
         .route("/api/core/control", post(control))
+        .route("/api/local/login", post(login))
+        .route("/api/proxies", get(proxy_status).post(proxy_action))
         .fallback(get(root))
         .layer(DefaultBodyLimit::max(4096))
         .layer(middleware::from_fn(guard))
@@ -257,9 +277,14 @@ async fn status(State(w): State<Web>, h: HeaderMap) -> Json<Value> {
         .flow
         .as_ref()
         .is_some_and(|f| Some(f.session.as_str()) == session(&h));
-    let runtime = w.local.status.lock().await.clone();
+    let authorized = admin(&w, &h).await;
+    let runtime = if authorized {
+        w.local.status.lock().await.clone()
+    } else {
+        json!({"core_state":"locked"})
+    };
     Json(
-        json!({"agent_version":env!("CARGO_PKG_VERSION"),"bound":inner.bound,"cloud_url":inner.cloud,"identity_name":runtime["identity_name"].as_str().unwrap_or(&inner.identity),"runtime":runtime,"phase":if own{inner.phase.as_str()}else{"idle"}}),
+        json!({"agent_version":env!("CARGO_PKG_VERSION"),"authorized":authorized,"bound":inner.bound,"cloud_url":inner.cloud,"identity_name":runtime["identity_name"].as_str().unwrap_or(&inner.identity),"runtime":runtime,"phase":if own{inner.phase.as_str()}else{"idle"}}),
     )
 }
 #[derive(Deserialize)]
@@ -271,6 +296,9 @@ async fn control(
     h: HeaderMap,
     Json(a): Json<Action>,
 ) -> WebResult<StatusCode> {
+    if !admin(&w, &h).await {
+        return Err(fail(StatusCode::UNAUTHORIZED, "请先解锁本地控制台"));
+    }
     let local = origin(&h).ok_or_else(|| fail(StatusCode::FORBIDDEN, "invalid local origin"))?;
     let cookie = session(&h).ok_or_else(|| fail(StatusCode::FORBIDDEN, "请刷新页面后重试"))?;
     if h.get(header::ORIGIN).and_then(|v| v.to_str().ok()) != Some(local.as_str())
@@ -286,9 +314,98 @@ async fn control(
     }
     w.local
         .tx
-        .try_send(a.action)
+        .try_send(super::control::Request::Core(a.action))
         .map_err(|_| fail(StatusCode::CONFLICT, "操作正在处理中，请稍后重试"))?;
     Ok(StatusCode::ACCEPTED)
+}
+async fn admin(w: &Web, h: &HeaderMap) -> bool {
+    let key = h
+        .get(header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| {
+            s.split(';')
+                .find_map(|v| v.trim().strip_prefix("camofy_admin="))
+        });
+    let mut sessions = w.admins.lock().await;
+    sessions.retain(|(_, until)| *until > Instant::now());
+    key.is_some_and(|k| sessions.iter().any(|(saved, _)| saved == k))
+}
+fn csrf(h: &HeaderMap) -> WebResult<()> {
+    let expected = origin(h).ok_or_else(|| fail(StatusCode::FORBIDDEN, "invalid origin"))?;
+    if h.get(header::ORIGIN).and_then(|v| v.to_str().ok()) != Some(&expected)
+        || session(h).is_none()
+        || h.get("x-camofy-csrf").and_then(|v| v.to_str().ok()) != session(h)
+    {
+        return Err(fail(StatusCode::FORBIDDEN, "请刷新页面后重试"));
+    }
+    Ok(())
+}
+async fn login(
+    State(w): State<Web>,
+    h: HeaderMap,
+    Json(body): Json<Value>,
+) -> WebResult<impl IntoResponse> {
+    csrf(&h)?;
+    let mut last = w.login_attempt.lock().await;
+    if last.elapsed() < Duration::from_secs(1) {
+        return Err(fail(StatusCode::TOO_MANY_REQUESTS, "请稍后重试"));
+    }
+    *last = Instant::now();
+    drop(last);
+    if camofy::digest(body["key"].as_str().unwrap_or("").trim()) != w.key_hash {
+        return Err(fail(StatusCode::UNAUTHORIZED, "管理密钥不正确"));
+    }
+    let key = secret();
+    let mut sessions = w.admins.lock().await;
+    sessions.retain(|(_, until)| *until > Instant::now());
+    if sessions.len() >= 32 {
+        sessions.remove(0);
+    }
+    sessions.push((key.clone(), Instant::now() + Duration::from_secs(43200)));
+    Ok((
+        [(
+            header::SET_COOKIE,
+            format!("camofy_admin={key}; Path=/; HttpOnly; SameSite=Strict; Max-Age=43200"),
+        )],
+        StatusCode::NO_CONTENT,
+    ))
+}
+async fn proxy_status(State(w): State<Web>, h: HeaderMap) -> WebResult<Json<Value>> {
+    if !admin(&w, &h).await {
+        return Err(fail(StatusCode::UNAUTHORIZED, "请先解锁本地控制台"));
+    }
+    Ok(Json(w.local.status.lock().await["proxy_state"].clone()))
+}
+async fn proxy_action(
+    State(w): State<Web>,
+    h: HeaderMap,
+    Json(body): Json<Value>,
+) -> WebResult<Json<Value>> {
+    csrf(&h)?;
+    if !admin(&w, &h).await {
+        return Err(fail(StatusCode::UNAUTHORIZED, "请先解锁本地控制台"));
+    }
+    let method = body["method"].as_str().unwrap_or("");
+    if !["proxies.list", "proxies.select", "proxies.delay"].contains(&method) {
+        return Err(fail(StatusCode::BAD_REQUEST, "unsupported method"));
+    }
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    w.local
+        .tx
+        .try_send(super::control::Request::Proxy {
+            method: method.into(),
+            params: body["params"].clone(),
+            reply,
+        })
+        .map_err(|_| fail(StatusCode::CONFLICT, "操作繁忙，请稍后重试"))?;
+    match tokio::time::timeout(Duration::from_secs(30), rx).await {
+        Ok(Ok(Ok(value))) => Ok(Json(value)),
+        Ok(Ok(Err(e))) => Err(fail(StatusCode::BAD_REQUEST, &e)),
+        _ => Err(fail(
+            StatusCode::GATEWAY_TIMEOUT,
+            "操作结果未确认，请刷新状态，不要重复提交",
+        )),
+    }
 }
 #[derive(Deserialize)]
 struct Begin {
@@ -536,7 +653,7 @@ mod tests {
         let html = page.text().await.unwrap();
         assert!(html.contains("<details>"));
         assert!(html.contains(CLOUD));
-        assert!(!html.contains("type=\"password\""));
+        assert!(html.contains("local-admin-key"));
         assert!(html.contains("/pair.css"));
         assert!(html.contains("confirm-dialog"));
         assert!(!html.contains("subscription_url"));
@@ -594,6 +711,12 @@ mod tests {
         let (tx, _) = watch::channel(None);
         let (local, mut actions) = super::super::control::channel();
         let web = Web {
+            key_hash: camofy::digest("test-local-key"),
+            admins: Arc::new(Mutex::new(vec![(
+                "test-admin".into(),
+                Instant::now() + Duration::from_secs(60),
+            )])),
+            login_attempt: Arc::new(Mutex::new(Instant::now() - Duration::from_secs(2))),
             settings: path.clone(),
             http,
             inner: Arc::new(Mutex::new(Inner {
@@ -625,7 +748,12 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(header::HOST, "127.0.0.1:3000".parse().unwrap());
         headers.insert(header::ORIGIN, "http://127.0.0.1:3000".parse().unwrap());
-        headers.insert(header::COOKIE, cookie.parse().unwrap());
+        headers.insert(
+            header::COOKIE,
+            format!("{cookie}; camofy_admin=test-admin")
+                .parse()
+                .unwrap(),
+        );
         assert!(
             control(
                 State(web.clone()),
@@ -651,7 +779,9 @@ mod tests {
             .unwrap(),
             StatusCode::ACCEPTED
         );
-        assert_eq!(actions.recv().await.unwrap(), "stop");
+        assert!(
+            matches!(actions.recv().await.unwrap(),super::super::control::Request::Core(action) if action=="stop")
+        );
         assert!(
             save_binding(&web, CLOUD, &grant).await.is_err(),
             "never overwrite an existing binding"

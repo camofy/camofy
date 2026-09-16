@@ -1929,6 +1929,14 @@ async fn await_report(app: &App, user: Uuid, device: &str, key: &str, value: &se
         if record.data["reported"][key] == *value {
             return;
         }
+        if key == "command_id"
+            && record.data["rpc_jobs"].as_array().is_some_and(|jobs| {
+                jobs.iter()
+                    .any(|j| j["id"] == *value && j["status"] == "succeeded")
+            })
+        {
+            return;
+        }
         assert!(
             tokio::time::Instant::now() < deadline,
             "device {key} did not converge: {}",

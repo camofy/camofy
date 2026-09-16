@@ -520,6 +520,9 @@ export function Editor({
                   </option>
                 ))}
             </select>
+            <details>
+            <summary>高级：编辑共享选择 JSON</summary>
+            <p className="muted">通常请在身份详情的「代理分组」中直接选择节点；此处用于批量编辑。</p>
             <label>
               共享节点选择（代理组 → 节点名称）
               <textarea
@@ -533,6 +536,7 @@ export function Editor({
               例如 {`{"服务节点":"我的节点"}`}。Agent
               会立即应用；第三方客户端将收到首选节点顺序，已有本地选择可能优先。
             </p>
+            </details>
             {managedIdentity && (
               <ConfigPreview
                 title="合并预览"

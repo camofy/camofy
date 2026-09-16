@@ -1,6 +1,7 @@
 //! Lightweight configuration consumer with a local, first-time authorization UI.
 mod control;
 mod pairing;
+mod proxies;
 use anyhow::{Context, Result, ensure};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -111,6 +112,7 @@ struct Agent {
     command: Option<String>,
     control: control::Durable,
     local: control::Local,
+    proxies: proxies::Durable,
 }
 impl Agent {
     async fn publish_runtime(&mut self, error: Option<String>) {
@@ -228,6 +230,7 @@ impl Agent {
         for key in [
             "external-controller-unix",
             "external-controller-pipe",
+            "external-controller-tls",
             "external-ui",
             "external-ui-url",
         ] {
@@ -328,7 +331,13 @@ impl Agent {
         let result = async {
             if !self.control.stopped {
                 self.load_core(&running).await?;
-                self.selections(&cache.selections).await?;
+                // Selection failures are reported separately and never roll back valid YAML.
+                let selections = if self.proxies.binding.is_empty() {
+                    cache.selections.clone()
+                } else {
+                    json!(self.proxies.effective())
+                };
+                let _ = self.selections(&selections).await;
             }
             if self.s.dns_redirect && !self.control.stopped {
                 dns_redirect(true, &runtime).await?;
@@ -383,6 +392,16 @@ impl Agent {
             .json()
             .await?;
         let revision = desired["revision"].as_str().context("missing revision")?;
+        self.accept_control(&desired["control"]).await?;
+        // Emergency stop takes precedence over downloads, validation and slow providers.
+        let stops: Vec<Value> = desired["control"]["jobs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|j| j["method"] == "core.stop")
+            .cloned()
+            .collect();
+        self.process_jobs(&json!(stops)).await?;
         self.local.status.lock().await["identity_name"] = desired["identity_name"].clone();
         // Stop is handled before downloading/applying anything, including on first sync.
         let cmd = &desired["command"];
@@ -411,10 +430,25 @@ impl Agent {
         {
             self.apply(cache).await?;
         }
-        if self.cached.as_ref().is_none_or(|c| c.revision != revision) {
+        let control_v2 = desired["control"]["protocol"] == 2;
+        let hash = if control_v2 {
+            &desired["control"]["hash"]
+        } else {
+            &desired["hash"]
+        };
+        let format = if control_v2 {
+            desired["control"]["artifact"].as_str().unwrap_or("router")
+        } else {
+            "router"
+        };
+        if self
+            .cached
+            .as_ref()
+            .is_none_or(|c| c.hash != hash.as_str().unwrap_or(""))
+        {
             let mut response = self
                 .http
-                .get(self.api(&format!("/api/sync/revisions/{revision}/router")))
+                .get(self.api(&format!("/api/sync/revisions/{revision}/{format}")))
                 .bearer_auth(&self.s.token)
                 .send()
                 .await?
@@ -437,7 +471,7 @@ impl Agent {
             }
             let cache = Cached {
                 revision: revision.into(),
-                hash: desired["hash"].as_str().context("missing hash")?.into(),
+                hash: hash.as_str().context("missing hash")?.into(),
                 content: String::from_utf8(bytes)?,
                 selections: desired["selections"].clone(),
             };
@@ -452,6 +486,17 @@ impl Agent {
                 return Err(e);
             }
         }
+        if let Some(cache) = &mut self.cached {
+            cache.revision = revision.into();
+            cache.selections = desired["selections"].clone();
+            atomic(
+                &self.s.data_dir.join("last-good.json"),
+                &serde_json::to_vec(cache)?,
+            )
+            .await?;
+        }
+        self.reconcile_proxies().await;
+        self.process_jobs(&desired["control"]["jobs"]).await?;
         if ["start", "restart"].contains(&cmd["type"].as_str().unwrap_or(""))
             && let Some(id) = pending
         {
@@ -483,7 +528,7 @@ impl Agent {
             } else {
                 "configuration active"
             },
-            json!({"core_state":self.local.status.lock().await["core_state"]}),
+            json!({"core_state":self.local.status.lock().await["core_state"],"protocol":2}),
         )
         .await;
         if let Some(id) = desired["command"]["id"].as_str()
@@ -501,6 +546,7 @@ impl Agent {
                 command: None,
                 control: self.control.clone(),
                 local: self.local.clone(),
+                proxies: self.proxies.clone(),
             };
             let id = id.to_string();
             // A slow node must not block realtime config application or the watchdog.
@@ -822,6 +868,7 @@ async fn main() -> Result<()> {
             Err(e) => return Err(e.into()),
         },
         local,
+        proxies: proxies::Durable::load(&s.data_dir).await?,
     };
     if let Ok(bytes) = tokio::fs::read(s.data_dir.join("last-good.json")).await {
         let cache: Cached = serde_json::from_slice(&bytes)?;
@@ -836,7 +883,16 @@ async fn main() -> Result<()> {
     let mut health = tokio::time::interval(Duration::from_secs(10));
     loop {
         tokio::select! {
-            Some(action)=controls.recv()=>{
+            Some(request)=controls.recv()=>{
+                let action=match request {
+                    control::Request::Core(action)=>action,
+                    control::Request::Proxy{method,params,reply}=>{
+                        let result=agent.local_proxy(&method,params).await.map_err(|e|e.to_string());
+                        let _=reply.send(result);
+                        if method=="proxies.select" {let _=agent.sync().await;}
+                        continue;
+                    }
+                };
                 let result = agent.control_core(&action, None).await;
                 let error = result.err().map(|e|e.to_string());
                 agent.publish_runtime(error.clone()).await;
@@ -845,6 +901,8 @@ async fn main() -> Result<()> {
             _=poll.tick()=>{if agent.sync().await.is_err(){tracing::warn!("sync failed; keeping last good configuration");}},
             _=rx.changed()=>{if agent.sync().await.is_err(){tracing::warn!("sync failed; five-minute fallback remains active");}},
             _=health.tick()=>{
+                agent.flush_results().await;
+                agent.reconcile_proxies().await;
                 if agent.control.stopped { agent.publish_runtime(None).await; continue; }
                 let exited=agent.child.as_mut().is_some_and(|c|c.try_wait().ok().flatten().is_some());
                 if exited {
@@ -934,8 +992,9 @@ mod tests {
             command: None,
             control: Default::default(),
             local: control::channel().0,
+            proxies: Default::default(),
         };
-        let content = "mixed-port: 7897\nproxies: [{name: mine, type: ss, server: example.com, port: 443}]\nproxy-groups: [{name: pick, type: select, proxies: [mine]}]\nrules: ['MATCH,pick']\n";
+        let content = "mixed-port: 7897\nproxies: [{name: mine, type: ss, server: example.com, port: 443}, {name: mine2, type: ss, server: example.com, port: 443}]\nproxy-groups: [{name: pick, type: select, proxies: [mine, mine2, DIRECT]}]\nrules: ['MATCH,pick']\n";
         let cache = Cached {
             revision: "first".into(),
             hash: camofy::digest(content),
@@ -943,6 +1002,52 @@ mod tests {
             selections: json!({"pick":"mine"}),
         };
         agent.apply(cache.clone()).await.unwrap();
+        agent.proxies.selections = [("pick".into(), "mine".into())].into();
+        agent.reconcile_proxies().await;
+        assert_eq!(
+            agent.local.status.lock().await["proxy_state"]["status"],
+            "applied"
+        );
+        let pid_before = agent.child.as_ref().unwrap().id();
+        agent
+            .local_proxy("proxies.select", json!({"group":"pick","node":"mine2"}))
+            .await
+            .unwrap();
+        assert_eq!(
+            agent.child.as_ref().unwrap().id(),
+            pid_before,
+            "selection must not restart core"
+        );
+        assert_eq!(
+            agent.local.status.lock().await["proxy_state"]["groups"][0]["now"],
+            "mine2"
+        );
+        let local_state = proxies::Durable::load(&root).await.unwrap();
+        assert_eq!(
+            local_state.pending["pick"].as_deref(),
+            Some("mine2"),
+            "offline choice is durable"
+        );
+        assert!(
+            agent
+                .local_proxy("proxies.select", json!({"group":"pick","node":"missing"}))
+                .await
+                .is_err()
+        );
+        agent
+            .local_proxy("proxies.select", json!({"group":"pick","node":null}))
+            .await
+            .unwrap();
+        agent
+            .proxies
+            .selections
+            .insert("pick".into(), "missing".into());
+        agent.reconcile_proxies().await;
+        assert_eq!(
+            agent.local.status.lock().await["proxy_state"]["errors"]["pick"],
+            "node_missing"
+        );
+        agent.proxies = Default::default();
         let running = tokio::fs::read_to_string(root.join("mock-active.yaml"))
             .await
             .unwrap();

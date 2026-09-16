@@ -416,3 +416,19 @@ dialog p {
     grid-template-columns: 80px minmax(0, 1fr);
   }
 }
+      .proxy-grid {display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;margin:16px 0}
+      .proxy-group {border:1px solid #dce5d3;border-radius:12px;padding:20px;margin:20px 0}
+      .proxy-group h3 {margin:0;overflow-wrap:anywhere}
+      .proxy-node {display:flex;border:1px solid #dce5d3;border-radius:8px;overflow:hidden;min-width:0}
+      .proxy-node.selected {border-color:#287654;background:#eff6ec}
+      .proxy-node button {margin:0;background:transparent;color:#244235;text-align:left;font-weight:500;overflow-wrap:anywhere;padding:12px}
+      .proxy-node .delay {width:auto;font-size:11px;white-space:nowrap}
+      .proxy-group .reset {width:auto;margin:10px 0;padding:8px 12px;font-size:12px}
+      button:focus-visible,a:focus-visible {outline:3px solid #80b09a;outline-offset:3px}
+      #proxy-feedback {overflow-wrap:anywhere}
+
+#unlock,#proxy-panel { margin-top:24px; }
+#unlock {max-width:560px;padding:24px;background:var(--surface,#fff);border:1px solid var(--border,#ddd);border-radius:12px;}
+.proxy-group{background:#fff}
+.proxy-node button{height:auto;white-space:normal;border:0;border-radius:0;flex:1;min-width:0;justify-content:flex-start;}
+.proxy-node .delay{flex:0 0 auto;margin:0;border-left:1px solid #dce5d3;border-radius:0;}
