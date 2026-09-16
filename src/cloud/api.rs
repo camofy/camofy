@@ -164,6 +164,7 @@ async fn save(
         "usage",
         "usage_previous",
         "content_fingerprint",
+        "selection_events",
     ] {
         object.remove(key);
         if let Some(v) = old.as_ref().and_then(|r| r.data.get(key)) {
@@ -334,6 +335,7 @@ async fn save(
                 data["rpc_jobs"] = json!([]);
                 data["selection_overrides"] = json!({});
                 data["selection_version"] = json!(0);
+                data["selection_events"] = json!([]);
             }
         }
         _ => unreachable!(),
@@ -344,6 +346,11 @@ async fn save(
         version: old.as_ref().map(|r| r.version + 1).unwrap_or(1),
         data,
     };
+    if r.kind == "bundle"
+        && let Some(previous) = &old
+    {
+        crate::control::record_selection(&mut r, &previous.data["selections"], "cloud");
+    }
     store::put(&app, &mut tx, user, &r).await?;
     // A managed identity edit must be valid before its association can be committed.
     if r.kind == "bundle"

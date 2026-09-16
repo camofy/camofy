@@ -97,6 +97,9 @@ async fn snapshot(app: &App, a: &Access) -> Result<Value, Error> {
     let (revision, artifacts, selections) = current(app, a.user, a.bundle, &b).await?;
     let mut result = json!({"revision":revision,"hash":artifacts["router"]["hash"],"selections":selections,"command":command,"identity_name":b.data["name"],"poll_seconds":300});
     result["control"] = json!({"protocol":2,"identity":a.bundle,"binding":device.as_ref().map(crate::control::binding),"selection_version":crate::control::version(&b),"selections":b.data["selections"],"override_version":device.as_ref().map(crate::control::version).unwrap_or(0),"overrides":device.as_ref().map(|d|d.data["selection_overrides"].clone()).unwrap_or(json!({})),"artifact":if artifacts["agent"]["hash"].is_string(){"agent"}else{"router"},"hash":artifacts["agent"]["hash"].as_str().or(artifacts["router"]["hash"].as_str()),"jobs":device.as_ref().map(crate::control::jobs).unwrap_or_default()});
+    // Identity is the sole authority. Old per-device overrides are no longer distributed.
+    result["control"]["selection_scope"] = json!("identity");
+    result["control"]["overrides"] = json!({});
     Ok(result)
 }
 pub async fn desired(State(app): State<App>, h: HeaderMap) -> Result<Json<Value>, Error> {
