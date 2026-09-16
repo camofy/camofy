@@ -1,0 +1,405 @@
+import { useCallback, useEffect, useState } from "react";
+import {
+  createBrowserRouter,
+  RouterProvider,
+  Routes,
+  Route,
+  Navigate,
+  NavLink,
+  Link,
+  useLocation,
+} from "react-router-dom";
+import {
+  api,
+  type Resource,
+  type Token,
+  type User,
+  type Issued,
+} from "./cloud/model";
+import { WorkspaceContext } from "./cloud/context";
+import { Login } from "./cloud/Forms";
+import Authorize from "./cloud/Authorize";
+import { Icon, Modal, Copy } from "./cloud/ui";
+import { sections, sectionOf } from "./cloud/navigation";
+import { CollectionPage, DetailPage, EditPage, NotFound } from "./cloud/pages";
+
+function CloudWorkspace() {
+  const [user, setUser] = useState<User | null>(null);
+  const [ready, setReady] = useState(false),
+    [loading, setLoading] = useState(true);
+  const [resources, setResources] = useState<Resource[]>([]),
+    [tokens, setTokens] = useState<Token[]>([]);
+  const [busy, setBusy] = useState(false),
+    [error, setError] = useState(""),
+    [notice, setNotice] = useState("");
+  const [connected, setConnected] = useState(false),
+    [mobile, setMobile] = useState(false);
+  const [issued, setIssued] = useState<Issued | null>(null);
+  const location = useLocation();
+  useEffect(() => {
+    if (!mobile) return;
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMobile(false);
+    };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [mobile]);
+  const load = useCallback(async () => {
+    try {
+      const [r, t] = await Promise.all([
+        api<Resource[]>("/resources"),
+        api<Token[]>("/tokens"),
+      ]);
+      setResources(r);
+      setTokens(t);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+  useEffect(() => {
+    void api<User>("/auth/me")
+      .then(setUser)
+      .catch(() => {})
+      .finally(() => setReady(true));
+  }, []);
+  useEffect(() => {
+    if (!user) return;
+    let closed = false,
+      socket: WebSocket,
+      reconnect: ReturnType<typeof setTimeout>;
+    const refresh = () => {
+      void load().catch((e) => {
+        if (!closed) setError(e.message);
+      });
+    };
+    const connect = () => {
+      socket = new WebSocket(
+        `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/api/sync/ws`,
+      );
+      socket.onopen = () => {
+        if (!closed) setConnected(true);
+      };
+      socket.onmessage = refresh;
+      socket.onclose = () => {
+        if (!closed) {
+          setConnected(false);
+          reconnect = setTimeout(connect, 5000);
+        }
+      };
+    };
+    connect();
+    refresh();
+    const timer = setInterval(refresh, 15000);
+    return () => {
+      closed = true;
+      clearTimeout(reconnect);
+      clearInterval(timer);
+      socket.close();
+    };
+  }, [user, load]);
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(""), 4500);
+    return () => clearTimeout(t);
+  }, [notice]);
+  async function run<T>(
+    fn: () => Promise<T>,
+    message?: string,
+  ): Promise<T | undefined> {
+    setBusy(true);
+    setError("");
+    try {
+      const value = await fn();
+      await load();
+      if (message) setNotice(message);
+      return value;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      return undefined;
+    } finally {
+      setBusy(false);
+    }
+  }
+  const save = (r: Resource) =>
+    run(
+      () =>
+        api<Resource>(
+          r.id ? `/resources/${r.id}` : "/resources",
+          r.id ? "PUT" : "POST",
+          { kind: r.kind, version: r.id ? r.version : undefined, data: r.data },
+        ),
+      "修改已保存，关联身份已重新生成。",
+    );
+  const issue = (bundle: string, device?: string) =>
+    run(async () => {
+      const result = {
+        ...(await api<Issued>("/tokens", "POST", {
+          bundle_id: bundle,
+          device_id: device ?? null,
+          label: device
+            ? (resources.find((r) => r.id === device)?.data.name ?? "设备")
+            : "客户端订阅",
+        })),
+        device_id: device,
+      };
+      setIssued(result);
+      return result;
+    });
+  if (!ready)
+    return (
+      <div className="loading">
+        <span className="brand">
+          camofy<span>cloud</span>
+        </span>
+        <p>正在连接工作区…</p>
+      </div>
+    );
+  if (!user)
+    return (
+      <Login
+        onLogin={(u) => {
+          setLoading(true);
+          setUser(u);
+        }}
+      />
+    );
+  if (location.pathname === "/authorize")
+    return (
+      <Authorize
+        user={user}
+        logout={() => {
+          void api("/auth/logout", "POST")
+            .then(() => setUser(null))
+            .catch((e) => setError(e.message));
+        }}
+      />
+    );
+  const current = sections.find((s) =>
+    location.pathname.startsWith(`/${s.key}`),
+  );
+  return (
+    <WorkspaceContext.Provider
+      value={{
+        resources,
+        tokens,
+        user,
+        loading,
+        busy,
+        error,
+        notice,
+        connected,
+        load,
+        run,
+        save,
+        issue,
+      }}
+    >
+      <div className={`workspace ${mobile ? "menu-open" : ""}`}>
+        {mobile && (
+          <button
+            className="nav-scrim"
+            aria-label="关闭导航"
+            onClick={() => setMobile(false)}
+          />
+        )}
+        <aside className="sidebar">
+          <Link
+            to="/identities"
+            className="brand"
+            onClick={() => setMobile(false)}
+          >
+            <span className="brand-symbol">
+              <Icon name="layers" size={22} />
+            </span>
+            camofy<span className="brand-edition">CLOUD</span>
+          </Link>
+          <div className="workspace-switch">
+            <span className="workspace-avatar">
+              {user.email[0].toUpperCase()}
+            </span>
+            <div>
+              <strong>个人工作区</strong>
+              <small>一份配置，每一端</small>
+            </div>
+            <Icon name="shield" size={16} />
+          </div>
+          <div className="nav-caption">配置管理</div>
+          <nav aria-label="主导航">
+            {sections.map((s, i) => (
+              <NavLink
+                key={s.key}
+                to={`/${s.key}`}
+                onClick={() => setMobile(false)}
+                className={({ isActive }) =>
+                  `nav-item ${isActive ? "active" : ""} ${i === 3 ? "nav-separator" : ""}`
+                }
+              >
+                <Icon name={s.icon} />
+                <span>{s.name}</span>
+                <small>
+                  {s.key === "tokens"
+                    ? tokens.length
+                    : resources.filter((r) => sectionOf(r) === s.key).length}
+                </small>
+              </NavLink>
+            ))}
+          </nav>
+          <div className="sidebar-note">
+            <Icon name="shield" />
+            <p>
+              配置留在云端
+              <br />
+              <span>网络运行在你的设备上</span>
+            </p>
+          </div>
+          <div className="sidebar-account">
+            <span className="account-avatar">
+              {user.email[0].toUpperCase()}
+            </span>
+            <span title={user.email}>{user.email}</span>
+            <button
+              className="icon-button"
+              aria-label="退出登录"
+              onClick={() => {
+                void api("/auth/logout", "POST")
+                  .then(() => {
+                    setUser(null);
+                    setResources([]);
+                    setTokens([]);
+                  })
+                  .catch((e) => setError(e.message));
+              }}
+            >
+              <Icon name="arrow" size={16} />
+            </button>
+          </div>
+        </aside>
+        <div className="main-column">
+          <div className="topbar">
+            <button
+              className="mobile-toggle icon-button"
+              aria-label="打开导航"
+              onClick={() => setMobile(true)}
+            >
+              <Icon name="menu" />
+            </button>
+            <div className="topbar-breadcrumb">
+              工作区<span>/</span>
+              {current?.name ?? "页面"}
+            </div>
+            <div className={`live-indicator ${connected ? "connected" : ""}`}>
+              <i />
+              {connected ? "变更推送已连接" : "等待连接 · 定时同步可用"}
+            </div>
+          </div>
+          <main className="workspace-content">
+            {error && (
+              <div className="banner error" role="alert">
+                <div>
+                  <strong>操作未完成</strong>
+                  <span>{error}</span>
+                </div>
+                <button
+                  className="icon-button"
+                  aria-label="关闭错误"
+                  onClick={() => setError("")}
+                >
+                  <Icon name="close" />
+                </button>
+              </div>
+            )}
+            {loading ? (
+              <div className="skeleton-page" aria-label="正在加载">
+                <div />
+                <div />
+                <div />
+              </div>
+            ) : (
+              <Routes>
+                <Route
+                  path="/"
+                  element={<Navigate to="/identities" replace />}
+                />
+                {sections.map((s) => (
+                  <Route
+                    key={s.key}
+                    path={`/${s.key}`}
+                    element={<CollectionPage section={s.key} />}
+                  />
+                ))}
+                {sections
+                  .filter((s) => s.key !== "tokens")
+                  .flatMap((s) => [
+                    <Route
+                      key={`${s.key}-new`}
+                      path={`/${s.key}/new`}
+                      element={<EditPage section={s.key} fresh />}
+                    />,
+                    <Route
+                      key={`${s.key}-edit`}
+                      path={`/${s.key}/:id/edit`}
+                      element={<EditPage section={s.key} />}
+                    />,
+                    <Route
+                      key={`${s.key}-detail`}
+                      path={`/${s.key}/:id`}
+                      element={<DetailPage section={s.key} />}
+                    />,
+                  ])}
+                <Route path="*" element={<NotFound />} />
+              </Routes>
+            )}
+            <footer className="workspace-footer">
+              <span>CAMOFY CLOUD</span>为你的所有设备，组织同一份网络配置。
+            </footer>
+          </main>
+        </div>
+        {notice && (
+          <div className="toast" role="status">
+            <Icon name="check" />
+            {notice}
+          </div>
+        )}
+        {issued && (
+          <Modal title="保存访问凭据" close={() => setIssued(null)}>
+            <p className="muted">
+              此链接仅显示一次。持有链接即可读取配置，请妥善保存。
+            </p>
+            <label>
+              身份订阅地址
+              <input readOnly value={issued.subscription_base} />
+            </label>
+            <Copy value={issued.subscription_base} />
+            {issued.device_id && (
+              <details>
+                <summary>Agent 配置示例</summary>
+                <pre className="code-preview">
+                  {JSON.stringify(
+                    {
+                      subscription_url: issued.subscription_base,
+                      mihomo: "/opt/mihomo",
+                      data_dir: "/var/lib/camofy",
+                      dns_redirect: false,
+                    },
+                    null,
+                    2,
+                  )}
+                </pre>
+              </details>
+            )}
+            <p className="muted">
+              其他格式可在链接末尾追加 /clash、/shadowrocket 或
+              /shadowrocket-nodes。
+            </p>
+          </Modal>
+        )}
+      </div>
+    </WorkspaceContext.Provider>
+  );
+}
+const router = createBrowserRouter([
+  { path: "*", element: <CloudWorkspace /> },
+]);
+export default function CloudApp() {
+  return <RouterProvider router={router} />;
+}
