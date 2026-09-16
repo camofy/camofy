@@ -37,6 +37,7 @@ export type Data = {
   outputs?: Record<string, { error?: string }>;
   system_profile?: { name: string; content: string; locked: boolean };
   reported?: {
+    protocol?: number;
     status?: string;
     revision?: string;
     seen_at?: number;

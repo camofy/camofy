@@ -263,10 +263,12 @@ pub fn render_bundle(
             .to_owned(),
     );
     let selections = data.get("selections").cloned().unwrap_or(json!({}));
-    let v =
-        camofy::engine::compose_profiles(&profiles, &serde_json::from_value(selections.clone())?)?;
+    let base = camofy::engine::compose_profiles(&profiles, &Default::default())?;
+    let mut v = base.clone();
+    camofy::engine::selection_defaults(&mut v, &serde_json::from_value(selections.clone())?);
     let mut artifacts = serde_json::Map::new();
     for (format, result) in [
+        ("agent", camofy::engine::mihomo(&base, true)),
         ("clash", camofy::engine::mihomo(&v, false)),
         ("router", camofy::engine::mihomo(&v, true)),
         ("shadowrocket-nodes", camofy::engine::shadowrocket_nodes(&v)),
