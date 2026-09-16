@@ -166,6 +166,7 @@ async fn fetch_text_inner(
             .get(target.clone())
             .send()
             .await?;
+        crate::retry::check_http(&response)?;
         ensure!(response.status().is_success(), "provider HTTP failure");
         let mut bytes = Vec::new();
         while let Some(chunk) = response.chunk().await? {
@@ -180,9 +181,12 @@ async fn fetch_text_inner(
     };
     tokio::time::timeout(std::time::Duration::from_secs(15), request)
         .await
-        .map_err(|_| anyhow::anyhow!("provider request timed out"))?
-        .map_err(|_| {
-            anyhow::anyhow!("provider request failed (network, HTTP status or invalid response)")
+        .map_err(anyhow::Error::new)
+        .and_then(|r| r)
+        .map_err(|e| {
+            anyhow::Error::new(crate::retry::SafeFailure {
+                delay: crate::retry::delay(&e),
+            })
         })
 }
 
@@ -223,12 +227,8 @@ pub async fn fetch(url: &str, proxy: Option<&str>, private: bool) -> Result<Fetc
         builder = builder.proxy(reqwest::Proxy::all(format!("http://{local}"))?);
     }
     let _bridge = AbortOnDrop(bridge);
-    let mut response = builder
-        .build()?
-        .get(target)
-        .send()
-        .await?
-        .error_for_status()?;
+    let mut response = builder.build()?.get(target).send().await?;
+    crate::retry::check_http(&response)?;
     ensure!(
         response.status().is_success(),
         "subscription redirect is not allowed; use its final URL"

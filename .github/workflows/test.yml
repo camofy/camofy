@@ -22,6 +22,9 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: sh scripts/test-installer.sh "$PWD/install.sh"
       - run: cargo test --locked --lib --bin camofy-cloud
+      - run: cargo test --locked --bin camofy-cloud subscription_retry_end_to_end -- --ignored
+        env:
+          TEST_DATABASE_URL: postgres://postgres:test-only@localhost:5432/camofy_test
       - run: cargo test --locked --bin camofy-cloud catalog_end_to_end -- --ignored
         env:
           TEST_DATABASE_URL: postgres://postgres:test-only@localhost:5432/camofy_test
