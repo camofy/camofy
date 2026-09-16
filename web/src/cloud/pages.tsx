@@ -311,7 +311,9 @@ export function CollectionPage({ section }: { section: Section }) {
                           {section === "subscriptions"
                             ? host(r.data.url)
                             : section === "profiles"
-                              ? `配置 Profile · v${r.version}`
+                              ? r.data.store
+                                ? `商店组件 · v${r.data._package?.version ?? "—"} · 手动锁定`
+                                : `独立配置 · v${r.version}`
                               : section === "proxies"
                                 ? r.data.provider === "xiequ"
                                   ? "每次刷新即时提取"
