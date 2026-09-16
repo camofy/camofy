@@ -241,15 +241,19 @@ pub fn notices(resources: &[Resource], data: &Value) -> String {
             .as_array()
             .or_else(|| p.data["provenance"].as_array());
         for s in sources.into_iter().flatten() {
-            // Only notices from verified managed packages or forks are consumed here.
+            // Provenance is metadata, not YAML. Fork metadata is tenant-editable;
+            // prefix every YAML line separator, including standalone CR and NEL.
             if !seen.insert(s.to_string()) {
                 continue;
             }
             for key in ["attribution", "url", "revision", "license", "license_text"] {
                 if let Some(text) = s[key].as_str() {
-                    for line in text.lines() {
+                    for line in text.split(['\n', '\r', '\u{85}', '\u{2028}', '\u{2029}']) {
                         out.push_str("# ");
-                        out.push_str(line);
+                        out.extend(
+                            line.chars()
+                                .map(|c| if c.is_control() && c != '\t' { ' ' } else { c }),
+                        );
                         out.push('\n');
                     }
                 }
