@@ -8,9 +8,10 @@ import {
 import { api, displayTime, type Resource } from "./model";
 import { useWorkspace } from "./context";
 import { Editor } from "./Forms";
-import { ManagedProfile } from "./Store";
+import { ManagedProfile, ManagedSource } from "./Store";
 import {
   CodeBlock,
+  ConfigPreview,
   Copy,
   Empty,
   Icon,
@@ -557,17 +558,15 @@ function Preview({ r, source = false }: { r: Resource; source?: boolean }) {
     };
   }, [r.id, format, key, source]);
   return (
-    <section className="panel preview-panel">
-      <div className="panel-heading">
-        <div>
-          <h2>{source ? "上次成功拉取的内容" : "合并结果"}</h2>
-          <p className="muted">
-            {source
-              ? "只读快照。刷新失败不会覆盖上次成功内容。"
-              : "此处为云端发布内容；客户端仍可能应用自身的本地设置。"}
-          </p>
-        </div>
-        {!source && (
+    <ConfigPreview
+      title={source ? "上次成功拉取的内容" : "合并结果"}
+      description={
+        source
+          ? "只读快照。刷新失败不会覆盖上次成功内容。"
+          : "此处为云端发布内容；客户端仍可能应用自身的本地设置。"
+      }
+      actions={
+        !source && (
           <select
             aria-label="预览格式"
             value={format}
@@ -583,20 +582,12 @@ function Preview({ r, source = false }: { r: Resource; source?: boolean }) {
               </option>
             ))}
           </select>
-        )}
-      </div>
-      {result?.key !== key ? (
-        <p className="panel-message" role="status">
-          正在读取配置…
-        </p>
-      ) : result.error ? (
-        <p className="inline-error" role="alert">
-          {result.error}
-        </p>
-      ) : (
-        <CodeBlock content={result.content ?? ""} />
-      )}
-    </section>
+        )
+      }
+      loading={result?.key !== key}
+      error={result?.key === key ? result.error : undefined}
+      content={result?.key === key ? result.content : undefined}
+    />
   );
 }
 function History({ r }: { r: Resource }) {
@@ -828,6 +819,7 @@ export function DetailPage({ section }: { section: Section }) {
       ]
     : [
         { id: "overview", label: section === "profiles" ? "配置内容" : "概览" },
+        ...(r.data.store ? [{ id: "management", label: "版本与副本" }] : []),
         ...(isSource ? [{ id: "content", label: "订阅内容" }] : []),
         ...(isSource ? [{ id: "refresh-history", label: "刷新历史" }] : []),
         { id: "settings", label: "设置" },
@@ -847,7 +839,9 @@ export function DetailPage({ section }: { section: Section }) {
         description={
           isBundle
             ? "组合、发布与分发，在这里管理这个身份的完整生命周期。"
-            : meta(section).sub
+            : r.data.store
+              ? "商店组件 · 固定版本。源码只读，启用与出口在身份中设置。"
+              : meta(section).sub
         }
       >
         <Status r={r} />
@@ -867,7 +861,7 @@ export function DetailPage({ section }: { section: Section }) {
         )}
         <Link className="button primary" to={`${resourcePath(r)}/edit`}>
           <Icon name="edit" size={16} />
-          编辑{isBundle ? "身份" : ""}
+          {r.data.store ? "编辑名称" : `编辑${isBundle ? "身份" : ""}`}
         </Link>
       </Heading>
       {r.data.error && (
@@ -904,20 +898,23 @@ export function DetailPage({ section }: { section: Section }) {
       {tab === "usage" && <UsagePanel r={r} />}
       {tab === "refresh-history" && <RefreshHistory key={r.id} r={r} />}
       {tab === "content" && <Preview source r={r} />}
+      {tab === "management" && r.data.store && (
+        <div className="package-management">
+          <ManagedProfile key={`${r.id}-${r.version}`} resource={r} />
+        </div>
+      )}
       {tab === "overview" && (
         <div className="detail-columns">
           <div className="detail-main">
             {isSource && <UsagePanel r={r} />}
             {section === "profiles" && r.data.store ? (
-              <ManagedProfile key={`${r.id}-${r.version}`} resource={r} />
+              <ManagedSource key={`${r.id}-${r.version}`} resource={r} />
             ) : section === "profiles" ? (
-              <section className="panel preview-panel">
-                <div className="panel-heading">
-                  <h2>独立配置</h2>
-                  <span className="chip">v{r.version}</span>
-                </div>
-                <CodeBlock content={r.data.content ?? ""} />
-              </section>
+              <ConfigPreview
+                title="独立配置"
+                actions={<span className="chip">v{r.version}</span>}
+                content={r.data.content ?? ""}
+              />
             ) : (
               <section className="panel">
                 <div className="panel-heading">

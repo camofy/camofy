@@ -590,6 +590,43 @@ async fn upgrade_inner(
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct SourcePreview {
+    pub version: i64,
+    pub policy: Option<String>,
+}
+/// Read-only compilation of an installed component, not a complete identity output.
+pub async fn source_preview(
+    State(app): State<App>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(p): Json<SourcePreview>,
+) -> Result<Json<Value>, Error> {
+    let user = auth::user(&app, &h, true).await?;
+    let mut conn = app.db.acquire().await?;
+    let r = store::get(&app, &mut conn, user, id).await?;
+    if !r.data["store"].is_object() {
+        return Err(bad("managed profile required"));
+    }
+    if r.version != p.version {
+        return Err(Error::new(StatusCode::CONFLICT, "profile changed; reload"));
+    }
+    let policy = p
+        .policy
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .or(r.data["_package"]["manifest"]["default_policy"].as_str())
+        .unwrap_or("<身份策略>");
+    let content = compile(&r, &json!({"parameters":{"policy":policy}})).map_err(bad)?;
+    let notice = notices(
+        std::slice::from_ref(&r),
+        &json!({"profiles":[{"profile_id":id,"enabled":true}]}),
+    );
+    Ok(Json(
+        json!({"content":format!("{content}\n{notice}"),"policy":policy,"parameterized":policy=="<身份策略>","version":r.version}),
+    ))
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Fork {
     pub version: i64,
     pub policy: String,

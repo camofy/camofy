@@ -7,7 +7,14 @@ import {
 } from "react-router-dom";
 import { api, type Resource, type User } from "./model";
 import { useWorkspace } from "./context";
-import { CodeBlock, Icon } from "./ui";
+import {
+  Copy,
+  Icon,
+  Panel,
+  PanelBody,
+  FieldActionRow,
+  ConfigPreview,
+} from "./ui";
 import "./store.css";
 
 export type PackageRule = { kind: string; value: string; no_resolve: boolean };
@@ -191,7 +198,8 @@ export function StorePage() {
 export function StoreDetail() {
   const { slug } = useParams(),
     navigate = useNavigate();
-  const { run, busy } = useWorkspace();
+  const { run, busy, resources } = useWorkspace();
+  const [search, setSearch] = useSearchParams();
   const [detail, setDetail] = useState<Detail | null>(null),
     [version, setVersion] = useState(""),
     [error, setError] = useState("");
@@ -201,7 +209,8 @@ export function StoreDetail() {
       .then((d) => {
         if (active) {
           setDetail(d);
-          setVersion(d.versions[0].id);
+          setError("");
+          setVersion(d.versions[0]?.id ?? "");
         }
       })
       .catch((e) => {
@@ -211,22 +220,43 @@ export function StoreDetail() {
       active = false;
     };
   }, [slug]);
-  const [installationId] = useState(() => crypto.randomUUID());
-  const selected = detail?.versions.find((v) => v.id === version);
+  const [installationId, setInstallationId] = useState(() =>
+    crypto.randomUUID(),
+  );
+  const selected =
+    detail?.versions.find((v) => v.id === (search.get("version") || version)) ??
+    detail?.versions[0];
+  const tabs = [
+    { id: "overview", label: "概览" },
+    { id: "rules", label: "规则预览" },
+    { id: "sources", label: "来源与许可" },
+  ];
+  const tab = tabs.some((t) => t.id === search.get("tab"))
+    ? search.get("tab")!
+    : "overview";
+  const updateSearch = (key: string, value: string) => {
+    const next = new URLSearchParams(search);
+    next.set(key, value);
+    setSearch(next);
+  };
+  const installed = resources.filter((r) => r.data.store?.slug === slug);
   if (error) return <p role="alert">{error}</p>;
-  if (!detail || !selected) return <p>正在加载组件…</p>;
+  if (!detail || detail.slug !== slug || !selected) return <p>正在加载组件…</p>;
   return (
     <>
       <Link className="back-link" to="/store">
-        ← 全部组件
+        <Icon name="back" size={16} /> 全部组件
       </Link>
       <header className="page-heading">
         <div>
-          <div className="eyebrow">
-            {detail.publisher} / {detail.slug}
-          </div>
+          <div className="eyebrow">PROFILE STORE</div>
           <h1>{selected.manifest.name}</h1>
           <p>{selected.manifest.summary}</p>
+          <div className="package-byline">
+            <span className="chip">{selected.manifest.category}</span>
+            <span>{detail.publisher} 发布</span>
+            <span>v{selected.version}</span>
+          </div>
         </div>
         <button
           className="primary"
@@ -235,7 +265,7 @@ export function StoreDetail() {
             void run(
               () =>
                 api<Resource>("/store/install", "POST", {
-                  version_id: version,
+                  version_id: selected.id,
                   profile_id: installationId,
                 }),
               "已添加到配置库，尚未关联任何身份。",
@@ -244,97 +274,305 @@ export function StoreDetail() {
             })
           }
         >
-          添加到我的 Profiles
+          <Icon name="plus" size={16} />{" "}
+          {installed.length ? "再添加一份" : "添加到我的 Profiles"}
         </button>
       </header>
-      <div className="store-detail-grid">
-        <section className="panel store-content">
-          <div className="panel-heading">
-            <h2>这个组件会做什么</h2>
-            <span className="chip">仅修改 rules</span>
-          </div>
-          <p>{selected.manifest.notes}</p>
-          <dl className="store-facts">
-            <div>
-              <dt>默认策略</dt>
-              <dd>
-                {selected.manifest.default_policy ?? "关联身份时选择策略组"}
-              </dd>
-            </div>
-            <div>
-              <dt>规则数量</dt>
-              <dd>{selected.rules.length}</dd>
-            </div>
-            <div>
-              <dt>安装方式</dt>
-              <dd>固定版本 · 手动升级</dd>
-            </div>
-            <div>
-              <dt>运行方式</dt>
-              <dd>内联规则，无脚本、无额外下载</dd>
-            </div>
-          </dl>
-          <h3>规则预览</h3>
-          <p className="muted">
-            实际出口由身份关联参数决定；规则放在既有规则之前，系统云端保护仍最先匹配。
-          </p>
-          <CodeBlock
-            content={selected.rules
-              .map(
-                (r) =>
-                  `${r.kind},${r.value},${selected.manifest.default_policy ?? "<身份策略>"}${r.no_resolve ? ",no-resolve" : ""}`,
-              )
-              .join("\n")}
-          />
-        </section>
-        <aside className="store-aside">
-          <section className="panel">
-            <h2>版本与兼容性</h2>
-            <label>
-              选择版本
-              <select
-                value={version}
-                onChange={(e) => setVersion(e.target.value)}
+      <div className="tabs" role="tablist" aria-label="组件详情">
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            id={`package-tab-${t.id}`}
+            role="tab"
+            aria-selected={tab === t.id}
+            aria-controls="package-tabpanel"
+            className={tab === t.id ? "selected" : ""}
+            onClick={() => updateSearch("tab", t.id)}
+          >
+            {t.label}
+            {t.id === "rules" && (
+              <span className="package-tab-count">{selected.rules.length}</span>
+            )}
+          </button>
+        ))}
+      </div>
+      <div className="detail-columns package-detail">
+        <div
+          id="package-tabpanel"
+          role="tabpanel"
+          aria-labelledby={`package-tab-${tab}`}
+          className="detail-main"
+        >
+          {tab === "overview" && (
+            <>
+              <Panel
+                title="适用范围"
+                actions={<span className="chip">仅修改 rules</span>}
               >
-                {detail.versions.map((v) => (
-                  <option value={v.id} key={v.id}>
-                    {v.version}
-                  </option>
+                <PanelBody>
+                  <p className="package-description">
+                    {selected.manifest.notes}
+                  </p>
+                  <div className="package-note">
+                    <Icon name="shield" size={18} />
+                    <p>
+                      不修改 DNS、TUN
+                      或监听端口。规则直接合入订阅，设备无需安装插件或额外下载规则。
+                    </p>
+                  </div>
+                </PanelBody>
+              </Panel>
+              <Panel
+                title="如何生效"
+                actions={<span className="muted">安装不会改变现有网络</span>}
+              >
+                <ol className="package-steps">
+                  <li>
+                    <span>01</span>
+                    <div>
+                      <h3>添加到配置库</h3>
+                      <p>
+                        安装 v{selected.version}
+                        ，内容保持固定。后续由你决定是否升级。
+                      </p>
+                    </div>
+                  </li>
+                  <li>
+                    <span>02</span>
+                    <div>
+                      <h3>在身份中启用</h3>
+                      <p>
+                        {selected.manifest.default_policy
+                          ? `默认使用 ${selected.manifest.default_policy}；可在每个身份内分别设置出口和顺序。`
+                          : "选择已有策略组或节点作为出口；不同身份可以使用不同策略。"}
+                      </p>
+                    </div>
+                  </li>
+                  <li>
+                    <span>03</span>
+                    <div>
+                      <h3>预览后发布</h3>
+                      <p>
+                        确认最终规则与冲突提示。系统云端直连保护始终最先匹配。
+                      </p>
+                    </div>
+                  </li>
+                </ol>
+              </Panel>
+            </>
+          )}
+          {tab === "rules" && (
+            <ConfigPreview
+              title="合并规则"
+              description="置于原有规则之前，实际出口以身份中的选择为准。"
+              actions={<span className="chip">{selected.rules.length} 条</span>}
+              content={selected.rules
+                .map(
+                  (r) =>
+                    `${r.kind},${r.value},${selected.manifest.default_policy ?? "<身份策略>"}${r.no_resolve ? ",no-resolve" : ""}`,
+                )
+                .join("\n")}
+            />
+          )}
+          {tab === "sources" && (
+            <Panel
+              title="来源与许可"
+              description="每个版本固定来源提交与内容哈希，保留作者署名。"
+              actions={
+                <span className="chip">
+                  {selected.manifest.sources.length} 个文件
+                </span>
+              }
+            >
+              <div className="package-sources">
+                {selected.manifest.sources.map((s) => (
+                  <article className="package-source" key={s.url}>
+                    <div className="package-source-heading">
+                      <a
+                        className="text-link"
+                        href={s.url}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {decodeURIComponent(
+                          new URL(s.url).pathname
+                            .split("/")
+                            .slice(-2)
+                            .join("/"),
+                        )}
+                        <Icon name="arrow" size={14} />
+                      </a>
+                      <span className="chip">{s.license}</span>
+                    </div>
+                    <p>{s.attribution}</p>
+                    <details className="package-disclosure">
+                      <summary>来源校验信息</summary>
+                      <dl className="package-checks">
+                        <dt>Commit</dt>
+                        <dd>
+                          <code>{s.revision}</code>
+                        </dd>
+                        <dt>SHA256</dt>
+                        <dd>
+                          <code>{s.sha256}</code>
+                        </dd>
+                      </dl>
+                    </details>
+                    <details className="package-disclosure">
+                      <summary>许可全文</summary>
+                      <pre>{s.license_text}</pre>
+                    </details>
+                  </article>
                 ))}
-              </select>
-            </label>
-            <p>Mihomo：支持所列基础规则。</p>
-            <p>Shadowrocket 完整配置：基础规则可导出，完整身份仍需兼容校验。</p>
-            <p>仅节点订阅不包含这些规则。</p>
-            <small className="muted">SHA256</small>
-            <code className="store-hash">{selected.hash}</code>
-          </section>
-          <section className="panel">
-            <h2>来源与许可</h2>
-            {selected.manifest.sources.map((s) => (
-              <div className="store-source" key={s.url}>
-                <a href={s.url} target="_blank" rel="noreferrer">
-                  查看上游来源 ↗
-                </a>
-                <p>{s.attribution}</p>
-                <span className="chip">{s.license}</span>
-                <code className="store-hash">commit {s.revision}</code>
-                <details>
-                  <summary>许可全文</summary>
-                  <pre>{s.license_text}</pre>
-                </details>
               </div>
-            ))}
-          </section>
+            </Panel>
+          )}
+        </div>
+        <aside className="package-aside">
+          <Panel title="组件信息" actions={<Icon name="layers" size={17} />}>
+            <PanelBody>
+              <label className="package-field">
+                选择版本
+                <select
+                  value={selected.id}
+                  onChange={(e) => {
+                    updateSearch("version", e.target.value);
+                    setInstallationId(crypto.randomUUID());
+                  }}
+                >
+                  {detail.versions.map((v) => (
+                    <option value={v.id} key={v.id}>
+                      v{v.version}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <dl className="package-metadata">
+                <div>
+                  <dt>默认策略</dt>
+                  <dd>{selected.manifest.default_policy ?? "按身份指定"}</dd>
+                </div>
+                <div>
+                  <dt>规则数量</dt>
+                  <dd>{selected.rules.length} 条</dd>
+                </div>
+                <div>
+                  <dt>更新方式</dt>
+                  <dd>手动升级</dd>
+                </div>
+              </dl>
+              {installed.length > 0 && (
+                <Link className="text-link" to={`/profiles/${installed[0].id}`}>
+                  查看已安装的 Profile <Icon name="arrow" size={14} />
+                </Link>
+              )}
+              <details className="package-disclosure">
+                <summary>版本校验信息</summary>
+                <code className="store-hash">{selected.hash}</code>
+                <Copy value={selected.hash} label="复制 SHA256" />
+              </details>
+            </PanelBody>
+          </Panel>
+          <Panel title="客户端支持">
+            <PanelBody className="package-compatibility">
+              <div>
+                <strong>Mihomo / Clash Verge</strong>
+                <p>支持此组件使用的基础规则。</p>
+              </div>
+              <div>
+                <strong>Shadowrocket</strong>
+                <p>可导出基础规则；完整身份仍需兼容校验。</p>
+              </div>
+              <p className="package-caption">仅节点订阅不包含分流规则。</p>
+            </PanelBody>
+          </Panel>
         </aside>
       </div>
     </>
+  );
+}
+export function ManagedSource({ resource: r }: { resource: Resource }) {
+  const [policy, setPolicy] = useState("");
+  const [result, setResult] = useState<{
+    content: string;
+    policy: string;
+    parameterized: boolean;
+  } | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let active = true;
+    const timer = setTimeout(
+      () => {
+        api<{ content: string; policy: string; parameterized: boolean }>(
+          `/profiles/${r.id}/source-preview`,
+          "POST",
+          { version: r.version, policy: policy || null },
+        )
+          .then((v) => {
+            if (active) setResult(v);
+          })
+          .catch((e) => {
+            if (active) setError(e.message);
+          });
+      },
+      policy ? 250 : 0,
+    );
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [r.id, r.version, policy]);
+  return (
+    <ConfigPreview
+      title="YAML 源码"
+      description={`已安装 v${r.data._package?.version} · 云端编译 · 只读`}
+      actions={
+        <Link className="text-link" to={`/store/${r.data.store?.slug}`}>
+          组件详情 <Icon name="arrow" size={14} />
+        </Link>
+      }
+      controls={
+        <div className="package-source-controls">
+          <label className="package-field">
+            预览策略
+            <input
+              aria-label="YAML 预览策略"
+              value={policy}
+              onChange={(e) => {
+                setPolicy(e.target.value);
+                setResult(null);
+                setError("");
+              }}
+              placeholder={
+                r.data._package?.manifest.default_policy ??
+                "留空显示 <身份策略> 占位符"
+              }
+              maxLength={200}
+            />
+          </label>
+          <p>
+            仅改变源码预览，不修改任何身份的出口。最终配置请到身份的「合并预览」查看。
+          </p>
+        </div>
+      }
+      error={error}
+      loading={!result && !error}
+      content={result?.content}
+      warnings={
+        result?.parameterized
+          ? [
+              "此组件需要身份策略；<身份策略> 是占位符，不能直接作为完整订阅使用。",
+            ]
+          : []
+      }
+    />
   );
 }
 export function ManagedProfile({ resource: r }: { resource: Resource }) {
   const { run, busy } = useWorkspace(),
     navigate = useNavigate();
   const [detail, setDetail] = useState<Detail | null>(null),
+    [error, setError] = useState(""),
     [target, setTarget] = useState(r.data.store?.version_id ?? ""),
     [preview, setPreview] = useState<Upgrade | null>(null),
     [policy, setPolicy] = useState(
@@ -346,131 +584,152 @@ export function ManagedProfile({ resource: r }: { resource: Resource }) {
       .then((d) => {
         if (active) setDetail(d);
       })
-      .catch(() => {});
+      .catch((e) => {
+        if (active) setError(e.message);
+      });
     return () => {
       active = false;
     };
   }, [r.data.store?.slug]);
   return (
-    <section className="panel store-content">
-      <div className="panel-heading">
-        <h2>商店托管组件</h2>
-        <span className="chip">v{r.data._package?.version}</span>
-      </div>
-      <p>{r.data._package?.manifest.summary}</p>
-      <Link to={`/store/${r.data.store?.slug}`}>查看商品、来源和许可 →</Link>
-      <p className="muted">
-        内容由固定版本管理；启用与出口在身份内设置。升级会验证所有启用此 Profile
-        的身份。
-      </p>
-      <label>
-        升级或回滚到版本
-        <select
-          value={target}
-          onChange={(e) => {
-            setTarget(e.target.value);
-            setPreview(null);
-          }}
-        >
-          {(detail?.versions ?? []).map((v) => (
-            <option key={v.id} value={v.id}>
-              {v.version}
-              {v.id === r.data.store?.version_id ? "（当前）" : ""}
-            </option>
-          ))}
-        </select>
-      </label>
-      <button
-        disabled={busy || !detail || target === r.data.store?.version_id}
-        onClick={() =>
-          void run(() =>
-            api<Upgrade>(`/profiles/${r.id}/upgrade-preview`, "POST", {
-              version: r.version,
-              version_id: target,
-            }),
-          ).then((p) => {
-            if (p) setPreview(p);
-          })
-        }
+    <div className="detail-main">
+      <Panel
+        title="版本管理"
+        actions={<span className="chip">v{r.data._package?.version}</span>}
       >
-        预览版本变更
-      </button>
-      {preview && (
-        <div className="store-change">
-          <h3>
-            新增 {preview.added} 条 · 删除 {preview.removed} 条
-          </h3>
-          <p>
-            影响 {preview.affected.length} 个已启用身份。更新后保持手动锁定。
+        <PanelBody>
+          <p className="package-description">
+            当前版本保持锁定，不会随上游自动变化。切换版本前，会一起验证所有启用此
+            Profile 的身份。
           </p>
-          {preview.affected.map((b) => (
-            <div key={b.id}>
-              <strong>{b.name}</strong>
-              {b.warnings.map((w, i) => (
-                <p className="inline-error" key={i}>
-                  {w}
-                </p>
-              ))}
-              {Object.entries(b.outputs)
-                .filter(([, v]) => v.error)
-                .map(([f, v]) => (
-                  <p key={f} className="inline-error">
-                    {f}：{v.error}
-                  </p>
+          {error && (
+            <p className="inline-error" role="alert">
+              {error}
+            </p>
+          )}
+          <FieldActionRow>
+            <label className="package-field">
+              目标版本
+              <select
+                value={target}
+                onChange={(e) => {
+                  setTarget(e.target.value);
+                  setPreview(null);
+                }}
+              >
+                {(detail?.versions ?? []).map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.version}
+                    {v.id === r.data.store?.version_id ? "（当前）" : ""}
+                  </option>
                 ))}
-            </div>
-          ))}
-          <button
-            className="primary"
-            disabled={busy}
-            onClick={() =>
-              void run(
-                () =>
-                  api(`/profiles/${r.id}/upgrade`, "POST", {
+              </select>
+            </label>
+            <button
+              disabled={busy || !detail || target === r.data.store?.version_id}
+              onClick={() =>
+                void run(() =>
+                  api<Upgrade>(`/profiles/${r.id}/upgrade-preview`, "POST", {
                     version: r.version,
                     version_id: target,
-                    preview_digest: preview.preview_digest,
                   }),
-                "版本已更新并锁定。",
-              ).then(() => setPreview(null))
-            }
-          >
-            确认应用该版本
-          </button>
-        </div>
-      )}
-      <hr />
-      <h3>需要自由编辑？</h3>
-      <p>
-        复制为独立
-        Profile，保留来源说明，但不再跟随商店。已有身份不会自动切换到副本。
-      </p>
-      <label>
-        副本采用的策略
-        <input
-          value={policy}
-          onChange={(e) => setPolicy(e.target.value)}
-          placeholder="DIRECT / REJECT / 身份中的策略组名称"
-        />
-      </label>
-      <button
-        disabled={busy || !policy}
-        onClick={() =>
-          void run(
-            () =>
-              api<Resource>(`/profiles/${r.id}/fork`, "POST", {
-                version: r.version,
-                policy,
-              }),
-            "已创建独立副本。",
-          ).then((x) => {
-            if (x) navigate(`/profiles/${x.id}`);
-          })
-        }
-      >
-        复制为独立 Profile
-      </button>
-    </section>
+                ).then((p) => {
+                  if (p) setPreview(p);
+                })
+              }
+            >
+              预览版本变更
+            </button>
+          </FieldActionRow>
+          {detail?.versions.length === 1 && (
+            <p className="package-caption">
+              当前只有一个已发布版本，暂无其他版本可切换。
+            </p>
+          )}
+          {preview && (
+            <div className="store-change">
+              <h3>
+                新增 {preview.added} 条 · 删除 {preview.removed} 条
+              </h3>
+              <p>
+                影响 {preview.affected.length}{" "}
+                个已启用身份。更新后保持手动锁定。
+              </p>
+              {preview.affected.map((b) => (
+                <div key={b.id}>
+                  <strong>{b.name}</strong>
+                  {b.warnings.map((w, i) => (
+                    <p className="inline-error" key={i}>
+                      {w}
+                    </p>
+                  ))}
+                  {Object.entries(b.outputs)
+                    .filter(([, v]) => v.error)
+                    .map(([f, v]) => (
+                      <p key={f} className="inline-error">
+                        {f}：{v.error}
+                      </p>
+                    ))}
+                </div>
+              ))}
+              <button
+                className="primary"
+                disabled={busy}
+                onClick={() =>
+                  void run(
+                    () =>
+                      api(`/profiles/${r.id}/upgrade`, "POST", {
+                        version: r.version,
+                        version_id: target,
+                        preview_digest: preview.preview_digest,
+                      }),
+                    "版本已更新并锁定。",
+                  ).then(() => setPreview(null))
+                }
+              >
+                确认应用该版本
+              </button>
+            </div>
+          )}
+        </PanelBody>
+      </Panel>
+      <Panel title="创建独立副本" actions={<Icon name="copy" size={17} />}>
+        <PanelBody>
+          <p className="package-description">
+            复制为独立 Profile 后可以自由编辑
+            YAML，并保留来源说明。已有身份仍使用原组件，不会自动切换。
+          </p>
+          <FieldActionRow>
+            <label className="package-field">
+              副本采用的策略
+              <input
+                value={policy}
+                onChange={(e) => setPolicy(e.target.value)}
+                placeholder="DIRECT / REJECT / 身份中的策略组名称"
+              />
+            </label>
+            <button
+              disabled={busy || !policy}
+              onClick={() =>
+                void run(
+                  () =>
+                    api<Resource>(`/profiles/${r.id}/fork`, "POST", {
+                      version: r.version,
+                      policy,
+                    }),
+                  "已创建独立副本。",
+                ).then((x) => {
+                  if (x) navigate(`/profiles/${x.id}`);
+                })
+              }
+            >
+              <Icon name="copy" size={16} />
+              复制为独立 Profile
+            </button>
+          </FieldActionRow>
+        </PanelBody>
+      </Panel>
+    </div>
   );
 }
 export function AccountPage({

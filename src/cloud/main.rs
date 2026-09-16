@@ -122,6 +122,10 @@ pub fn router(app: App) -> Router {
         )
         .route("/api/profiles/:id/upgrade", post(catalog::upgrade))
         .route("/api/profiles/:id/fork", post(catalog::fork))
+        .route(
+            "/api/profiles/:id/source-preview",
+            post(catalog::source_preview),
+        )
         .route("/api/auth/logout", post(auth::logout))
         .route(
             "/api/oauth/device_authorization",

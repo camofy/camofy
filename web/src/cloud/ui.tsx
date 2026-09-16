@@ -200,17 +200,35 @@ export function Empty({
 }
 export function CodeBlock({ content }: { content: string }) {
   const lines = content.split("\n");
+  const [showPreamble, setShowPreamble] = useState(false);
+  const firstConfigLine = lines.findIndex(
+    (line) => line.trim() !== "" && !line.trim().startsWith("#"),
+  );
+  const hasPreamble = firstConfigLine > 8;
+  const offset = hasPreamble && !showPreamble ? firstConfigLine : 0;
   return (
     <>
       <div className="code-toolbar">
         <span>
           YAML <b>·</b> {lines.length.toLocaleString()} 行
         </span>
+        {hasPreamble && (
+          <button
+            type="button"
+            className="copy-button"
+            aria-expanded={showPreamble}
+            onClick={() => setShowPreamble(!showPreamble)}
+          >
+            {showPreamble
+              ? "折叠开头注释"
+              : `展开来源与许可 · ${firstConfigLine} 行`}
+          </button>
+        )}
         <Copy value={content} label="复制内容" />
       </div>
       <div className="code-view" tabIndex={0} aria-label="配置内容">
-        <ol>
-          {lines.slice(0, 1000).map((line, i) => (
+        <ol start={offset + 1}>
+          {lines.slice(offset, offset + 1000).map((line, i) => (
             <li key={i}>
               <code className={line.trim().startsWith("#") ? "comment" : ""}>
                 {line || " "}
@@ -219,10 +237,123 @@ export function CodeBlock({ content }: { content: string }) {
           ))}
         </ol>
       </div>
-      {lines.length > 1000 && (
-        <p className="muted">仅预览前 1,000 行。复制内容可获取完整配置。</p>
+      {lines.length - offset > 1000 && (
+        <p className="muted">
+          最多预览 1,000 行。复制内容可获取包含全部注释的完整配置。
+        </p>
       )}
     </>
+  );
+}
+/** Shared detail surface: one header inset, explicit body or edge-to-edge code. */
+export function Panel({
+  title,
+  description,
+  actions,
+  children,
+  className = "",
+}: {
+  title: string;
+  description?: ReactNode;
+  actions?: ReactNode;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <section className={`panel ${className}`}>
+      <div className="panel-heading">
+        <div>
+          <h2>{title}</h2>
+          {description && <p className="muted">{description}</p>}
+        </div>
+        {actions}
+      </div>
+      {children}
+    </section>
+  );
+}
+export function PanelBody({
+  children,
+  className = "",
+}: {
+  children: ReactNode;
+  className?: string;
+}) {
+  return <div className={`panel-body ${className}`}>{children}</div>;
+}
+export function FieldActionRow({ children }: { children: ReactNode }) {
+  return <div className="field-action-row">{children}</div>;
+}
+/** All YAML viewing surfaces share toolbar, copy, line numbers and comment treatment. */
+export function ConfigPreview({
+  title = "YAML 配置",
+  description,
+  actions,
+  controls,
+  content,
+  loading,
+  error,
+  warnings = [],
+  compatibility = [],
+  empty = "生成预览后，可查看完整 YAML。",
+}: {
+  title?: string;
+  description?: ReactNode;
+  actions?: ReactNode;
+  controls?: ReactNode;
+  content?: string;
+  loading?: boolean;
+  error?: string;
+  warnings?: string[];
+  compatibility?: { target: string; message: string }[];
+  empty?: string;
+}) {
+  return (
+    <Panel
+      title={title}
+      description={description}
+      actions={actions}
+      className="preview-panel config-preview"
+    >
+      {controls}
+      {warnings.length > 0 && (
+        <div className="config-notices" role="status">
+          <strong>请检查规则与策略</strong>
+          <ul>
+            {warnings.map((w, i) => (
+              <li key={i}>{w}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {compatibility.length > 0 && (
+        <details className="config-notices">
+          <summary>{compatibility.length} 种输出格式暂不可用</summary>
+          <p>不影响下方成功生成的 YAML；使用对应客户端前需处理这些兼容问题。</p>
+          <ul>
+            {compatibility.map((v) => (
+              <li key={v.target}>
+                <strong>{v.target}</strong>
+                <span>{v.message}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {error ? (
+        <p role="alert" className="inline-error">
+          {error}
+        </p>
+      ) : loading ? (
+        <p className="panel-message" role="status">
+          正在生成预览…
+        </p>
+      ) : content !== undefined ? (
+        <CodeBlock content={content} />
+      ) : (
+        <p className="panel-message">{empty}</p>
+      )}
+    </Panel>
   );
 }
 export function ResourceLink({ r }: { r?: Resource }) {

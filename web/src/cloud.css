@@ -968,6 +968,55 @@ p {
 .panel-heading > select {
   max-width: 210px;
 }
+.panel-body {
+  padding: 24px;
+  display: grid;
+  gap: 20px;
+}
+.field-action-row {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.field-action-row > label {
+  display: grid;
+  gap: 8px;
+  flex: 1;
+  max-width: 320px;
+  min-width: min(220px, 100%);
+  font-size: 12px;
+  color: #5d7063;
+}
+.field-action-row > button { flex-shrink: 0; }
+.config-preview { min-width: 0; overflow: hidden; }
+.config-preview .panel-heading { flex-wrap: wrap; }
+.config-notices {
+  margin: 16px 24px;
+  padding: 12px 16px;
+  border: 1px solid #e9dfbf;
+  border-radius: 7px;
+  background: #faf8ef;
+  font-size: 12px;
+  color: #7c693b;
+}
+.config-notices summary { cursor: pointer; font-weight: 550; }
+.config-notices p { margin-top: 8px; }
+.config-notices ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 8px;
+}
+.config-notices li { overflow-wrap: anywhere; }
+.config-notices li > strong { display: block; }
+.config-notices li > span { display: block; margin-top: 3px; color: #88754c; }
+@media (max-width: 540px) {
+  .panel-body { padding: 20px; }
+  .field-action-row { align-items: stretch; flex-direction: column; }
+  .field-action-row > label { max-width: none; width: 100%; }
+  .config-notices { margin: 12px 20px; }
+}
 .panel-message {
   padding: 26px;
   color: var(--muted);
@@ -1251,6 +1300,8 @@ p {
 }
 .code-toolbar {
   display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
   align-items: center;
   justify-content: space-between;
   background: #f8faf4;
