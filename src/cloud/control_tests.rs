@@ -204,7 +204,7 @@ async fn control_end_to_end() {
         .execute(&db)
         .await
         .unwrap();
-    // Device local override CAS and reset are independent from identity choice.
+    // Identity is the sole writer; both the old local endpoint and device UI reject overrides.
     let override_edit = |version, selections| control::OverrideEdit {
         binding: b.id.to_string(),
         expected_version: version,
@@ -217,13 +217,13 @@ async fn control_end_to_end() {
             Json(override_edit(0, [("pick".into(), "DIRECT".into())].into()))
         )
         .await
-        .is_ok()
+        .is_err()
     );
     assert_eq!(
         control::agent_overrides(
             State(app.clone()),
             agent.clone(),
-            Json(override_edit(0, Default::default()))
+            Json(override_edit(1, Default::default()))
         )
         .await
         .unwrap_err()
@@ -234,10 +234,49 @@ async fn control_end_to_end() {
         control::agent_overrides(
             State(app.clone()),
             agent.clone(),
-            Json(override_edit(1, Default::default()))
+            Json(override_edit(0, Default::default()))
         )
         .await
         .is_ok()
+    );
+    let initial = control::view(State(app.clone()), h.clone(), Path(d.id))
+        .await
+        .unwrap()
+        .0;
+    assert_eq!(
+        initial["groups"][0]["name"], "pick",
+        "cloud parses groups before first report"
+    );
+    assert_eq!(initial["selections"]["pick"], "REJECT");
+    assert_eq!(initial["events"][0]["status"], "pending");
+    assert!(
+        control::select(State(app.clone()), h.clone(), Path(d.id), Json(edit()))
+            .await
+            .is_err()
+    );
+    let snapshot = json!({"groups":[{"name":"pick","kind":"Selector","members":["DIRECT","REJECT"],"now":"REJECT"}],"status":"applied","desired":{"pick":"REJECT"},"errors":{},"selection_version":1,"override_version":0,"pending_local":false});
+    control::agent_report(
+        State(app.clone()),
+        agent.clone(),
+        Json(control::AgentReport {
+            binding: b.id.to_string(),
+            state: Some(snapshot),
+            job_id: None,
+            status: None,
+            result: None,
+        }),
+    )
+    .await
+    .unwrap();
+    let confirmed = control::view(State(app.clone()), h.clone(), Path(d.id))
+        .await
+        .unwrap()
+        .0;
+    assert_eq!(confirmed["events"][0]["status"], "applied");
+    assert_eq!(confirmed["groups"][0]["now"], "REJECT");
+    assert_eq!(
+        confirmed["groups"][0]["members"],
+        json!(["DIRECT", "REJECT"])
     );
     // Revoked/rebound generation rejects old receipts, even with the same identity.
     let mut conn = db.acquire().await.unwrap();

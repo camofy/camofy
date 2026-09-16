@@ -386,7 +386,7 @@ async fn proxy_action(
         return Err(fail(StatusCode::UNAUTHORIZED, "请先解锁本地控制台"));
     }
     let method = body["method"].as_str().unwrap_or("");
-    if !["proxies.list", "proxies.select", "proxies.delay"].contains(&method) {
+    if !["proxies.list", "proxies.delay"].contains(&method) {
         return Err(fail(StatusCode::BAD_REQUEST, "unsupported method"));
     }
     let (reply, rx) = tokio::sync::oneshot::channel();

@@ -238,7 +238,7 @@ checksum = "b35204fbdc0b3f4446b89fc1ac2cf84a8a68971995d0bf2e925ec7cd960f9cb3"
 
 [[package]]
 name = "camofy"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -248,6 +248,7 @@ dependencies = [
  "fs2",
  "futures-util",
  "hmac",
+ "libc",
  "percent-encoding",
  "rand_core 0.6.4",
  "reqwest",
