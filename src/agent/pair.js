@@ -1,6 +1,9 @@
 const $ = (id) => document.getElementById(id);
 let checking = false,
-  retrying = false;
+  retrying = false,
+  submitting = false,
+  available = false;
+let selectedAction = null;
 const terminal = {
   denied: "你已取消授权。设备尚未绑定。",
   expired: "本次授权已过期，请重新开始。",
@@ -8,10 +11,16 @@ const terminal = {
   save_error:
     "云端已授权，但无法保存本地配置。请检查配置文件权限，修复后重新授权。",
 };
+const actions = { start: "启动", stop: "停止", restart: "重启" };
 function message(text, error = false) {
-  $("message").hidden = false;
+  $("message").hidden = !text;
   $("message").textContent = text;
   $("message").classList.toggle("error", error);
+}
+function buttons() {
+  document.querySelectorAll("[data-action]").forEach((button) => {
+    button.disabled = submitting || !available;
+  });
 }
 async function status() {
   if (checking) return;
@@ -20,32 +29,46 @@ async function status() {
     const response = await fetch("/api/pair/status", { cache: "no-store" });
     if (!response.ok) throw Error();
     const data = await response.json();
+    $("version").textContent = data.agent_version
+      ? "v" + data.agent_version
+      : "";
+    available = !!data.bound && !!data.authorized;
+    $("binding").hidden = !!data.bound;
+    $("dashboard").hidden = !available;
+    $("unlock").hidden = !data.bound || !!data.authorized;
+    $("proxy-panel").hidden = !available;
+    if (available) renderProxies(data.runtime?.proxy_state);
     if (data.bound) {
       $("title").textContent = "设备控制台";
-      $("intro").textContent =
-        "身份由云端分配，配置自动下发。本地控制在云端断开时仍可使用。";
-      $("form").hidden = true;
-      $("pending").hidden = true;
-      $("retry").hidden = true;
-      message(
-        data.identity_name
-          ? `绑定身份：${data.identity_name}`
-          : "已绑定，等待云端下发身份。",
-      );
-      $("manage").href = data.cloud_url;
-      $("manage").hidden = false;
-      $("controls").hidden = !data.authorized;
-      $("unlock").hidden = data.authorized;
-      $("proxy-panel").hidden = !data.authorized;
-      if (data.authorized) renderProxies(data.runtime.proxy_state);
+      $("intro").textContent = "配置自动同步，运行由你掌控。";
+      message("");
+      const runtime = data.runtime || {};
+      $("identity-name").textContent = data.identity_name || "等待云端分配";
+      $("cloud-name").textContent = data.cloud_url || "—";
+      $("revision").textContent = runtime.revision || "等待下发";
+      // The public API keeps its short apex URL; management lives on the console.
+      const cloud = new URL(data.cloud_url);
+      $("manage").href =
+        cloud.origin === "https://camofy.app"
+          ? "https://cloud.camofy.app/"
+          : cloud.href;
       $("core-state").textContent =
         {
           running: "运行中",
           stopped: "已停止",
           unavailable: "未就绪",
           unbound: "等待配置",
-        }[data.runtime.core_state] || "读取状态中";
-      $("core-error").textContent = data.runtime.error || "";
+        }[runtime.core_state] || "未知状态";
+      $("core-state").dataset.state = runtime.core_state || "unknown";
+      $("state-description").textContent =
+        {
+          running: "内核正在运行。启用的代理能力由当前身份配置决定。",
+          stopped: "内核已停止，不会接管流量。配置仍可在后台同步。",
+          unavailable: "内核暂未就绪，请检查下方错误信息。",
+          unbound: "等待云端下发配置后，即可启动内核。",
+        }[runtime.core_state] || "暂时无法确定内核运行状态。";
+      $("core-error").textContent = runtime.error || "";
+      $("core-error").hidden = !runtime.error;
       if (location.pathname === "/bind/complete")
         history.replaceState(null, "", "/");
     } else if (terminal[data.phase] && !retrying) {
@@ -55,25 +78,34 @@ async function status() {
       message(terminal[data.phase], true);
     } else if (data.phase === "pending" || data.phase === "starting") {
       $("form").hidden = true;
-      message("等待云端授权…完成后将在此显示绑定结果。");
-    }
+      message("等待云端授权，完成后自动返回设备控制台。");
+    } else if ($("message").classList.contains("error") && !$("form").hidden) {
+      // Keep authorization errors visible until the user retries.
+    } else if (!retrying) message("");
   } catch {
+    available = false;
+    $("core-state").textContent = "连接中断";
+    $("core-state").dataset.state = "unknown";
     message("暂时无法连接本机 Agent，正在重试…", true);
   } finally {
     checking = false;
+    buttons();
   }
 }
-$("form").addEventListener("submit", async (e) => {
-  e.preventDefault();
+function headers() {
+  return {
+    "Content-Type": "application/json",
+    "X-Camofy-CSRF": document.querySelector('meta[name="csrf"]').content,
+  };
+}
+$("form").addEventListener("submit", async (event) => {
+  event.preventDefault();
   $("start").disabled = true;
-  $("message").hidden = true;
+  message("");
   try {
     const response = await fetch("/api/pair/start", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Camofy-CSRF": document.querySelector('meta[name="csrf"]').content,
-      },
+      headers: headers(),
       body: JSON.stringify({
         device_name: $("name").value,
         cloud_url: $("cloud").value,
@@ -97,42 +129,54 @@ $("retry").addEventListener("click", () => {
   retrying = true;
   $("form").hidden = false;
   $("retry").hidden = true;
-  $("message").hidden = true;
+  message("");
 });
-const controls = document.createElement("section");
-controls.id = "controls";
-controls.hidden = true;
-controls.innerHTML =
-  '<h2>Mihomo <small id="core-state"></small></h2><p>停止后不会被自动同步重新启动。启停可能改变网络连接。</p><div class="core-actions"><button data-action="start">启动</button><button data-action="stop">停止</button><button data-action="restart">重启</button></div><p id="core-error" role="alert"></p><p id="control-result" role="status"></p>';
-$("manage").before(controls);
-controls.addEventListener("click", async (e) => {
-  const button = e.target.closest("button[data-action]");
-  if (!button) return;
-  if (!confirm(`确定${button.textContent} Mihomo？这可能影响设备网络。`))
+$("controls").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-action]");
+  if (!button || button.disabled || submitting) return;
+  selectedAction = button.dataset.action;
+  $("confirm-title").textContent = actions[selectedAction] + " Mihomo？";
+  $("confirm-description").textContent =
+    selectedAction === "stop"
+      ? "停止代理内核可能中断现有连接。配置同步不会将它自动启动。"
+      : "将按当前配置运行内核。如果配置启用了 TUN，可能接管设备流量。";
+  $("confirm-action").textContent = "确认" + actions[selectedAction];
+  $("confirm-dialog").returnValue = "cancel";
+  $("confirm-dialog").showModal();
+});
+$("confirm-dialog").addEventListener("close", async () => {
+  if (
+    $("confirm-dialog").returnValue !== "confirm" ||
+    !selectedAction ||
+    submitting ||
+    !available
+  )
     return;
-  button.disabled = true;
+  submitting = true;
+  buttons();
+  $("control-result").hidden = false;
+  $("control-result").classList.remove("error");
+  $("control-result").textContent = "正在提交操作…";
   try {
-    const r = await fetch("/api/core/control", {
+    const response = await fetch("/api/core/control", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Camofy-CSRF": document.querySelector('meta[name="csrf"]').content,
-      },
-      body: JSON.stringify({ action: button.dataset.action }),
+      headers: headers(),
+      body: JSON.stringify({ action: selectedAction }),
     });
-    if (!r.ok) throw Error((await r.json()).error || "操作失败");
-    $("control-result").textContent =
-      "操作已排队，完成当前配置操作后执行。请查看上方实时状态。";
+    if (!response.ok) throw Error((await response.json()).error || "操作失败");
+    $("control-result").textContent = "操作已排队，请以上方内核状态为准。";
   } catch (error) {
     $("control-result").textContent = error.message;
+    $("control-result").classList.add("error");
   } finally {
-    button.disabled = false;
+    selectedAction = null;
+    submitting = false;
+    buttons();
     void status();
   }
 });
 void status();
 setInterval(status, 2500);
-
 async function localApi(path,body){
   const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json","X-Camofy-CSRF":document.querySelector('meta[name="csrf"]').content},body:JSON.stringify(body)});
   if(!r.ok)throw Error((await r.json()).error||"操作失败");
