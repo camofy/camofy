@@ -9,18 +9,12 @@ import {
   Link,
   useLocation,
 } from "react-router-dom";
-import {
-  api,
-  type Resource,
-  type Token,
-  type User,
-  type Issued,
-} from "./cloud/model";
+import { api, type Resource, type User } from "./cloud/model";
 import { WorkspaceContext } from "./cloud/context";
 import { Login } from "./cloud/Forms";
 import Authorize from "./cloud/Authorize";
 import { StorePage, StoreDetail, AccountPage } from "./cloud/Store";
-import { Icon, Modal, Copy } from "./cloud/ui";
+import { Icon } from "./cloud/ui";
 import { sections, sectionOf } from "./cloud/navigation";
 import { CollectionPage, DetailPage, EditPage, NotFound } from "./cloud/pages";
 
@@ -28,14 +22,12 @@ function CloudWorkspace() {
   const [user, setUser] = useState<User | null>(null);
   const [ready, setReady] = useState(false),
     [loading, setLoading] = useState(true);
-  const [resources, setResources] = useState<Resource[]>([]),
-    [tokens, setTokens] = useState<Token[]>([]);
+  const [resources, setResources] = useState<Resource[]>([]);
   const [busy, setBusy] = useState(false),
     [error, setError] = useState(""),
     [notice, setNotice] = useState("");
   const [connected, setConnected] = useState(false),
     [mobile, setMobile] = useState(false);
-  const [issued, setIssued] = useState<Issued | null>(null);
   const location = useLocation();
   useEffect(() => {
     if (!mobile) return;
@@ -47,12 +39,8 @@ function CloudWorkspace() {
   }, [mobile]);
   const load = useCallback(async () => {
     try {
-      const [r, t] = await Promise.all([
-        api<Resource[]>("/resources"),
-        api<Token[]>("/tokens"),
-      ]);
+      const r = await api<Resource[]>("/resources");
       setResources(r);
-      setTokens(t);
     } finally {
       setLoading(false);
     }
@@ -131,21 +119,6 @@ function CloudWorkspace() {
         ),
       "修改已保存，关联身份已重新生成。",
     );
-  const issue = (bundle: string, device?: string) =>
-    run(async () => {
-      const result = {
-        ...(await api<Issued>("/tokens", "POST", {
-          bundle_id: bundle,
-          device_id: device ?? null,
-          label: device
-            ? (resources.find((r) => r.id === device)?.data.name ?? "设备")
-            : "客户端订阅",
-        })),
-        device_id: device,
-      };
-      setIssued(result);
-      return result;
-    });
   if (!ready)
     return (
       <div className="loading">
@@ -182,7 +155,6 @@ function CloudWorkspace() {
     <WorkspaceContext.Provider
       value={{
         resources,
-        tokens,
         user,
         loading,
         busy,
@@ -192,7 +164,6 @@ function CloudWorkspace() {
         load,
         run,
         save,
-        issue,
       }}
     >
       <div className={`workspace ${mobile ? "menu-open" : ""}`}>
@@ -248,9 +219,7 @@ function CloudWorkspace() {
                 <Icon name={s.icon} />
                 <span>{s.name}</span>
                 <small>
-                  {s.key === "tokens"
-                    ? tokens.length
-                    : resources.filter((r) => sectionOf(r) === s.key).length}
+                  {resources.filter((r) => sectionOf(r) === s.key).length}
                 </small>
               </NavLink>
             ))}
@@ -282,7 +251,6 @@ function CloudWorkspace() {
                   .then(() => {
                     setUser(null);
                     setResources([]);
-                    setTokens([]);
                   })
                   .catch((e) => setError(e.message));
               }}
@@ -348,6 +316,10 @@ function CloudWorkspace() {
                   path="/"
                   element={<Navigate to="/identities" replace />}
                 />
+                <Route
+                  path="/tokens"
+                  element={<Navigate to="/identities" replace />}
+                />
                 {sections.map((s) => (
                   <Route
                     key={s.key}
@@ -355,25 +327,23 @@ function CloudWorkspace() {
                     element={<CollectionPage section={s.key} />}
                   />
                 ))}
-                {sections
-                  .filter((s) => s.key !== "tokens")
-                  .flatMap((s) => [
-                    <Route
-                      key={`${s.key}-new`}
-                      path={`/${s.key}/new`}
-                      element={<EditPage section={s.key} fresh />}
-                    />,
-                    <Route
-                      key={`${s.key}-edit`}
-                      path={`/${s.key}/:id/edit`}
-                      element={<EditPage section={s.key} />}
-                    />,
-                    <Route
-                      key={`${s.key}-detail`}
-                      path={`/${s.key}/:id`}
-                      element={<DetailPage section={s.key} />}
-                    />,
-                  ])}
+                {sections.flatMap((s) => [
+                  <Route
+                    key={`${s.key}-new`}
+                    path={`/${s.key}/new`}
+                    element={<EditPage section={s.key} fresh />}
+                  />,
+                  <Route
+                    key={`${s.key}-edit`}
+                    path={`/${s.key}/:id/edit`}
+                    element={<EditPage section={s.key} />}
+                  />,
+                  <Route
+                    key={`${s.key}-detail`}
+                    path={`/${s.key}/:id`}
+                    element={<DetailPage section={s.key} />}
+                  />,
+                ])}
                 <Route path="*" element={<NotFound />} />
               </Routes>
             )}
@@ -387,39 +357,6 @@ function CloudWorkspace() {
             <Icon name="check" />
             {notice}
           </div>
-        )}
-        {issued && (
-          <Modal title="保存访问凭据" close={() => setIssued(null)}>
-            <p className="muted">
-              此链接仅显示一次。持有链接即可读取配置，请妥善保存。
-            </p>
-            <label>
-              身份订阅地址
-              <input readOnly value={issued.subscription_base} />
-            </label>
-            <Copy value={issued.subscription_base} />
-            {issued.device_id && (
-              <details>
-                <summary>Agent 配置示例</summary>
-                <pre className="code-preview">
-                  {JSON.stringify(
-                    {
-                      subscription_url: issued.subscription_base,
-                      mihomo: "/opt/mihomo",
-                      data_dir: "/var/lib/camofy",
-                      dns_redirect: false,
-                    },
-                    null,
-                    2,
-                  )}
-                </pre>
-              </details>
-            )}
-            <p className="muted">
-              其他格式可在链接末尾追加 /clash、/shadowrocket 或
-              /shadowrocket-nodes。
-            </p>
-          </Modal>
         )}
       </div>
     </WorkspaceContext.Provider>

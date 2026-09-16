@@ -1,11 +1,6 @@
 import type { Resource } from "./model";
 export type Section =
-  | "identities"
-  | "subscriptions"
-  | "profiles"
-  | "proxies"
-  | "devices"
-  | "tokens";
+  "identities" | "subscriptions" | "profiles" | "proxies" | "devices";
 export const sections: {
   key: Section;
   name: string;
@@ -41,12 +36,6 @@ export const sections: {
     name: "设备",
     sub: "查看设备上报与配置应用情况。",
     icon: "monitor",
-  },
-  {
-    key: "tokens",
-    name: "访问凭据",
-    sub: "管理独立授权，随时撤销客户端访问。",
-    icon: "key",
   },
 ];
 export function sectionOf(r: Resource): Section {

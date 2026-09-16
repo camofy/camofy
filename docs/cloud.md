@@ -26,8 +26,11 @@ it does not contact a central Camofy account server.
   Any number of subscription/independent profiles can be combined, including only
   independent profiles. Disable preserves the binding and order. Profile changes
   rebuild identities; disabled bindings do not affect their output. Creation issues
-  a stable `subscription_url`; revisions retain it. Revocation removes the canonical
-  URL; issuing a new subscription token restores it.
+  a stable `subscription_url`; revisions retain it. In identity details, More offers
+  explicit primary-link reset and individually revocable historical links. Reset
+  atomically invalidates only the current primary link; all of its client formats
+  need re-importing. Historical links and bound devices remain valid. No automatic
+  credential cleanup or rotation occurs during deployment.
 * Proxy: HTTP, HTTPS or SOCKS5 endpoint with optional URL credentials. Proxy
   credentials are not returned by list/edit responses; a blank edit preserves them.
 * Device: bundle binding, scoped credential, last application result and optional
@@ -171,9 +174,20 @@ and geo-distributed delivery are outside this initial implementation.
   `{kind, version, data}`; updates require the latest user-edit version (409 on conflict).
 * POST `/api/profiles/{id}/refresh` enqueues and returns 202.
 * GET `/api/bundles/{id}/preview/{format}`, `/revisions`; POST `/rollback` with revision.
-* GET/POST `/api/tokens`; DELETE `/api/tokens/{hash}`. Create with bundle_id, optional
+* GET `/api/bundles/{id}/subscription-links` lists historical non-device links,
+  excluding the primary link. Returns label, hash identifier and creation time,
+  never recoverable secrets. DELETE `/api/bundles/{id}/subscription-links/{hash}`
+  revokes only a historical link in this identity (not a device or primary token).
+* POST `/api/bundles/{id}/subscription-links/reset` with `{version}` replaces the
+  primary link transactionally and returns the updated identity. Stale/concurrent
+  resets return 409. Does not create a configuration revision or change device state.
+* Legacy GET/POST `/api/tokens`; DELETE `/api/tokens/{hash}` remain compatible but
+  are no longer exposed as a standalone user interface. Create with bundle_id, optional
   device_id, label. Cleartext token returned once. Creating a device token rotates
-  its prior credential; changing device bundle binding also revokes it.
+  its prior credential. Device binding through OAuth creates authorization
+  automatically; reassigning its identity keeps that device credential and updates
+  its scope. Unbinding (deleting the device resource) cascades credential revocation,
+  without stopping local Mihomo or revoking identity subscription links.
 * POST `/api/devices/{id}/test` requests measurements; no arbitrary command execution.
 * GET `/api/sync/desired`, `/api/sync/revisions/{id}/{format}`; POST `/api/sync/report`.
   Reports accept status/revision/message/command_id/delays, not logs.
