@@ -16,6 +16,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: rustfmt
       - uses: oven-sh/setup-bun@v2
       - run: cargo fmt --all -- --check
       - run: sh scripts/test-installer.sh "$PWD/install.sh"
