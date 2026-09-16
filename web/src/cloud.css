@@ -677,6 +677,9 @@ p {
   margin-bottom: 17px;
   gap: 16px;
 }
+.panel + .collection-bar {
+  margin-top: 24px;
+}
 .collection-label {
   font-size: 13px;
   font-weight: 600;

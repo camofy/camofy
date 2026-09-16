@@ -1,3 +1,4 @@
+mod admin;
 mod api;
 mod auth;
 mod catalog;
@@ -105,6 +106,16 @@ pub fn router(app: App) -> Router {
         .route("/api/auth/register", post(auth::register))
         .route("/api/auth/login", post(auth::login))
         .route("/api/auth/me", get(auth::me))
+        .route("/api/admin/proxies", get(admin::list).post(admin::create))
+        .route(
+            "/api/admin/proxies/:id",
+            axum::routing::put(admin::update).delete(admin::delete),
+        )
+        .route("/api/admin/proxies/egress-preview", post(provider::preview))
+        .route(
+            "/api/admin/subscription-egress",
+            get(admin::policy).put(admin::set_policy),
+        )
         .route("/api/account", axum::routing::patch(auth::update_account))
         .route(
             "/api/store/packages",

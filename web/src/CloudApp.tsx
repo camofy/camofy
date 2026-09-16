@@ -39,7 +39,15 @@ function CloudWorkspace() {
   }, [mobile]);
   const load = useCallback(async () => {
     try {
-      const r = await api<Resource[]>("/resources");
+      const [r, account] = await Promise.all([
+        api<Resource[]>("/resources"),
+        api<User>("/auth/me"),
+      ]);
+      setUser((previous) =>
+        previous && JSON.stringify(previous) === JSON.stringify(account)
+          ? previous
+          : account,
+      );
       setResources(r);
     } finally {
       setLoading(false);
@@ -113,11 +121,19 @@ function CloudWorkspace() {
     run(
       () =>
         api<Resource>(
-          r.id ? `/resources/${r.id}` : "/resources",
+          r.kind === "proxy"
+            ? `/admin/proxies${r.id ? `/${r.id}` : ""}`
+            : r.id
+              ? `/resources/${r.id}`
+              : "/resources",
           r.id ? "PUT" : "POST",
-          { kind: r.kind, version: r.id ? r.version : undefined, data: r.data },
+          {
+            ...(r.kind === "proxy" ? {} : { kind: r.kind }),
+            version: r.id ? r.version : undefined,
+            data: r.data,
+          },
         ),
-      "修改已保存，关联身份已重新生成。",
+      r.kind === "proxy" ? "平台代理已保存。" : "修改已保存。",
     );
   if (!ready)
     return (
@@ -150,6 +166,9 @@ function CloudWorkspace() {
     );
   const current = sections.find((s) =>
     location.pathname.startsWith(`/${s.key}`),
+  );
+  const allowedSections = sections.filter(
+    (s) => s.key !== "proxies" || user.role === "admin",
   );
   return (
     <WorkspaceContext.Provider
@@ -207,22 +226,39 @@ function CloudWorkspace() {
               <Icon name="layers" />
               <span>Profile 商店</span>
             </NavLink>
-            {sections.map((s, i) => (
-              <NavLink
-                key={s.key}
-                to={`/${s.key}`}
-                onClick={() => setMobile(false)}
-                className={({ isActive }) =>
-                  `nav-item ${isActive ? "active" : ""} ${i === 3 ? "nav-separator" : ""}`
-                }
-              >
-                <Icon name={s.icon} />
-                <span>{s.name}</span>
-                <small>
-                  {resources.filter((r) => sectionOf(r) === s.key).length}
-                </small>
-              </NavLink>
-            ))}
+            {sections
+              .filter((s) => s.key !== "proxies")
+              .map((s, i) => (
+                <NavLink
+                  key={s.key}
+                  to={`/${s.key}`}
+                  onClick={() => setMobile(false)}
+                  className={({ isActive }) =>
+                    `nav-item ${isActive ? "active" : ""} ${i === 3 ? "nav-separator" : ""}`
+                  }
+                >
+                  <Icon name={s.icon} />
+                  <span>{s.name}</span>
+                  <small>
+                    {resources.filter((r) => sectionOf(r) === s.key).length}
+                  </small>
+                </NavLink>
+              ))}
+            {user.role === "admin" && (
+              <>
+                <div className="nav-caption">系统管理</div>
+                <NavLink
+                  to="/proxies"
+                  className={({ isActive }) =>
+                    `nav-item ${isActive ? "active" : ""}`
+                  }
+                  onClick={() => setMobile(false)}
+                >
+                  <Icon name="route" />
+                  <span>订阅出口</span>
+                </NavLink>
+              </>
+            )}
           </nav>
           <div className="sidebar-note">
             <Icon name="shield" />
@@ -320,14 +356,14 @@ function CloudWorkspace() {
                   path="/tokens"
                   element={<Navigate to="/identities" replace />}
                 />
-                {sections.map((s) => (
+                {allowedSections.map((s) => (
                   <Route
                     key={s.key}
                     path={`/${s.key}`}
                     element={<CollectionPage section={s.key} />}
                   />
                 ))}
-                {sections.flatMap((s) => [
+                {allowedSections.flatMap((s) => [
                   <Route
                     key={`${s.key}-new`}
                     path={`/${s.key}/new`}

@@ -16,7 +16,7 @@ export const sections: {
   {
     key: "subscriptions",
     name: "订阅源",
-    sub: "管理上游订阅、拉取出口与自动更新。",
+    sub: "管理上游订阅与自动更新，拉取出口由平台统一管理。",
     icon: "radio",
   },
   {
@@ -27,8 +27,8 @@ export const sections: {
   },
   {
     key: "proxies",
-    name: "拉取代理",
-    sub: "为订阅配置可靠的网络出口。",
+    name: "订阅出口",
+    sub: "管理全平台订阅的统一出口，不影响客户端的代理策略。",
     icon: "route",
   },
   {

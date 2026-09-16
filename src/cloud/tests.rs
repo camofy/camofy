@@ -159,6 +159,46 @@ async fn cloud_end_to_end() {
     }
     let (alice, alice_id) = register(&client, &origin).await;
     let (bob, bob_id) = register(&client, &origin).await;
+    assert_eq!(auth::role(&app, alice_id).await.unwrap(), "user");
+    request(&client,&origin,&alice,"POST","/auth/register",json!({"email":"forged-admin@example.test","password":"integration-test-password","role":"admin"}),422).await;
+    request(
+        &client,
+        &origin,
+        &alice,
+        "PATCH",
+        "/account",
+        json!({"nickname":"Elevated","role":"admin"}),
+        422,
+    )
+    .await;
+    for (method, path, body) in [
+        ("GET", "/admin/proxies", json!(null)),
+        ("GET", "/admin/subscription-egress", json!(null)),
+        (
+            "PUT",
+            "/admin/subscription-egress",
+            json!({"version":1,"proxy_id":null}),
+        ),
+        (
+            "POST",
+            "/admin/proxies",
+            json!({"data":{"name":"forged","url":"http://127.0.0.1:1"}}),
+        ),
+        ("POST", "/admin/proxies/egress-preview", json!({})),
+        ("POST", "/proxies/egress-preview", json!({})),
+        (
+            "POST",
+            "/resources",
+            json!({"kind":"proxy","data":{"name":"forged"}}),
+        ),
+    ] {
+        request(&client, &origin, &bob, method, path, body, 403).await;
+    }
+    sqlx::query("UPDATE users SET role='admin' WHERE id=$1")
+        .bind(alice_id)
+        .execute(&db)
+        .await
+        .unwrap();
     let yaml=Arc::new(Mutex::new("proxies:\n- {name: mine, type: ss, server: example.com, port: 443, cipher: aes-256-gcm, password: secret}\nproxy-groups:\n- {name: route, type: select, proxies: [mine, DIRECT]}\nrules: ['MATCH,route']\n".to_string()));
     let hits = Arc::new(AtomicUsize::new(0));
     let userinfo = Arc::new(Mutex::new(
@@ -195,19 +235,135 @@ async fn cloud_end_to_end() {
         )
         .into_future(),
     );
-    let p=request(&client,&origin,&alice,"POST","/resources",json!({"kind":"proxy","data":{"name":"Proxy A","url":format!("http://user:pass@{proxy_addr}")}}),200).await;
+    let p = request(
+        &client,
+        &origin,
+        &alice,
+        "POST",
+        "/admin/proxies",
+        json!({"data":{"name":"Proxy A","url":format!("http://user:pass@{proxy_addr}")}}),
+        200,
+    )
+    .await;
     assert!(p["data"].get("url").is_none());
-    let create_source = json!({"kind":"profile","data":{"name":"Main","type":"source","url":"http://localhost:59999/config.yaml","proxy_id":p["id"],"auto_refresh":true,"interval_seconds":300}});
+    let proxy_id = Uuid::parse_str(p["id"].as_str().unwrap()).unwrap();
+    let policy = request(
+        &client,
+        &origin,
+        &alice,
+        "GET",
+        "/admin/subscription-egress",
+        json!(null),
+        200,
+    )
+    .await;
     request(
+        &client,
+        &origin,
+        &alice,
+        "PUT",
+        "/admin/subscription-egress",
+        json!({"version":policy["version"],"proxy_id":p["id"]}),
+        200,
+    )
+    .await;
+    request(
+        &client,
+        &origin,
+        &alice,
+        "PUT",
+        "/admin/subscription-egress",
+        json!({"version":policy["version"],"proxy_id":null}),
+        409,
+    )
+    .await;
+    request(
+        &client,
+        &origin,
+        &alice,
+        "DELETE",
+        &format!("/admin/proxies/{proxy_id}"),
+        json!(null),
+        409,
+    )
+    .await;
+    // A second administrator sees the same platform pool; demotion affects the existing session.
+    sqlx::query("UPDATE users SET role='admin' WHERE id=$1")
+        .bind(bob_id)
+        .execute(&db)
+        .await
+        .unwrap();
+    let shared = request(
+        &client,
+        &origin,
+        &bob,
+        "GET",
+        "/admin/proxies",
+        json!(null),
+        200,
+    )
+    .await;
+    assert!(
+        shared
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["id"] == p["id"])
+    );
+    sqlx::query("UPDATE users SET role='user' WHERE id=$1")
+        .bind(bob_id)
+        .execute(&db)
+        .await
+        .unwrap();
+    request(
+        &client,
+        &origin,
+        &bob,
+        "GET",
+        "/admin/proxies",
+        json!(null),
+        403,
+    )
+    .await;
+    let visible = request(
+        &client,
+        &origin,
+        &bob,
+        "GET",
+        "/resources",
+        json!(null),
+        200,
+    )
+    .await;
+    assert!(
+        !visible
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["kind"] == "proxy")
+    );
+    let create_source = json!({"kind":"profile","data":{"name":"Main","type":"source","url":"http://localhost:59999/config.yaml","proxy_id":p["id"],"auto_refresh":true,"interval_seconds":300}});
+    let bob_source = request(
         &client,
         &origin,
         &bob,
         "POST",
         "/resources",
         create_source.clone(),
-        400,
+        200,
     )
-    .await; // foreign proxy forbidden
+    .await; // tenant proxy input is ignored, not an authorization path
+    assert!(bob_source["data"].get("proxy_id").is_none());
+    request(
+        &client,
+        &origin,
+        &bob,
+        "DELETE",
+        &format!("/resources/{}", bob_source["id"].as_str().unwrap()),
+        json!(null),
+        204,
+    )
+    .await;
     let src = request(
         &client,
         &origin,
@@ -958,8 +1114,8 @@ async fn cloud_end_to_end() {
         &origin,
         &alice,
         "POST",
-        "/resources",
-        json!({"kind":"proxy","data":xiequ}),
+        "/admin/proxies",
+        json!({"data":xiequ}),
         400,
     )
     .await;
@@ -970,7 +1126,7 @@ async fn cloud_end_to_end() {
         "PUT",
         &format!("/resources/{}", p["id"].as_str().unwrap()),
         json!({"kind":"proxy","version":1,"data":xiequ}),
-        404,
+        403,
     )
     .await;
     // A manual refresh arriving during an active lease must not get swallowed.
@@ -1011,19 +1167,80 @@ async fn cloud_end_to_end() {
     assert!(running.await.unwrap().unwrap());
     assert!(worker::once(&app).await.unwrap());
     assert_eq!(hits.load(Ordering::SeqCst), prior_hits + 2);
+    // Changing policy cancels an in-flight request and fences publication.
+    let hold = yaml.lock().await;
+    let before = hits.load(Ordering::SeqCst);
+    request(
+        &client,
+        &origin,
+        &alice,
+        "POST",
+        &format!("/profiles/{sid}/refresh"),
+        json!(null),
+        202,
+    )
+    .await;
+    let running = tokio::spawn({
+        let app = app.clone();
+        async move { worker::once(&app).await }
+    });
+    for _ in 0..100 {
+        if hits.load(Ordering::SeqCst) > before {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(hits.load(Ordering::SeqCst), before + 1);
+    let current_policy = request(
+        &client,
+        &origin,
+        &alice,
+        "GET",
+        "/admin/subscription-egress",
+        json!(null),
+        200,
+    )
+    .await;
+    request(
+        &client,
+        &origin,
+        &alice,
+        "PUT",
+        "/admin/subscription-egress",
+        json!({"version":current_policy["version"],"proxy_id":p["id"]}),
+        200,
+    )
+    .await;
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(5), running)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+    );
+    let history = request(
+        &client,
+        &origin,
+        &alice,
+        "GET",
+        &format!("/profiles/{sid}/history"),
+        json!(null),
+        200,
+    )
+    .await;
+    assert_eq!(history["items"][0]["error_code"], "settings_changed");
+    drop(hold);
+    assert!(worker::once(&app).await.unwrap());
     // A provider error never silently selects direct egress or erases the cached YAML.
     let mut conn = db.acquire().await.unwrap();
-    let mut pr = store::get(
-        &app,
-        &mut conn,
-        alice_id,
-        Uuid::parse_str(p["id"].as_str().unwrap()).unwrap(),
-    )
-    .await
-    .unwrap();
-    pr.data = xiequ;
-    pr.data["whitelist_ip"] = serde_json::Value::Null;
-    store::put(&app, &mut conn, alice_id, &pr).await.unwrap();
+    let mut failed_proxy = xiequ;
+    failed_proxy["whitelist_ip"] = serde_json::Value::Null;
+    sqlx::query("UPDATE platform_proxies SET data=$2,version=version+1 WHERE id=$1")
+        .bind(proxy_id)
+        .bind(app.vault.seal(&failed_proxy).unwrap())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
     let cached = store::get(&app, &mut conn, alice_id, sid)
         .await
         .unwrap()
@@ -1046,7 +1263,12 @@ async fn cloud_end_to_end() {
     let failed = store::get(&app, &mut conn, alice_id, sid).await.unwrap();
     assert_eq!(failed.data["content"], cached);
     assert_eq!(failed.data["fetch_status"], "error");
-    assert!(failed.data["error"].as_str().unwrap().contains("白名单"));
+    assert!(
+        failed.data["error"]
+            .as_str()
+            .unwrap()
+            .contains("平台订阅出口")
+    );
     assert_eq!(hits.load(Ordering::SeqCst), previous_hits);
     drop(conn);
     let history = request(
@@ -1060,6 +1282,118 @@ async fn cloud_end_to_end() {
     )
     .await;
     assert_eq!(history["items"][0]["error_code"], "proxy_failure");
+    // A live origin must receive zero direct requests when proxy extraction fails or
+    // the global policy is paused. Legacy per-profile overrides are also ignored.
+    let direct_hits = Arc::new(AtomicUsize::new(0));
+    let direct_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let direct_url = format!("http://{}/", direct_listener.local_addr().unwrap());
+    let direct_server = tokio::spawn(
+        axum::serve(
+            direct_listener,
+            Router::new().fallback(get({
+                let counter = direct_hits.clone();
+                move || {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    async { "proxies: []" }
+                }
+            })),
+        )
+        .into_future(),
+    );
+    let mut conn = db.acquire().await.unwrap();
+    let mut legacy = store::get(&app, &mut conn, alice_id, sid).await.unwrap();
+    legacy.data["url"] = json!(direct_url);
+    legacy.data["proxy_id"] = json!(Uuid::new_v4());
+    legacy.data["last_proxy"] = json!("http://sensitive.invalid:1234");
+    let legacy_id = legacy.data["proxy_id"].clone();
+    store::put(&app, &mut conn, alice_id, &legacy)
+        .await
+        .unwrap();
+    drop(conn);
+    let visible = request(
+        &client,
+        &origin,
+        &alice,
+        "GET",
+        "/resources",
+        json!(null),
+        200,
+    )
+    .await;
+    let shown = visible
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["id"] == sid.to_string())
+        .unwrap();
+    assert!(shown["data"].get("proxy_id").is_none());
+    assert!(shown["data"].get("last_proxy").is_none());
+    let mut edit = shown.clone();
+    edit["data"]["proxy_id"] = json!("attacker-controlled");
+    request(
+        &client,
+        &origin,
+        &alice,
+        "PUT",
+        &format!("/resources/{sid}"),
+        json!({"kind":"profile","version":edit["version"],"data":edit["data"]}),
+        200,
+    )
+    .await;
+    let mut conn = db.acquire().await.unwrap();
+    assert_eq!(
+        store::get(&app, &mut conn, alice_id, sid)
+            .await
+            .unwrap()
+            .data["proxy_id"],
+        legacy_id
+    );
+    drop(conn);
+    for pause in [false, true] {
+        if pause {
+            let policy = request(
+                &client,
+                &origin,
+                &alice,
+                "GET",
+                "/admin/subscription-egress",
+                json!(null),
+                200,
+            )
+            .await;
+            request(
+                &client,
+                &origin,
+                &alice,
+                "PUT",
+                "/admin/subscription-egress",
+                json!({"version":policy["version"],"proxy_id":null}),
+                200,
+            )
+            .await;
+        }
+        request(
+            &client,
+            &origin,
+            &alice,
+            "POST",
+            &format!("/profiles/{sid}/refresh"),
+            json!(null),
+            202,
+        )
+        .await;
+        assert!(worker::once(&app).await.unwrap());
+        assert_eq!(direct_hits.load(Ordering::SeqCst), 0);
+        let mut conn = db.acquire().await.unwrap();
+        assert_eq!(
+            store::get(&app, &mut conn, alice_id, sid)
+                .await
+                .unwrap()
+                .data["content"],
+            cached
+        );
+    }
+    direct_server.abort();
     assert!(
         history["items"]
             .as_array()
@@ -1331,6 +1665,17 @@ async fn cloud_end_to_end() {
     );
     server.abort();
     proxy.abort();
+    sqlx::query(
+        "UPDATE subscription_egress_policy SET proxy_id=NULL,version=version+1 WHERE singleton",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM platform_proxies WHERE id=$1")
+        .bind(proxy_id)
+        .execute(&db)
+        .await
+        .unwrap();
     sqlx::query("DELETE FROM users WHERE id=ANY($1)")
         .bind(vec![alice_id, bob_id])
         .execute(&db)

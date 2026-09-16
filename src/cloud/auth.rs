@@ -16,10 +16,24 @@ use std::net::SocketAddr;
 use uuid::Uuid;
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Credentials {
     email: String,
     password: String,
     nickname: Option<String>,
+}
+pub async fn role(app: &App, id: Uuid) -> Result<String, Error> {
+    Ok(sqlx::query_scalar("SELECT role FROM users WHERE id=$1")
+        .bind(id)
+        .fetch_one(&app.db)
+        .await?)
+}
+pub async fn admin(app: &App, headers: &HeaderMap, write: bool) -> Result<Uuid, Error> {
+    let id = user(app, headers, write).await?;
+    if role(app, id).await? != "admin" {
+        return Err(Error::new(StatusCode::FORBIDDEN, "administrator required"));
+    }
+    Ok(id)
 }
 pub fn bearer(headers: &HeaderMap) -> Option<&str> {
     headers
@@ -172,7 +186,8 @@ async fn credentials(app: App, c: Credentials, register: bool) -> Result<Respons
         .fetch_one(&app.db)
         .await?;
     let mut response =
-        Json(json!({"user_id":id,"email":email,"nickname":nickname})).into_response();
+        Json(json!({"user_id":id,"email":email,"nickname":nickname,"role":role(&app,id).await?}))
+            .into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
         format!(
@@ -198,7 +213,7 @@ pub async fn me(
         .fetch_one(&app.db)
         .await?;
     Ok(Json(
-        json!({"user_id":id,"email":email,"nickname":nickname}),
+        json!({"user_id":id,"email":email,"nickname":nickname,"role":role(&app,id).await?}),
     ))
 }
 fn validate_nickname(s: &str) -> Result<(), Error> {
@@ -239,7 +254,9 @@ pub async fn update_account(
         .execute(&mut *tx)
         .await?;
     tx.commit().await?;
-    Ok(Json(json!({"user_id":id,"email":email,"nickname":name})))
+    Ok(Json(
+        json!({"user_id":id,"email":email,"nickname":name,"role":role(&app,id).await?}),
+    ))
 }
 pub async fn logout(State(app): State<App>, headers: HeaderMap) -> Result<Response, Error> {
     user(&app, &headers, true).await?;
