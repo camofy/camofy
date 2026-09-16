@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import brandMark from "../assets/flower.png";
 import { useSearchParams, Link } from "react-router-dom";
 import { api, type Resource, type User } from "./model";
 import { Icon } from "./ui";
@@ -72,7 +73,7 @@ export default function Authorize({
     <main className="authorize-wrap">
       <section className="authorize-card">
         <Link className="authorize-brand" to="/identities">
-          <Icon name="layers" size={24} />
+          <img className="brand-symbol" src={brandMark} alt="" />
           camofy <small>CLOUD</small>
         </Link>
         <div className="authorize-account">
