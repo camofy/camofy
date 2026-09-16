@@ -272,6 +272,72 @@ async fn catalog_end_to_end() {
     )
     .await;
     assert_eq!(profile["data"]["origin"], "store");
+    let source_path = format!("/profiles/{pid}/source-preview");
+    let source = req(
+        &client,
+        &origin,
+        bob,
+        "POST",
+        &source_path,
+        json!({"version":1,"policy":"DIRECT"}),
+        200,
+    )
+    .await;
+    assert!(
+        source["content"]
+            .as_str()
+            .unwrap()
+            .contains("prepend-rules:")
+    );
+    assert!(
+        source["content"]
+            .as_str()
+            .unwrap()
+            .contains("video.example,DIRECT")
+    );
+    assert!(source["content"].as_str().unwrap().contains("MIT"));
+    assert_eq!(source["parameterized"], false);
+    let parameterized = req(
+        &client,
+        &origin,
+        bob,
+        "POST",
+        &source_path,
+        json!({"version":1}),
+        200,
+    )
+    .await;
+    assert_eq!(parameterized["parameterized"], true);
+    req(
+        &client,
+        &origin,
+        alice,
+        "POST",
+        &source_path,
+        json!({"version":1}),
+        404,
+    )
+    .await;
+    req(
+        &client,
+        &origin,
+        bob,
+        "POST",
+        &source_path,
+        json!({"version":2}),
+        409,
+    )
+    .await;
+    req(
+        &client,
+        &origin,
+        bob,
+        "POST",
+        &source_path,
+        json!({"version":1,"policy":"DIRECT,REJECT"}),
+        400,
+    )
+    .await;
     req(
         &client,
         &origin,
