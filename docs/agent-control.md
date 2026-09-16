@@ -80,3 +80,25 @@ and `node --test scripts/test-agent-ui.cjs`. Browser checks cover identity selec
 device overrides/readback/delay receipts, local unlock, mobile overflow and reload.
 Never run mock-core on real devices. Production Agent binaries come from tagged
 GitHub Actions releases; cloud images are built on the deployment workstation.
+
+### v0.1.4 rollout verification
+
+The release was built by GitHub Actions and its ARMv7 archive checksum verified
+before installation. Cloud and Agent integration suites passed, including two
+isolated Agents following a shared identity, device-only overrides, offline local
+selection/reconnect and restart receipt deduplication. Browser checks covered
+desktop and mobile layouts, local unlock and refreshable detail URLs.
+
+A physical ARMv7 router was then tested with a temporary ordinary no-TUN Profile
+and identity, using the real Mihomo core. Verified shared selection with readback,
+unchanged YAML hash and core PID during switching, isolated overrides, persistence
+across core restart, reset-to-follow, local authenticated switching and upload,
+idempotent RPC start/stop/restart/list/status, and an honest failed delay receipt.
+An explicit loopback proxy request successfully reached the cloud health endpoint.
+Both the proxy listener and controller remained loopback-only.
+
+The previous identity and stopped-core state were restored; temporary resources
+were deleted. Routing/firewall rules matched the maintenance baseline after
+excluding counters and timestamps. Existing non-Camofy services were unchanged.
+This validates the bounded control flow, not fleet-scale throughput or universal
+third-party client synchronization.
