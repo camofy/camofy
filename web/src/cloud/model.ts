@@ -17,6 +17,8 @@ export type Data = {
   proxy_id?: string | null;
   interval_seconds?: number;
   auto_refresh?: boolean;
+  usage_pool?: string;
+  usage_summary?: UsageSummary;
   profiles?: { profile_id: string; enabled: boolean }[];
   subscription_url?: string;
   selections?: Record<string, string>;
@@ -43,6 +45,17 @@ export type Resource = {
   kind: string;
   version: number;
   data: Data;
+};
+export type UsagePool = {
+  profile_ids: string[]; names: string[]; status: string;
+  upload: string | null; download: string | null; total: string | null;
+  expire: number | null; updated_at: number | null; expired: boolean; stale: boolean;
+};
+export type UsageSummary = {
+  status: string; known_pools: number; total_pools: number;
+  upload: string; download: string; total: string; remaining: string;
+  expire: number | null; next_expire: number | null; updated_at: number | null;
+  pools: UsagePool[];
 };
 export type Token = {
   id: string;

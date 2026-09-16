@@ -1,11 +1,13 @@
 mod api;
 mod auth;
 mod downloads;
+mod history;
 mod oauth;
 mod provider;
 mod security;
 mod store;
 mod sync;
+mod usage;
 mod worker;
 
 use axum::{
@@ -117,6 +119,8 @@ pub fn router(app: App) -> Router {
         )
         .route("/api/profiles/:id/refresh", post(api::refresh))
         .route("/api/profiles/:id/content", get(api::profile_content))
+        .route("/api/profiles/:id/history", get(history::list))
+        .route("/api/bundles/:id/usage", get(api::bundle_usage))
         .route("/api/proxies/egress-preview", post(provider::preview))
         .route("/api/bundles/:id/revisions", get(api::revisions))
         .route("/api/bundles/:id/rollback", post(api::rollback))
