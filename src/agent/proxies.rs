@@ -47,9 +47,7 @@ impl Durable {
         result
     }
     pub(super) fn effective(&self) -> Selections {
-        let mut result = self.selections.clone();
-        result.extend(self.effective_overrides());
-        result
+        self.selections.clone()
     }
 }
 impl Agent {
@@ -86,30 +84,11 @@ impl Agent {
                 .map(|o| json!(o))
                 .unwrap_or(json!({})),
         )?;
+        // Migrate old local/remote overrides without replaying them after reconnect.
+        self.proxies.overrides.clear();
+        self.proxies.pending.clear();
         self.save_proxies().await?;
-        self.upload_overrides().await;
         Ok(())
-    }
-    async fn upload_overrides(&mut self) {
-        if self.proxies.pending.is_empty() || self.proxies.binding.is_empty() {
-            return;
-        }
-        let selections = self.proxies.effective_overrides();
-        let response=self.http.post(self.api("/api/sync/overrides")).timeout(Duration::from_secs(3)).bearer_auth(&self.s.token).json(&json!({"binding":self.proxies.binding,"expected_version":self.proxies.override_version,"selections":selections})).send().await;
-        if let Ok(r) = response
-            && r.status().is_success()
-            && let Ok(v) = r.json::<Value>().await
-        {
-            let previous = self.proxies.clone();
-            self.proxies.overrides = selections;
-            self.proxies.override_version = v["version"]
-                .as_u64()
-                .unwrap_or(self.proxies.override_version);
-            self.proxies.pending.clear();
-            if self.save_proxies().await.is_err() {
-                self.proxies = previous;
-            }
-        }
     }
     async fn core_json(&self, path: &str) -> Result<Value> {
         let mut response = self
@@ -148,9 +127,31 @@ impl Agent {
     }
     pub(super) async fn reconcile_proxies(&mut self) {
         let mut errors = BTreeMap::<String, String>::new();
-        let desired = self.proxies.effective();
+        let mut desired = self.proxies.effective();
+        // Clearing a choice means configuration default, not a stale device cache.
+        if let Some(cache) = &self.cached
+            && let Ok(config) = camofy::engine::parse(&cache.content)
+        {
+            for group in config["proxy-groups"].as_sequence().into_iter().flatten() {
+                if group["type"] == "select"
+                    && let (Some(name), Some(first)) = (
+                        group["name"].as_str(),
+                        group["default-selected"].as_str().or_else(|| {
+                            group["proxies"]
+                                .as_sequence()
+                                .and_then(|v| v.first())
+                                .and_then(|v| v.as_str())
+                        }),
+                    )
+                {
+                    desired.entry(name.into()).or_insert_with(|| first.into());
+                }
+            }
+        }
         let mut groups = Vec::new();
-        let status = if self.control.stopped {
+        let status = if self.control.stopped && self.child.is_some() {
+            "stopping"
+        } else if self.control.stopped {
             "stopped"
         } else {
             match self.proxy_groups().await {
@@ -266,30 +267,7 @@ impl Agent {
                 Ok(self.local.status.lock().await["proxy_state"].clone())
             }
             "proxies.select" => {
-                let group = params["group"]
-                    .as_str()
-                    .ok_or_else(|| anyhow::anyhow!("group required"))?
-                    .to_string();
-                let node = params["node"].as_str().map(str::to_owned);
-                if let Some(node) = &node {
-                    camofy::protocol::validate_selections(&[(group.clone(), node.clone())].into())?;
-                    if !self.control.stopped {
-                        let groups = self.proxy_groups().await?;
-                        ensure!(
-                            groups.iter().any(|g| g.name == group
-                                && g.kind == "Selector"
-                                && g.members.contains(node)),
-                            "node is not a selectable member"
-                        );
-                    }
-                } else {
-                    ensure!(!group.is_empty() && group.len() <= 512, "invalid group");
-                }
-                self.proxies.pending.insert(group, node);
-                self.save_proxies().await?;
-                self.reconcile_proxies().await;
-                // Local safety controls must work immediately even while the cloud is offline.
-                Ok(self.local.status.lock().await["proxy_state"].clone())
+                anyhow::bail!("节点选择由云端身份统一管理，请前往身份的代理分组页面");
             }
             _ => anyhow::bail!("unsupported local operation"),
         }
@@ -439,7 +417,7 @@ mod tests {
         tokio::fs::remove_dir_all(dir).await.unwrap();
     }
     #[test]
-    fn offline_overrides_and_reset_are_group_scoped() {
+    fn legacy_device_overrides_cannot_mask_identity_selection() {
         let mut d = Durable {
             selections: [
                 ("a".into(), "identity".into()),
@@ -450,7 +428,7 @@ mod tests {
             ..Default::default()
         };
         d.pending.insert("a".into(), Some("offline".into()));
-        assert_eq!(d.effective()["a"], "offline");
+        assert_eq!(d.effective()["a"], "identity");
         d.pending.insert("a".into(), None);
         assert_eq!(d.effective()["a"], "identity");
         assert_eq!(d.effective()["b"], "other");
