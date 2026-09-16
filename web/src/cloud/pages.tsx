@@ -116,42 +116,46 @@ export function CollectionPage({ section }: { section: Section }) {
       <Heading section={section}>{create}</Heading>
       {section === "proxies" && <GlobalEgress />}
       {section === "identities" && (
-        <div className="identity-intro">
+        <dl className="workspace-summary" aria-label="工作区概览">
           <div>
-            <span className="eyebrow">YOUR CONFIGURATION, EVERYWHERE</span>
-            <h2>从独立配置，到统一体验。</h2>
-            <p>
-              把订阅源与配置 Profile 按顺序组合为身份，
-              <br className="desktop-break" />
-              通过一个订阅地址，同步到你的所有客户端。
-            </p>
+            <dt>已发布身份</dt>
+            <dd>
+              <strong>
+                {
+                  all.filter((r) => r.data.published_revision && !r.data.error)
+                    .length
+                }
+              </strong>
+              <small>/ {all.length} 个身份</small>
+            </dd>
           </div>
-          <div
-            className="flow-mini"
-            aria-label="订阅源与配置 Profile 合并为身份并分发到设备"
-          >
-            <div>
-              <span>
-                <Icon name="radio" />
-                订阅源
-              </span>
-              <span>
-                <Icon name="code" />
-                配置 Profile
-              </span>
-            </div>
-            <Icon name="arrow" />
-            <strong>
-              <Icon name="layers" />
-              身份
-            </strong>
-            <Icon name="arrow" />
-            <span className="flow-end">
-              <Icon name="monitor" />
-              每一端
-            </span>
+          <div>
+            <dt>订阅源</dt>
+            <dd>
+              <strong>
+                {
+                  resources.filter(
+                    (r) => r.kind === "profile" && r.data.type === "source",
+                  ).length
+                }
+              </strong>
+              <small>独立管理</small>
+            </dd>
           </div>
-        </div>
+          <div>
+            <dt>绑定设备</dt>
+            <dd>
+              <strong>
+                {
+                  resources.filter(
+                    (r) => r.kind === "device" && r.data.bundle_id,
+                  ).length
+                }
+              </strong>
+              <small>自动同步</small>
+            </dd>
+          </div>
+        </dl>
       )}
       <div className="collection-bar">
         <div className="collection-label">
@@ -525,8 +529,7 @@ function Distribution({ r }: { r: Resource }) {
       </span>
       <h2>下发渠道 · 订阅链接</h2>
       <p className="muted">
-        身份变化后，订阅内容自动更新。用于 Clash Verge Rev、Shadowrocket
-        等客户端。Camofy 路由器通过绑定设备自动下发，不使用手工订阅配置。
+        复制到 Clash Verge Rev 或 Shadowrocket。路由器请通过设备绑定接入。
       </p>
       <label>
         客户端格式
@@ -1016,7 +1019,7 @@ export function DetailPage({ section }: { section: Section }) {
         title={r.data.name}
         description={
           isBundle
-            ? "组合、发布与分发，在这里管理这个身份的完整生命周期。"
+            ? "管理配置组合与下发方式。"
             : r.data.store
               ? "商店组件 · 固定版本。源码只读，启用与出口在身份中设置。"
               : meta(section).sub
