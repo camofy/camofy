@@ -1,0 +1,4 @@
+# Optional device-only settings. Omit local_overlay in agent.json if not needed.
+mixed-port: 7897
+allow-lan: false
+# Control API is always authenticated and bound to loopback by the agent.

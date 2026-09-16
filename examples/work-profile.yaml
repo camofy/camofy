@@ -1,0 +1,10 @@
+# Add an explicit node and route specific domains through it.
+append-proxies:
+  - name: work-node
+    type: ss
+    server: proxy.example.com
+    port: 443
+    cipher: aes-256-gcm
+    password: REPLACE_ME
+prepend-rules:
+  - DOMAIN-SUFFIX,work.example.com,work-node

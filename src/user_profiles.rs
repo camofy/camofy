@@ -737,6 +737,180 @@ pub(crate) fn merged_config_path(root: &PathBuf) -> PathBuf {
     path
 }
 
+/// 收集最终合并配置中的所有规则行，用于判断哪些地理数据库真正被引用。
+///
+/// - 覆盖顶层 `rules` 序列中的条目；
+/// - 覆盖 `rule-providers` 中本地 path 指向的规则集文件内容。
+///
+/// 返回 `None` 表示无法完整确定（存在远程 rule-provider 或本地文件不可读），
+/// 调用方应保守地保留全部 geox-url 下载项。
+fn collect_rule_lines(root: &PathBuf, merged: &serde_yaml::Value) -> Option<Vec<String>> {
+    use std::fs;
+
+    let mut lines: Vec<String> = Vec::new();
+
+    if let Some(rules) = merged.get("rules").and_then(|v| v.as_sequence()) {
+        for rule in rules {
+            if let Some(s) = rule.as_str() {
+                lines.push(s.trim().to_string());
+            }
+        }
+    }
+
+    if let Some(providers) = merged
+        .get("rule-providers")
+        .and_then(|v| v.as_mapping())
+    {
+        for (_name, provider) in providers {
+            let Some(provider_map) = provider.as_mapping() else {
+                continue;
+            };
+
+            // 远程规则集内容无法在合并时离线检查，保守处理。
+            if provider_map
+                .get("url")
+                .and_then(|v| v.as_str())
+                .is_some_and(|u| !u.trim().is_empty())
+            {
+                return None;
+            }
+
+            let Some(path_str) = provider_map.get("path").and_then(|v| v.as_str()) else {
+                continue;
+            };
+
+            let mut provider_path = root.clone();
+            provider_path.push("config");
+            provider_path.push(path_str);
+
+            let content = match fs::read_to_string(&provider_path) {
+                Ok(c) => c,
+                Err(_) => return None,
+            };
+
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() && !trimmed.starts_with('#') {
+                    lines.push(trimmed.to_string());
+                }
+            }
+        }
+    }
+
+    Some(lines)
+}
+
+fn rules_need_asn(lines: &[String]) -> bool {
+    lines
+        .iter()
+        .any(|l| l.to_ascii_uppercase().starts_with("ASN,"))
+}
+
+fn rules_need_mmdb(lines: &[String]) -> bool {
+    lines.iter().any(|l| l.to_ascii_uppercase().contains("MMDB"))
+}
+
+/// 依据最终合并配置裁剪 `geox-url` 中未被使用的下载项，返回被移除的项名。
+///
+/// 动机：mihomo 启动时会按其 geox-url 下载地理数据库（例如只要列了 `asn`
+/// 就会下载 ASN.mmdb，即使配置中没有任何 ASN 规则），这些文件动辄 10~20MB，
+/// 对路由器这类存储紧张的环境是明显的浪费。
+///
+/// 裁剪规则：
+/// - `asn`：仅当存在 ASN 规则时保留；
+/// - `mmdb`：仅当存在 mmdb 相关规则时保留；
+/// - `metadb`：dat 模式（geodata-mode: true）下移除；
+/// - `geoip`：metadb 模式且提供了 `metadb` 下载地址时移除（dat 版 GeoIP.dat 不再使用）。
+///
+/// 规则扫描不确定（远程 provider 等）时保守保留全部项。
+fn prune_geox_url(root: &PathBuf, merged: &mut serde_yaml::Value) -> Vec<&'static str> {
+    use serde_yaml::Value;
+
+    let mut removed: Vec<&'static str> = Vec::new();
+
+    let dat_mode = merged
+        .get("geodata-mode")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let known_lines = collect_rule_lines(root, merged);
+
+    let need_asn = known_lines
+        .as_ref()
+        .map(|lines| rules_need_asn(lines))
+        .unwrap_or(true);
+    let need_mmdb = known_lines
+        .as_ref()
+        .map(|lines| rules_need_mmdb(lines))
+        .unwrap_or(true);
+
+    let Some(root_map) = merged.as_mapping_mut() else {
+        return removed;
+    };
+
+    let Some(geox) = root_map.get_mut("geox-url") else {
+        return removed;
+    };
+    let Value::Mapping(geox_map) = geox else {
+        return removed;
+    };
+
+    if !need_asn && geox_map.remove("asn").is_some() {
+        removed.push("asn");
+    }
+    if !need_mmdb && geox_map.remove("mmdb").is_some() {
+        removed.push("mmdb");
+    }
+    if dat_mode && geox_map.remove("metadb").is_some() {
+        removed.push("metadb");
+    }
+    if !dat_mode && geox_map.contains_key("metadb") && geox_map.remove("geoip").is_some() {
+        removed.push("geoip");
+    }
+
+    if geox_map.is_empty() {
+        root_map.remove("geox-url");
+    }
+
+    removed
+}
+
+/// 删除因 geox-url 裁剪而不再需要的地理数据库文件。
+fn prune_geodata_files(root: &PathBuf, removed: &[&'static str]) {
+    use std::fs;
+
+    let mut config_dir = root.clone();
+    config_dir.push("config");
+
+    let file_name = |kind: &str| -> Option<&'static str> {
+        match kind {
+            "asn" => Some("ASN.mmdb"),
+            "mmdb" => Some("country.mmdb"),
+            "metadb" => Some("geoip.metadb"),
+            "geoip" => Some("GeoIP.dat"),
+            _ => None,
+        }
+    };
+
+    for kind in removed {
+        let Some(name) = file_name(kind) else { continue };
+        let path = config_dir.join(name);
+        if !path.is_file() {
+            continue;
+        }
+        match fs::remove_file(&path) {
+            Ok(()) => tracing::info!(
+                "removed unused geodata file {} ({kind} no longer referenced)",
+                path.display()
+            ),
+            Err(err) => tracing::warn!(
+                "failed to remove unused geodata file {}: {err}",
+                path.display()
+            ),
+        }
+    }
+}
+
 fn save_merged_config(root: &PathBuf, value: &serde_yaml::Value) -> Result<(), String> {
     use std::fs;
     use std::io::Write;
@@ -916,6 +1090,12 @@ pub fn generate_merged_config(root: &PathBuf) -> Result<(), String> {
     merged = merge_yaml_configs(Some(&merged), Some(&system_value))
         .map_err(|err| format!("config merge failed: {err}"))?;
 
+    // 6. 按需裁剪 geox-url 并清理不再被引用的地理数据库文件
+    let removed_geox = prune_geox_url(root, &mut merged);
+    if !removed_geox.is_empty() {
+        prune_geodata_files(root, &removed_geox);
+    }
+
     save_merged_config(root, &merged)
 }
 
@@ -1027,7 +1207,7 @@ mod tests {
         profile_path.push("user1.yaml");
         fs::write(
             &profile_path,
-            "mixed-port: 8888\nmode: global\ncustom-key: 42\n",
+            "mixed-port: 8888\nmode: global\ncustom-key: 42\ndns:\n  listen: 127.0.0.1:7874\n",
         )
         .expect("write user profile");
 
@@ -1040,11 +1220,92 @@ mod tests {
             serde_yaml::from_str(&merged_content).expect("parse merged.yaml after override");
 
         // system.yaml 中定义的字段应保持系统值（用户无法覆盖）
-        assert_eq!(value.get("mixed-port").and_then(|v| v.as_i64()), Some(7897));
         assert_eq!(value.get("mode").and_then(|v| v.as_str()), Some("rule"));
+        assert_eq!(
+            value
+                .get("dns")
+                .and_then(|d| d.get("listen"))
+                .and_then(|v| v.as_str()),
+            Some("0.0.0.0:1053")
+        );
+
+        // 非系统字段由用户覆盖（mixed-port 已不在 system.yaml 中）
+        assert_eq!(value.get("mixed-port").and_then(|v| v.as_i64()), Some(8888));
 
         // 用户新增的自定义字段应当被保留
         assert_eq!(value.get("custom-key").and_then(|v| v.as_i64()), Some(42));
+    }
+
+    #[test]
+    fn geox_url_pruned_when_databases_unused() {
+        let root = temp_root("geox-prune");
+
+        let profile_id = "remote-geox".to_string();
+        let profile = ProfileMeta {
+            id: profile_id.clone(),
+            name: "remote".to_string(),
+            profile_type: ProfileType::Remote,
+            path: "subscriptions/remote-geox/subscription.yaml".to_string(),
+            url: None,
+            last_fetch_time: None,
+            last_fetch_status: None,
+            last_modified_time: None,
+        };
+
+        let mut app_cfg = AppConfig::default();
+        app_cfg.profiles.push(profile);
+        app_cfg.active_subscription_id = Some(profile_id);
+        save_app_config(&root, &app_cfg).expect("save_app_config failed");
+
+        let mut profile_dir = root.clone();
+        profile_dir.push("config");
+        profile_dir.push("subscriptions");
+        profile_dir.push("remote-geox");
+        fs::create_dir_all(&profile_dir).unwrap();
+
+        let profile_path = profile_dir.join("subscription.yaml");
+        fs::write(
+            &profile_path,
+            concat!(
+                "geodata-mode: true\n",
+                "geox-url:\n",
+                "  asn: https://example.com/GeoLite2-ASN.mmdb\n",
+                "  geoip: https://example.com/geoip.dat\n",
+                "  geosite: https://example.com/geosite.dat\n",
+                "  mmdb: https://example.com/country.mmdb\n",
+                "  metadb: https://example.com/geoip.metadb\n",
+                "rules:\n",
+                "- GEOIP,CN,DIRECT,no-resolve\n",
+            ),
+        )
+        .expect("write remote profile");
+
+        // 预先放置未被引用的地理数据库文件，验证会被清理
+        let mut config_dir = root.clone();
+        config_dir.push("config");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(config_dir.join("ASN.mmdb"), b"stale asn").unwrap();
+        fs::write(config_dir.join("geoip.metadb"), b"stale metadb").unwrap();
+
+        generate_merged_config(&root).expect("generate_merged_config failed");
+
+        let content = fs::read_to_string(merged_config_path(&root)).expect("read merged.yaml");
+        let value: serde_yaml::Value = serde_yaml::from_str(&content).expect("parse merged.yaml");
+        let geox = value
+            .get("geox-url")
+            .and_then(|v| v.as_mapping())
+            .expect("geox-url should remain");
+
+        // dat 模式：保留 geoip / geosite，移除未使用的 asn / mmdb / metadb
+        assert!(geox.contains_key("geoip"));
+        assert!(geox.contains_key("geosite"));
+        assert!(!geox.contains_key("asn"));
+        assert!(!geox.contains_key("mmdb"));
+        assert!(!geox.contains_key("metadb"));
+
+        // 未引用的数据库文件应被清理
+        assert!(!config_dir.join("ASN.mmdb").exists());
+        assert!(!config_dir.join("geoip.metadb").exists());
     }
 
     #[test]

@@ -922,19 +922,6 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
     )
     .await;
 
-    // 启动前确保 geoip.metadb 存在，不存在则先尝试下载。
-    let geoip_path = crate::geoip::geoip_target_path(&state.data_root);
-    if !geoip_path.is_file() {
-        tracing::info!(
-            "geoip.metadb not found at {}, trying to download before core start",
-            geoip_path.display()
-        );
-        if let Err(err) = crate::geoip::update_geoip_db().await {
-            tracing::error!("failed to download geoip.metadb before core start: {err}");
-            // 若下载失败，为避免影响核心启动，这里只记录错误，不直接返回。
-        }
-    }
-
     // 检查内核是否已经安装
     let core_path = core_binary_path(&state.data_root);
     if !core_path.is_file() {
@@ -1012,6 +999,22 @@ pub async fn start_core() -> Json<ApiResponse<serde_json::Value>> {
             message: msg,
             data: None,
         });
+    }
+
+    // 仅在内核使用 metadb 模式（geodata-mode 非 true）时，启动前确保
+    // geoip.metadb 存在；dat 模式下内核使用 GeoIP.dat，无需下载 metadb。
+    if !crate::geoip::merged_uses_dat_mode(&state.data_root) {
+        let geoip_path = crate::geoip::geoip_target_path(&state.data_root);
+        if !geoip_path.is_file() {
+            tracing::info!(
+                "geoip.metadb not found at {}, trying to download before core start",
+                geoip_path.display()
+            );
+            if let Err(err) = crate::geoip::update_geoip_db().await {
+                tracing::error!("failed to download geoip.metadb before core start: {err}");
+                // 若下载失败，为避免影响核心启动，这里只记录错误，不直接返回。
+            }
+        }
     }
 
     tracing::info!(

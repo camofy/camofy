@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="csrf" content="__CSRF__" />
+    <title>连接云端 · Camofy</title>
+    <style>
+      :root {
+        font:
+          14px/1.7 system-ui,
+          -apple-system,
+          "Segoe UI",
+          "Microsoft YaHei",
+          sans-serif;
+        color: #244235;
+        background: #f2f5ed;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+      }
+      .card {
+        background: #fff;
+        border: 1px solid #dce5d3;
+        border-radius: 18px;
+        max-width: 480px;
+        width: 100%;
+        padding: 38px;
+        box-shadow: 0 18px 80px #25412508;
+      }
+      .brand {
+        font-size: 27px;
+        font-weight: 700;
+        letter-spacing: -1px;
+      }
+      .brand span {
+        font-size: 10px;
+        letter-spacing: 1px;
+        color: #869975;
+        font-weight: 500;
+        margin-left: 9px;
+      }
+      h1 {
+        font-size: 25px;
+        letter-spacing: -0.7px;
+        margin: 32px 0 10px;
+      }
+      p {
+        color: #7c8c71;
+        font-size: 13px;
+      }
+      .steps {
+        display: flex;
+        gap: 8px;
+        font-size: 11px;
+        color: #6e8562;
+        margin: 24px 0;
+        padding: 13px 0;
+        border-top: 1px solid #edf1e5;
+        border-bottom: 1px solid #edf1e5;
+      }
+      label {
+        display: block;
+        font-size: 12px;
+        font-weight: 500;
+        margin: 20px 0 9px;
+      }
+      input {
+        display: block;
+        width: 100%;
+        padding: 11px 13px;
+        margin-top: 7px;
+        border: 1px solid #dce5d3;
+        border-radius: 7px;
+        font: inherit;
+        color: inherit;
+        background: #fcfdf9;
+      }
+      input:focus {
+        outline: 2px solid #a2c598;
+        outline-offset: 1px;
+      }
+      button,
+      .button {
+        display: block;
+        width: 100%;
+        border: 0;
+        border-radius: 8px;
+        background: #287654;
+        color: #fff;
+        padding: 13px;
+        text-align: center;
+        text-decoration: none;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+        margin: 23px 0 13px;
+      }
+      button:disabled {
+        opacity: 0.55;
+        cursor: wait;
+      }
+      summary {
+        cursor: pointer;
+        font-size: 12px;
+        color: #8a997e;
+        margin: 20px 0;
+      }
+      details p {
+        font-size: 11px;
+      }
+      .note {
+        font-size: 11px;
+        text-align: center;
+        color: #9aa68d;
+        margin-top: 24px;
+      }
+      .status {
+        padding: 16px;
+        background: #f1f6e8;
+        border: 1px solid #e0e9d3;
+        border-radius: 8px;
+        font-size: 13px;
+        overflow-wrap: anywhere;
+      }
+      .error {
+        color: #a75e42;
+        background: #fff3ed;
+        border-color: #edd6c7;
+      }
+      .code {
+        font-family: monospace;
+        font-size: 19px;
+        letter-spacing: 2px;
+        display: block;
+        color: #33563b;
+        margin: 13px 0;
+      }
+      a {
+        color: #2c7554;
+      }
+      [hidden] {
+        display: none !important;
+      }
+      .secondary {
+        background: #eff4e8;
+        color: #49683c;
+      }
+      .core-actions {
+        display: flex;
+        gap: 10px;
+      }
+      .core-actions button {
+        margin: 8px 0;
+      }
+      #core-state {
+        font-size: 12px;
+        font-weight: 500;
+        color: #738568;
+      }
+      #core-error {
+        color: #a75e42;
+      }
+      @media (max-width: 500px) {
+        body {
+          padding: 17px;
+        }
+        .card {
+          padding: 28px;
+        }
+        h1 {
+          font-size: 23px;
+        }
+      }
+    </style>
+    <script src="/pair.js" defer></script>
+  </head>
+  <body>
+    <main class="card">
+      <div class="brand">camofy<span>AGENT</span></div>
+      <h1 id="title">连接你的云端工作区</h1>
+      <p id="intro">
+        在云端登录并选择身份，这台设备就能自动同步配置。无需在路由器上输入账号或密码。
+      </p>
+      <div class="steps">
+        01 登录云端 <span>→</span> 02 选择身份 <span>→</span> 03 返回设备
+      </div>
+      <form id="form">
+        <label
+          >设备名称<input
+            id="name"
+            value="我的路由器"
+            maxlength="40"
+            required
+            autocomplete="off"
+        /></label>
+        <details>
+          <summary>更多选项</summary>
+          <label
+            >云端服务器<input
+              id="cloud"
+              type="url"
+              value="https://camofy.app/"
+              required
+          /></label>
+          <p>仅在使用自托管 Camofy 时修改。服务器需要使用 HTTPS。</p>
+        </details>
+        <button id="start" type="submit">前往云端登录并授权 →</button>
+      </form>
+      <div id="message" class="status" role="status" hidden></div>
+      <div id="pending" hidden>
+        <span id="user-code" class="code"></span
+        ><a id="authorize" class="button" href="#">继续前往云端授权</a>
+        <p>
+          请核对云端页面上的设备名称、地址和授权码。授权将在 10 分钟后过期。
+        </p>
+      </div>
+      <button id="retry" class="secondary" hidden>重新开始</button
+      ><a id="manage" class="button" hidden>打开云端工作区</a>
+      <p class="note">
+        设备只接收所选身份的配置<br />授权可随时在云端的访问凭据中撤销
+      </p>
+    </main>
+  </body>
+</html>

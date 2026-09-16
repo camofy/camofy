@@ -1,0 +1,30 @@
+name: Verify cloud and agent
+on: [push, pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: test-only
+          POSTGRES_DB: camofy_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: oven-sh/setup-bun@v2
+      - run: cargo fmt --all -- --check
+      - run: cargo test --locked --lib --bin camofy-cloud
+      - run: cargo build --locked --no-default-features --features agent --bin camofy-agent --example mock-core
+      - run: cargo test --locked --bin camofy-cloud cloud_end_to_end -- --ignored
+        env:
+          TEST_DATABASE_URL: postgres://postgres:test-only@localhost:5432/camofy_test
+          CAMOFY_TEST_AGENT: ${{ github.workspace }}/target/debug/camofy-agent
+          CAMOFY_TEST_CORE: ${{ github.workspace }}/target/debug/examples/mock-core
+      - run: CAMOFY_TEST_CORE="$PWD/target/debug/examples/mock-core" cargo test --locked --no-default-features --features agent --bin camofy-agent -- --ignored
+      - run: bun install --frozen-lockfile && bun run build && bun run lint
+        working-directory: web

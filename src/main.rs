@@ -215,6 +215,15 @@ async fn main() {
     let data_root = app::data_root();
     init_tracing(&data_root);
 
+    // 升级后清理旧版本可能遗留的多余轮转日志（当前保留 2 个轮转文件）。
+    {
+        let mut app_log = data_root.clone();
+        app_log.push("log");
+        app_log.push("app.log");
+        crate::logs::cleanup_excess_rotated_logs(&app_log);
+        crate::logs::cleanup_excess_rotated_logs(&core::mihomo_log_path(&data_root));
+    }
+
     // 启动时从磁盘加载 app.json，失败则直接退出进程。
     let app_config = match load_app_config(&data_root) {
         Ok(cfg) => cfg,

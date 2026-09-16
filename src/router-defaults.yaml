@@ -1,0 +1,19 @@
+# Defaults only: subscription/active profiles override these, then local Agent settings.
+mode: rule
+mixed-port: 7890
+allow-lan: false
+tun:
+  enable: true
+  stack: gvisor
+  auto-route: true
+  auto-detect-interface: true
+  dns-hijack: [any:53]
+profile:
+  store-selected: true
+dns:
+  enable: true
+  listen: 0.0.0.0:1053
+  enhanced-mode: fake-ip
+  nameserver: [https://dns.alidns.com/dns-query, https://doh.pub/dns-query]
+  default-nameserver: [223.5.5.5, 119.29.29.29]
+  proxy-server-nameserver: [223.5.5.5, 119.29.29.29]

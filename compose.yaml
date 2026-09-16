@@ -1,0 +1,33 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: camofy
+      POSTGRES_USER: camofy
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - database:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U camofy -d camofy"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  cloud:
+    build: .
+    environment:
+      DATABASE_URL: postgres://camofy:${POSTGRES_PASSWORD}@db:5432/camofy
+      CAMOFY_ENCRYPTION_KEY: ${CAMOFY_ENCRYPTION_KEY:?Set a base64-encoded 32-byte key}
+      CAMOFY_PUBLIC_URL: ${CAMOFY_PUBLIC_URL:-http://localhost:3000}
+      CAMOFY_LEGACY_ORIGINS: ${CAMOFY_LEGACY_ORIGINS:-}
+      CAMOFY_REGISTRATION: ${CAMOFY_REGISTRATION:-true}
+      CAMOFY_ALLOW_PRIVATE_EGRESS: ${CAMOFY_ALLOW_PRIVATE_EGRESS:-false}
+      CAMOFY_FETCH_WORKERS: ${CAMOFY_FETCH_WORKERS:-8}
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+volumes:
+  database:

@@ -1,1 +1,8 @@
 /target
+/web/node_modules
+/web/dist
+/.env
+/test-results
+/agent-data
+/.playwright-cli
+/output

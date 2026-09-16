@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "lint": "eslint .",
+    "lint": "eslint src/CloudApp.tsx src/cloud src/main.tsx vite.config.ts",
     "preview": "vite preview"
   },
   "dependencies": {

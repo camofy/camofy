@@ -1,0 +1,8 @@
+{
+  "mihomo": "/opt/mihomo",
+  "data_dir": "/var/lib/camofy",
+  "local_overlay": "/etc/camofy/local.yaml",
+  "controller_port": 9091,
+  "dns_redirect": false,
+  "web_listen": "0.0.0.0:3000"
+}

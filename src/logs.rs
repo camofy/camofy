@@ -6,7 +6,7 @@ use crate::app::{app_state, current_timestamp};
 use crate::{ApiResponse, AppEvent};
 
 pub const LOG_MAX_BYTES: u64 = 1_024 * 1_024; // 1MB
-pub const LOG_MAX_ROTATED_FILES: usize = 5;
+pub const LOG_MAX_ROTATED_FILES: usize = 2;
 // 当剩余磁盘空间低于该值时，尝试清理旧日志；仍不足则关闭该日志的文件写入。
 pub const LOG_MIN_FREE_SPACE_BYTES: u64 = LOG_MAX_BYTES;
 // 为避免每次写入都触发磁盘空间检查，这里设置一个简单的字节间隔。
@@ -87,6 +87,24 @@ fn cleanup_rotated_logs(path: &Path) {
     let base = path.to_string_lossy().to_string();
 
     for idx in 1..=LOG_MAX_ROTATED_FILES {
+        let rotated = PathBuf::from(format!("{base}.{idx}"));
+        if rotated.exists() {
+            let _ = fs::remove_file(&rotated);
+        }
+    }
+}
+
+/// 启动时清理超过保留数量的旧轮转日志。
+///
+/// 用于升级后一次性回收旧版本（例如轮转保留数为 5 时）遗留在磁盘上的
+/// 多余轮转文件；正常轮转不会产生超过 `LOG_MAX_ROTATED_FILES` 的文件。
+pub fn cleanup_excess_rotated_logs(path: &Path) {
+    use std::fs;
+
+    let base = path.to_string_lossy().to_string();
+
+    // 旧版本最多保留 5 个轮转文件，扫到 8 已足够覆盖。
+    for idx in (LOG_MAX_ROTATED_FILES + 1)..=8 {
         let rotated = PathBuf::from(format!("{base}.{idx}"));
         if rotated.exists() {
             let _ = fs::remove_file(&rotated);
