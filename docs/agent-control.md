@@ -1,104 +1,83 @@
-# Agent proxy control (protocol v2)
+# Identity-owned proxy selection (v0.1.5)
 
-Identities own shared manual-group selections. Devices follow them by default;
-device overrides and offline local edits affect only that device. Profiles keep
-defining nodes, groups and rules, not activation or runtime selections.
+An identity is the single authority for manual proxy-group choices. Every bound
+Agent follows it. Device pages are read-only previews with actual selections,
+device-side latency measurements and core controls. Local router consoles only
+provide binding and emergency core start/stop/restart; they have no node selector.
 
-## Distribution and convergence
+## Configuration, desired choice, actual state
 
-- Public subscriptions export `default-selected` and reorder explicit group members
-  for compatible clients. Independent clients may restore their own saved choices;
-  subscription refresh is not a remote-control channel.
-- Published revisions also contain an `agent` artifact without these preference
-  changes. Agents compare the artifact hash, so selecting a node does not reload
-  YAML or restart Mihomo. Revision bookkeeping still tracks the published identity.
-- `selection_version` and device override versions use optimistic concurrency.
-  Local offline changes are durable per-group intents; reconnect rebases those
-  pending intents on current device overrides using CAS. Pending edits remain
-  visible until acknowledged. Clearing an override resumes identity policy.
-- A binding generation fences both commands and local intent. Reassignment clears
-  cloud overrides/queue/reports; the next Agent sync discards previous local intent.
-- After configuration changes, startup and each ten-second health check, the Agent
-  reconciles selected groups and reads back actual choices. Each pass performs at
-  most eight changes. Missing groups/nodes and mismatched readback are reported,
-  not counted as applied. Stopped cores stay stopped. No forced connection teardown.
-- Runtime group snapshots contain names, types, members and selections, never node
-  credentials. They are sent on change and at most once per five minutes otherwise.
-  Cloud pages distinguish desired selection from timestamped actual observations.
+- Profiles define nodes/groups/rules. Identity selections are stored separately,
+  versioned with optimistic concurrency and synchronized without reloading YAML.
+- Old cloud/device overrides and offline local selection intents are retired.
+  The cloud sends an empty override map; v0.1.5 ignores and clears old local maps.
+  Old mutation endpoints reject new device choices. Upgrade Agents for full behavior.
+- Cloud parses group definitions before any device reports. Static group/member
+  order follows the merged configuration. Runtime dynamic-provider additions are
+  deduplicated and sorted. Optional name sorting is stable and saved in the URL.
+- Devices still report actual group choices: desired state alone cannot prove that
+  a core applied a choice. Runtime membership supplements dynamic providers, never
+  replaces the cloud configuration as the authoritative inventory.
+- Start/stop/restart immediately reconciles and reports state. Configuration apply
+  also reconciles; the ten-second watchdog detects subsequent runtime changes.
+  Reports are retried on failure and refreshed at least every five minutes.
+- Selection readback is required for success. Stopped/offline devices remain pending;
+  missing nodes produce explicit errors. Clearing an identity choice reapplies the
+  static configuration default, not a device's old selection cache. Automatic groups
+  remain automatic and may legitimately use different exits across networks.
+- Public subscriptions export defaults, but cannot enforce live synchronization in
+  independent clients such as Clash Verge Rev that restore their own local cache.
 
-## Device RPC
+## UI and activity
 
-`POST /api/devices/:id/rpc` accepts protocol-v2 methods `proxies.list`,
-`proxies.delay` (one `name` parameter), `core.status`, `core.start`, `core.stop`,
-and `core.restart`. Requests need an idempotency key. The cloud persists a bounded
-per-device queue (16 pending; 64 retained records) in encrypted device data.
+Only one group's nodes are expanded at a time. Group navigation, node filtering,
+bounded rendering, actual selection highlights and nested exit paths replace the
+previous full-page stack. Selected group, activity tab and sort order survive reload.
+Devices link to the identity editor instead of presenting a competing selector.
 
-Every job has an ID, protocol version, binding generation, expected configuration
-revision, deadline, status and result. WSS is only a notification; HTTPS and the
-five-minute fallback fetch authoritative state. Jobs last ten minutes, unlike the
-legacy two-minute slot. New queued core actions supersede older queued actions.
-Emergency stop is processed before downloading a new configuration. Per-node
-measurements run outside the control loop; a stale configuration rejects a delay
-request rather than measuring a different configuration silently.
+Selection events are bounded to 80 entries per scope and contain time, group,
+previous/next choice, version and source. Device confirmations are recorded only
+after matching version and actual readback. Events superseded before confirmation
+are not reported as successful. The activity tab combines these with bounded RPC
+receipts; automatic snapshot/status queries do not flood the activity list. These
+are control-plane events, not proxy traffic logs.
 
-Agents journal execution before side effects. Retransmission returns a stored
-receipt. An interrupted execution is `unknown`, never an automatic repeated
-restart. Delivery is at-least-once, not an exactly-once promise. Cloud claim checks
-binding and expiry before execution; terminal results cannot regress to executing.
-Legacy Agents retain existing endpoints during rolling upgrades.
+## RPC and local access
 
-`/api/resources/:id/proxies` provides authorized identity/device views;
-`PUT /api/resources/:id/selections` replaces that scope's choices with an
-`expected_version`. Device-specific sync reports require a device token, not a
-public subscription token. Cross-tenant requests, arbitrary RPC methods, commands
-and arbitrary HTTP forwarding are forbidden.
+Agent-initiated WSS notifies; HTTPS fetches authoritative state/claims work/posts
+results. Five-minute fallback remains. Protocol-v2 jobs have binding-generation
+fencing, IDs, idempotency keys, deadlines, expected configuration revision and
+durable receipts. Duplicate restart requests are not replayed. A restart interrupted
+before confirmation is unknown, not success. Delay measurements run outside the
+control loop. No shell execution or arbitrary HTTP forwarding is exposed.
 
-## Local emergency access
-
-The router page contains no subscription editor. An unbound device still uses cloud
-OAuth. Bound-device core and proxy controls require a local administrator session,
-plus same-origin CSRF checks; private LAN addressing alone is not authorization.
-
-The first start creates `local-admin-key` in the Agent data directory (0600 on
-Unix). Read it through the device's existing administrative channel, e.g.:
+Local controls require the `local-admin-key` from the Agent data directory and
+same-origin CSRF checks. On routers it is normally read with:
 
 ```sh
 cat /jffs/camofy/config/local-admin-key
 ```
 
-This is a local management key, not the cloud password or device token. Unlocking
-issues a memory-only, HttpOnly, SameSite=Strict session lasting twelve hours.
-Restarting the Agent clears sessions but preserves the key. Use a trusted LAN or
-an SSH tunnel when accessing an HTTP local console. The Mihomo controller remains
-loopback-only; inherited alternative controller listeners are removed.
+Sessions are memory-only, HttpOnly, SameSite=Strict and last twelve hours. Use a
+trusted LAN or SSH tunnel for HTTP access. Mihomo's controller stays loopback-only.
 
-## Verification
+## Graceful shutdown and upgrades
 
-Run normal Rust tests, `control_end_to_end` against an isolated PostgreSQL,
-the existing cloud/Agent integration suites with `mock-core`, frontend build/lint,
-and `node --test scripts/test-agent-ui.cjs`. Browser checks cover identity selection,
-device overrides/readback/delay receipts, local unlock, mobile overflow and reload.
-Never run mock-core on real devices. Production Agent binaries come from tagged
-GitHub Actions releases; cloud images are built on the deployment workstation.
+Linux Agents send SIGTERM to the child and await exit, allowing Mihomo to clean up
+its own TUN routes/firewall state. They never force-kill a live core or enable
+kill-on-drop for it. After a 30-second timeout, a control action fails visibly and
+retains the child handle. Agent process shutdown continues waiting/retrying rather
+than abandoning the child. Only Agent-owned DNS redirect rules are removed.
+Mihomo handles SIGTERM through its shutdown path ([upstream source](https://github.com/MetaCubeX/mihomo/blob/Meta/main.go)).
 
-### v0.1.4 rollout verification
+For pre-v0.1.5 upgrades, do not ask the old Agent to stop a live TUN core: that code
+used forced termination. Gracefully stop the core while preventing the old watchdog
+from restarting it, verify cleanup, then replace the Agent. Preserve binding,
+identity choices and the original running/stopped intent. Never flush unrelated
+iptables tables or install unverified binaries. Published router binaries are built
+by GitHub Actions; cloud images are built on the deployment workstation.
 
-The release was built by GitHub Actions and its ARMv7 archive checksum verified
-before installation. Cloud and Agent integration suites passed, including two
-isolated Agents following a shared identity, device-only overrides, offline local
-selection/reconnect and restart receipt deduplication. Browser checks covered
-desktop and mobile layouts, local unlock and refreshable detail URLs.
-
-A physical ARMv7 router was then tested with a temporary ordinary no-TUN Profile
-and identity, using the real Mihomo core. Verified shared selection with readback,
-unchanged YAML hash and core PID during switching, isolated overrides, persistence
-across core restart, reset-to-follow, local authenticated switching and upload,
-idempotent RPC start/stop/restart/list/status, and an honest failed delay receipt.
-An explicit loopback proxy request successfully reached the cloud health endpoint.
-Both the proxy listener and controller remained loopback-only.
-
-The previous identity and stopped-core state were restored; temporary resources
-were deleted. Routing/firewall rules matched the maintenance baseline after
-excluding counters and timestamps. Existing non-Camofy services were unchanged.
-This validates the bounded control flow, not fleet-scale throughput or universal
-third-party client synchronization.
+Verification covers migration of old overrides, first snapshot without RPC,
+readback-confirmed activity, tenant isolation, stable ordering, responsive browser
+interaction and a Unix child cleanup trap before termination returns. Use an isolated
+database/mock core for automated tests and real hardware for rollout verification.

@@ -578,6 +578,16 @@ async fn cloud_end_to_end() {
         let number = port.local_addr().unwrap().port();
         drop(port);
         let settings = root.join("agent.json");
+        // Simulate a pre-v0.1.5 device override and unsent offline intent.
+        tokio::fs::write(
+            root.join("proxies.json"),
+            serde_json::to_vec(
+                &json!({"binding":bid,"overrides":{"route":"mine"},"pending":{"route":"mine"}}),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
         tokio::fs::write(&settings, serde_json::to_vec(&json!({"subscription_url":format!("{origin}/sub/{secret}"),"mihomo":std::env::var("CAMOFY_TEST_CORE").unwrap(),"data_dir":root,"controller_port":number,"web_listen":null})).unwrap()).await.unwrap();
         let process = tokio::process::Command::new(binary)
             .arg(settings)
@@ -587,6 +597,34 @@ async fn cloud_end_to_end() {
             .spawn()
             .unwrap();
         managed = Some((process, root));
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            let mut conn = db.acquire().await.unwrap();
+            let d = store::get(
+                &app,
+                &mut conn,
+                alice_id,
+                Uuid::parse_str(device["id"].as_str().unwrap()).unwrap(),
+            )
+            .await
+            .unwrap();
+            let state = &d.data["reported"]["proxy_state"];
+            if state["groups"].as_array().is_some_and(|groups| {
+                groups
+                    .iter()
+                    .any(|g| g["name"] == "route" && g["now"] == "DIRECT")
+            }) {
+                assert_eq!(state["pending_local"], false);
+                assert_eq!(state["overrides"], json!({}));
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "first group snapshot must arrive without proxies.list RPC"
+            );
+            drop(conn);
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
         await_report(
             &app,
             alice_id,

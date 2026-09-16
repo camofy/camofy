@@ -2,6 +2,7 @@
 mod control;
 mod pairing;
 mod proxies;
+mod shutdown;
 use anyhow::{Context, Result, ensure};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -123,7 +124,9 @@ impl Agent {
         {
             self.child = None;
         }
-        let state = if self.control.stopped {
+        let state = if self.control.stopped && self.child.is_some() {
+            "stopping"
+        } else if self.control.stopped {
             "stopped"
         } else if self.child.is_some() {
             "running"
@@ -143,9 +146,9 @@ impl Agent {
         {
             dns_redirect(false, &runtime).await?;
         }
-        if let Some(mut child) = self.child.take() {
-            child.kill().await?;
-            child.wait().await?;
+        if let Some(child) = &mut self.child {
+            shutdown::terminate(child).await?;
+            self.child = None;
         }
         Ok(())
     }
@@ -187,6 +190,10 @@ impl Agent {
             &serde_json::to_vec(&self.control)?,
         )
         .await?;
+        self.publish_runtime(result.as_ref().err().map(|e| e.to_string()))
+            .await;
+        // Do not leave a stopped/empty snapshot until the next watchdog tick.
+        self.reconcile_proxies().await;
         result
     }
     fn api(&self, path: &str) -> String {
@@ -268,7 +275,7 @@ impl Agent {
                     .arg(path)
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
-                    .kill_on_drop(true)
+                    .kill_on_drop(false)
                     .spawn()?,
             );
         }
@@ -354,9 +361,9 @@ impl Agent {
             if let Some(old) = previous {
                 atomic(&running, &old).await?;
                 if !self.control.stopped && self.load_core(&running).await.is_err() {
-                    if let Some(mut child) = self.child.take() {
-                        let _ = child.kill().await;
-                    }
+                    self.halt()
+                        .await
+                        .context("cannot gracefully stop failed core")?;
                     self.load_core(&running).await.context("rollback failed")?;
                 }
                 if !self.control.stopped
@@ -369,8 +376,10 @@ impl Agent {
                         .await
                         .context("DNS rollback failed")?;
                 }
-            } else if let Some(mut child) = self.child.take() {
-                let _ = child.kill().await;
+            } else {
+                self.halt()
+                    .await
+                    .context("cannot gracefully stop rejected core")?;
                 if self.s.dns_redirect {
                     let _ = dns_redirect(false, &runtime).await;
                 }
@@ -781,22 +790,25 @@ async fn notifications(s: Settings, tx: tokio::sync::watch::Sender<u64>) {
     }
 }
 
-async fn shutdown() {
+fn shutdown() -> impl std::future::Future<Output = ()> {
     #[cfg(unix)]
-    {
-        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("install SIGTERM handler");
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("install SIGTERM handler");
+    async move {
+        #[cfg(unix)]
         tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = term.recv() => {} }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
     }
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();
+    let shutdown_requested = shutdown();
+    tokio::pin!(shutdown_requested);
     let path = std::env::args()
         .nth(1)
         .context("usage: camofy-agent /path/to/agent.json")?;
@@ -841,7 +853,7 @@ async fn main() -> Result<()> {
                         break;
                     }
                 },
-                _ = shutdown() => return Ok(()),
+                _ = &mut shutdown_requested => return Ok(()),
             }
         }
         s.resolve_subscription()?;
@@ -915,17 +927,14 @@ async fn main() -> Result<()> {
                 else if agent.child.is_none()&& let Some(c)=agent.cached.clone(){let _=agent.apply(c).await;}
                 agent.publish_runtime(None).await;
             },
-            _=shutdown()=>break,
+            _=&mut shutdown_requested=>break,
         }
     }
     notification.abort();
-    if let Some(c) = &agent.cached
-        && agent.s.dns_redirect
-    {
-        let _ = dns_redirect(false, &c.content).await;
-    }
-    if let Some(mut child) = agent.child.take() {
-        let _ = child.kill().await;
+    // Keep ownership until Mihomo confirms exit; never silently SIGKILL a TUN core.
+    while let Err(error) = agent.halt().await {
+        tracing::error!(%error, "graceful shutdown incomplete; retaining core ownership");
+        tokio::time::sleep(Duration::from_secs(5)).await;
     }
     Ok(())
 }
@@ -1009,10 +1018,17 @@ mod tests {
             "applied"
         );
         let pid_before = agent.child.as_ref().unwrap().id();
+        assert!(
+            agent
+                .local_proxy("proxies.select", json!({"group":"pick","node":"mine2"}))
+                .await
+                .is_err()
+        );
         agent
-            .local_proxy("proxies.select", json!({"group":"pick","node":"mine2"}))
-            .await
-            .unwrap();
+            .proxies
+            .selections
+            .insert("pick".into(), "mine2".into());
+        agent.reconcile_proxies().await;
         assert_eq!(
             agent.child.as_ref().unwrap().id(),
             pid_before,
@@ -1022,22 +1038,12 @@ mod tests {
             agent.local.status.lock().await["proxy_state"]["groups"][0]["now"],
             "mine2"
         );
-        let local_state = proxies::Durable::load(&root).await.unwrap();
-        assert_eq!(
-            local_state.pending["pick"].as_deref(),
-            Some("mine2"),
-            "offline choice is durable"
-        );
         assert!(
             agent
                 .local_proxy("proxies.select", json!({"group":"pick","node":"missing"}))
                 .await
                 .is_err()
         );
-        agent
-            .local_proxy("proxies.select", json!({"group":"pick","node":null}))
-            .await
-            .unwrap();
         agent
             .proxies
             .selections

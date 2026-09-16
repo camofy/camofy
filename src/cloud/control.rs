@@ -20,6 +20,109 @@ pub fn binding(d: &store::Resource) -> String {
 pub fn version(r: &store::Resource) -> u64 {
     r.data["selection_version"].as_u64().unwrap_or(0)
 }
+pub fn events(r: &store::Resource) -> Vec<Value> {
+    r.data["selection_events"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+}
+pub(super) fn record_selection(r: &mut store::Resource, previous: &Value, source: &str) {
+    let field = if r.kind == "bundle" {
+        "selections"
+    } else {
+        "selection_overrides"
+    };
+    let current = &r.data[field];
+    let keys: std::collections::BTreeSet<_> = previous
+        .as_object()
+        .into_iter()
+        .flat_map(|o| o.keys())
+        .chain(current.as_object().into_iter().flat_map(|o| o.keys()))
+        .cloned()
+        .collect();
+    let mut history = events(r);
+    for group in keys {
+        if previous[&group] == current[&group] {
+            continue;
+        }
+        for old in &mut history {
+            if old["group"] == group && old["status"] == "pending" {
+                old["status"] = json!("superseded");
+            }
+        }
+        history.push(
+            json!({"id":Uuid::new_v4(),"created_at":crate::now(),"group":group,
+            "from":previous[&group],"to":current[&group],"source":source,"version":version(r),
+            "status":if r.kind=="bundle" {"saved"} else {"pending"}}),
+        );
+    }
+    let start = history.len().saturating_sub(80);
+    r.data["selection_events"] = json!(&history[start..]);
+}
+fn settle_events(d: &mut store::Resource) {
+    let state = &d.data["reported"]["proxy_state"];
+    let mut history = events(d);
+    for event in &mut history {
+        if event["status"] != "pending"
+            || event["version"].as_u64().unwrap_or(u64::MAX)
+                > state["selection_version"].as_u64().unwrap_or(0)
+        {
+            continue;
+        }
+        let group = event["group"].as_str().unwrap_or("");
+        if event["scope"] != "identity" {
+            event["status"] = json!("superseded");
+            continue;
+        }
+        if event["version"].as_u64() < state["selection_version"].as_u64()
+            && !event["to"].is_null()
+            && event["to"] != state["desired"][group]
+        {
+            event["status"] = json!("superseded");
+            continue;
+        }
+        if state["pending_local"] == true {
+            continue;
+        }
+        if !state["errors"][group].is_null() {
+            event["detail"] = state["errors"][group].clone();
+            continue;
+        }
+        let desired = &state["desired"][group];
+        let expected = if event["to"].is_null() {
+            desired
+        } else {
+            &event["to"]
+        };
+        let actual = state["groups"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|g| g["name"] == group)
+            .map(|g| &g["now"]);
+        if ["applied", "partial"].contains(&state["status"].as_str().unwrap_or(""))
+            && actual.is_some_and(|a| expected.is_null() || a == expected)
+        {
+            event["status"] = json!("applied");
+            event["confirmed_at"] = json!(crate::now());
+            event["detail"] = Value::Null;
+        }
+    }
+    d.data["selection_events"] = json!(history);
+}
+fn device_events(d: &store::Resource, b: &store::Resource) -> Vec<Value> {
+    let mut history = events(d);
+    for mut event in events(b) {
+        if !history.iter().any(|e| e["id"] == event["id"]) {
+            event["status"] = json!("pending");
+            event["scope"] = json!("identity");
+            history.push(event);
+        }
+    }
+    history.sort_by_key(|e| e["created_at"].as_i64().unwrap_or(0));
+    history.drain(..history.len().saturating_sub(80));
+    history
+}
 pub fn jobs(d: &store::Resource) -> Vec<Job> {
     serde_json::from_value(d.data.get("rpc_jobs").cloned().unwrap_or(json!([]))).unwrap_or_default()
 }
@@ -130,6 +233,7 @@ async fn write_selection(
     user: Uuid,
     r: &mut store::Resource,
     e: SelectionEdit,
+    source: &str,
 ) -> Result<(), Error> {
     camofy::protocol::validate_selections(&e.selections).map_err(|e| Error::bad(e.to_string()))?;
     if e.expected_version != version(r) {
@@ -145,8 +249,13 @@ async fn write_selection(
     } else {
         return Err(Error::not_found());
     };
+    let previous = r.data[field].clone();
+    if previous == json!(e.selections) {
+        return Ok(());
+    }
     r.data[field] = json!(e.selections);
     r.data["selection_version"] = json!(version(r) + 1);
+    record_selection(r, &previous, source);
     r.version += 1;
     store::put(app, conn, user, r).await?;
     if r.kind == "bundle" {
@@ -166,7 +275,10 @@ pub async fn select(
     let mut tx = app.db.begin().await?;
     store::lock(&mut tx, user).await?;
     let mut r = store::get(&app, &mut tx, user, id).await?;
-    write_selection(&app, &mut tx, user, &mut r, e).await?;
+    if r.kind != "bundle" {
+        return Err(Error::bad("节点选择由身份统一管理，请在身份页面修改"));
+    }
+    write_selection(&app, &mut tx, user, &mut r, e, "cloud").await?;
     tx.commit().await?;
     Ok(Json(json!({"version":version(&r)})))
 }
@@ -179,16 +291,18 @@ pub async fn view(
     let user = auth::user(&app, &h, false).await?;
     let mut conn = app.db.acquire().await?;
     let r = store::get(&app, &mut conn, user, id).await?;
-    if r.kind == "device" {
+    let device = if r.kind == "device" {
+        Some(r.clone())
+    } else {
+        None
+    };
+    let r = if r.kind == "device" {
         let bundle = Uuid::parse_str(r.data["bundle_id"].as_str().unwrap_or(""))
             .map_err(|_| Error::not_found())?;
-        let b = store::get(&app, &mut conn, user, bundle).await?;
-        let mut queue = jobs(&r);
-        normalize(&mut queue);
-        return Ok(Json(
-            json!({"groups":r.data["reported"]["proxy_state"]["groups"],"state":r.data["reported"]["proxy_state"],"reported":r.data["reported"],"selections":b.data["selections"],"overrides":r.data["selection_overrides"],"version":version(&r),"jobs":queue,"binding":binding(&r)}),
-        ));
-    }
+        store::get(&app, &mut conn, user, bundle).await?
+    } else {
+        r
+    };
     if r.kind != "bundle" {
         return Err(Error::not_found());
     }
@@ -221,10 +335,11 @@ pub async fn view(
         });
     }
     let mut conn = app.db.acquire().await?;
-    let devices:Vec<_>=store::list(&app,&mut conn,user).await?.into_iter().filter(|d|d.kind=="device"&&d.data["bundle_id"]==id.to_string()).map(|d|json!({"id":d.id,"name":d.data["name"],"reported":d.data["reported"],"overrides":d.data["selection_overrides"]})).collect();
+    let devices:Vec<_>=store::list(&app,&mut conn,user).await?.into_iter().filter(|d|d.kind=="device"&&d.data["bundle_id"]==r.id.to_string()).map(|d|json!({"id":d.id,"name":d.data["name"],"reported":d.data["reported"],"overrides":{}})).collect();
     // Dynamic provider membership is evidence from devices, not guessed from YAML.
     for g in &mut groups {
         if g.dynamic {
+            let mut extras = std::collections::BTreeSet::new();
             for d in &devices {
                 if let Some(all) = d["reported"]["proxy_state"]["groups"].as_array() {
                     for runtime in all {
@@ -236,17 +351,35 @@ pub async fn view(
                                 .filter_map(Value::as_str)
                             {
                                 if !g.members.iter().any(|n| n == member) {
-                                    g.members.push(member.into());
+                                    extras.insert(member.to_owned());
                                 }
                             }
                         }
                     }
                 }
             }
+            g.members.extend(extras);
         }
     }
+    if let Some(d) = device {
+        let runtime = &d.data["reported"]["proxy_state"]["groups"];
+        for g in &mut groups {
+            g.now = runtime
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|p| p["name"] == g.name)
+                .and_then(|p| p["now"].as_str())
+                .map(str::to_owned);
+        }
+        let mut queue = jobs(&d);
+        normalize(&mut queue);
+        return Ok(Json(
+            json!({"groups":groups,"state":d.data["reported"]["proxy_state"],"reported":d.data["reported"],"selections":r.data["selections"],"overrides":{},"version":version(&r),"jobs":queue,"events":device_events(&d,&r),"binding":binding(&d),"identity_id":r.id,"identity_name":r.data["name"]}),
+        ));
+    }
     Ok(Json(
-        json!({"groups":groups,"selections":r.data["selections"],"overrides":{},"version":version(&r),"devices":devices}),
+        json!({"groups":groups,"selections":r.data["selections"],"overrides":{},"version":version(&r),"devices":devices,"events":events(&r)}),
     ))
 }
 
@@ -286,6 +419,10 @@ pub async fn agent_report(
         d.data["reported"]["proxy_state"] = state;
         d.data["reported"]["proxy_state"]["received_at"] = json!(crate::now());
         d.data["reported"]["protocol"] = json!(2);
+        let identity = store::get(&app, &mut tx, a.user, a.bundle).await?;
+        d.data["selection_events"] = json!(device_events(&d, &identity));
+        d.data["selection_overrides"] = json!({});
+        settle_events(&mut d);
     }
     if let Some(id) = body.job_id {
         let mut queue = jobs(&d);
@@ -343,6 +480,9 @@ pub async fn agent_overrides(
     if e.binding != binding(&d) || d.data["bundle_id"] != a.bundle.to_string() {
         return Err(Error::new(StatusCode::CONFLICT, "device binding changed"));
     }
+    if !e.selections.is_empty() {
+        return Err(Error::bad("设备覆盖已停用，请在身份页面修改选择"));
+    }
     write_selection(
         &app,
         &mut tx,
@@ -352,6 +492,7 @@ pub async fn agent_overrides(
             expected_version: e.expected_version,
             selections: e.selections,
         },
+        "local",
     )
     .await?;
     tx.commit().await?;
