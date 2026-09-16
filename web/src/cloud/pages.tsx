@@ -24,6 +24,7 @@ import {
 } from "./ui";
 import { resourcePath, sectionOf, sections, type Section } from "./navigation";
 import { UsageCompact, UsagePanel, RefreshHistory } from "./Usage";
+import { ProxyControl } from "./ProxyControl";
 
 const meta = (section: Section) => sections.find((s) => s.key === section)!;
 const host = (url?: string) => {
@@ -992,6 +993,7 @@ export function DetailPage({ section }: { section: Section }) {
   const tabs = isBundle
     ? [
         { id: "composition", label: "配置组合" },
+        { id: "proxies", label: "代理分组" },
         { id: "preview", label: "合并预览" },
         { id: "usage", label: "套餐用量" },
         { id: "history", label: "发布历史" },
@@ -1000,6 +1002,7 @@ export function DetailPage({ section }: { section: Section }) {
       ]
     : [
         { id: "overview", label: section === "profiles" ? "配置内容" : "概览" },
+        ...(r.kind === "device" ? [{ id: "proxies", label: "代理与控制" }] : []),
         ...(r.data.store ? [{ id: "management", label: "版本与副本" }] : []),
         ...(isSource ? [{ id: "content", label: "订阅内容" }] : []),
         ...(isSource ? [{ id: "refresh-history", label: "刷新历史" }] : []),
@@ -1074,6 +1077,7 @@ export function DetailPage({ section }: { section: Section }) {
         ))}
       </div>
       {tab === "composition" && <Composition key={r.id} r={r} />}
+      {tab === "proxies" && <ProxyControl key={r.id} r={r} />}
       {tab === "preview" && <Preview r={r} />}
       {tab === "history" && <History key={r.id} r={r} />}
       {tab === "usage" && <UsagePanel r={r} />}
@@ -1220,14 +1224,14 @@ export function DetailPage({ section }: { section: Section }) {
                                   api(`/devices/${r.id}/control`, "POST", {
                                     action,
                                   }),
-                                `${label}指令已发送，等待设备执行回执（两分钟内有效）。`,
+                                `${label}任务已提交，请在「代理与控制」中查看设备回执。`,
                               );
                           }}
                         >
                           {label} Mihomo
                         </button>
                       ))}
-                      <button
+                      {r.data.reported?.protocol !== 2 && <button
                         disabled={busy}
                         onClick={() => {
                           void run(
@@ -1237,7 +1241,8 @@ export function DetailPage({ section }: { section: Section }) {
                         }}
                       >
                         请求节点测速
-                      </button>
+                      </button>}
+                      {r.data.reported?.protocol === 2 && <Link className="button" to="?tab=proxies">代理分组与操作回执</Link>}
                     </div>
                     {r.data.reported?.delays && (
                       <Facts
