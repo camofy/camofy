@@ -74,10 +74,22 @@ async fn subscription_retry_end_to_end() {
         id: Uuid::new_v4(),
         kind: "profile".into(),
         version: 1,
-        data: json!({"name":"retry-test","type":"source","url":"http://localhost:59999/private-subscription","proxy_id":proxy.id,"auto_refresh":false,"content":"rules: ['MATCH,REJECT']\n"}),
+        data: json!({"name":"retry-test","type":"source","url":"http://localhost:59999/private-subscription","auto_refresh":false,"content":"rules: ['MATCH,REJECT']\n"}),
     };
     let mut conn = db.acquire().await.unwrap();
-    store::put(&app, &mut conn, user, &proxy).await.unwrap();
+    sqlx::query("INSERT INTO platform_proxies(id,data) VALUES($1,$2)")
+        .bind(proxy.id)
+        .bind(app.vault.seal(&proxy.data).unwrap())
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE subscription_egress_policy SET proxy_id=$1,version=version+1 WHERE singleton",
+    )
+    .bind(proxy.id)
+    .execute(&mut *conn)
+    .await
+    .unwrap();
     store::put(&app, &mut conn, user, &source).await.unwrap();
     drop(conn);
     async fn queue(db: &sqlx::PgPool, user: Uuid, id: Uuid) {
@@ -192,6 +204,39 @@ async fn subscription_retry_end_to_end() {
     assert_eq!(hits.load(Ordering::SeqCst), 3);
     let scheduled:bool=sqlx::query_scalar("SELECT reason='scheduled' AND next_run>now()+interval '290 seconds' AND claim IS NULL FROM fetch_jobs WHERE profile_id=$1").bind(source.id).fetch_one(&db).await.unwrap();
     assert!(scheduled);
+    // A policy change during backoff cancels retries; it never falls back to direct.
+    hits.store(0, Ordering::SeqCst);
+    queue(&db, user, source.id).await;
+    let running = tokio::spawn({
+        let app = app.clone();
+        async move { worker::once(&app).await.unwrap() }
+    });
+    for _ in 0..200 {
+        if hits.load(Ordering::SeqCst) > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    sqlx::query(
+        "UPDATE subscription_egress_policy SET proxy_id=NULL,version=version+1 WHERE singleton",
+    )
+    .execute(&db)
+    .await
+    .unwrap();
+    assert!(running.await.unwrap());
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    let discarded: String = sqlx::query_scalar(
+        "SELECT status FROM refresh_history WHERE profile_id=$1 ORDER BY id DESC LIMIT 1",
+    )
+    .bind(source.id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(discarded, "discarded");
+    // Requeued with no platform proxy: fail once without issuing any network call.
+    assert!(worker::once(&app).await.unwrap());
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
     let messages: Vec<Option<String>> =
         sqlx::query_scalar("SELECT message FROM refresh_history WHERE profile_id=$1")
             .bind(source.id)
@@ -204,6 +249,11 @@ async fn subscription_retry_end_to_end() {
     }
     sqlx::query("DELETE FROM users WHERE id=$1")
         .bind(user)
+        .execute(&db)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM platform_proxies WHERE id=$1")
+        .bind(proxy.id)
         .execute(&db)
         .await
         .unwrap();

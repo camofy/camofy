@@ -14,12 +14,14 @@ only a sanitized retry classification, never their secret URLs or response bodie
 `Retry-After` delta seconds is respected; a delay beyond the remaining deadline or
 an unrecognized/date-form value ends this refresh rather than retrying too soon.
 
-Every attempt runs proxy admission, extraction and subscription fetch again. Short
-lived proxy addresses are not reused. A configured proxy is never bypassed with a
-direct fallback. Existing global supplier rate limiting applies to each attempt.
+Every attempt runs platform proxy admission, extraction and subscription fetch again.
+Short lived proxy addresses are not reused. A missing platform proxy fails closed;
+no attempt falls back to direct. Existing global supplier rate limiting applies to each attempt.
 The same lease remains held during backoff, excluding other workers. Before the
 next attempt, changes to request ID, configuration, proxy version or lease ownership
 stop the old retry sequence; the existing publication/version checks still apply.
+Platform policy changes also cancel in-flight attempts/backoff via the existing
+one-second watcher; publication retains the shared policy lock.
 
 History displays sanitized progress, final attempt count and prior failure codes
 through its existing message field and five-second UI refresh. Success publishes
