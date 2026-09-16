@@ -10,6 +10,7 @@ import { spawnSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createServer, request as httpRequest } from 'node:http';
 import { createServer as tcpServer } from 'node:net';
+import { createSocket } from 'node:dgram';
 import { once } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 const env=process.env;
@@ -24,12 +25,29 @@ async function request(path, method='GET', body) {
   return r.status===204?null:r.json();
 }
 async function create(kind,data) {const r=await request('/resources','POST',{kind,data});resources.push(r.id);return r;}
+async function mixedPort() {
+  // Windows may reserve UDP ranges independently of TCP (notably with Docker/Hyper-V).
+  // Check both protocols; a TCP-only ephemeral reservation is not sufficient.
+  for(let i=0;i<30;i++) {
+    const tcp=tcpServer(),udp=createSocket('udp4');
+    tcp.listen(0,'127.0.0.1');await once(tcp,'listening');
+    const port=tcp.address().port;
+    try {
+      udp.bind(port,'127.0.0.1');await once(udp,'listening');
+      return port;
+    } catch(e) {
+      if(!['EACCES','EADDRINUSE'].includes(e.code))throw e;
+    } finally {
+      udp.close();await new Promise(r=>tcp.close(r));
+    }
+  }
+  throw new Error('No available loopback TCP+UDP port for isolated Mihomo test');
+}
 async function exerciseRules(yaml, slug, domains, policy) {
   // Test only loopback traffic. No system proxy, TUN, DNS listener or active client changes.
   const source=createServer((_,r)=>r.end('camofy-catalog-loopback'));
   source.listen(0,'127.0.0.1');await once(source,'listening');
-  const reservation=tcpServer();reservation.listen(0,'127.0.0.1');await once(reservation,'listening');
-  const proxyPort=reservation.address().port;await new Promise(r=>reservation.close(r));
+  const proxyPort=await mixedPort();
   const path=join(output,`${slug}.runtime.yaml`);
   assert(/^mixed-port: 0$/m.test(yaml));
   const runtime=yaml.replace(/^mixed-port: 0$/m,`mixed-port: ${proxyPort}`)+'\nhosts:\n'+domains.map(d=>`  ${d}: 127.0.0.1`).join('\n')+'\n';
