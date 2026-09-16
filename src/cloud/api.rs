@@ -483,6 +483,108 @@ pub struct TokenRequest {
     device_id: Option<Uuid>,
     label: String,
 }
+fn primary_hash(bundle: &store::Resource) -> Option<String> {
+    let url = url::Url::parse(bundle.data["subscription_url"].as_str()?).ok()?;
+    Some(camofy::digest(url.path_segments()?.nth(1)?))
+}
+
+/// Only historical subscription links; device and primary credentials are not exposed here.
+pub async fn subscription_links(
+    State(app): State<App>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>, Error> {
+    use sqlx::Row;
+    let user = auth::user(&app, &h, false).await?;
+    let mut tx = app.db.begin().await?;
+    store::lock(&mut tx, user).await?;
+    let bundle = store::get(&app, &mut tx, user, id).await?;
+    if bundle.kind != "bundle" {
+        return Err(Error::not_found());
+    }
+    let primary = primary_hash(&bundle);
+    let rows = sqlx::query("SELECT hash,label,extract(epoch FROM created_at)::bigint AS created_at FROM access_tokens WHERE user_id=$1 AND bundle_id=$2 AND device_id IS NULL ORDER BY created_at DESC,hash")
+        .bind(user).bind(id).fetch_all(&mut *tx).await?;
+    let links: Vec<Value> = rows.iter().filter(|r| Some(r.get::<String,_>("hash")) != primary).map(|r|
+        json!({"id":r.get::<String,_>("hash"),"label":r.get::<String,_>("label"),"created_at":r.get::<i64,_>("created_at")})).collect();
+    tx.commit().await?;
+    Ok(Json(json!(links)))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResetSubscription {
+    version: i64,
+}
+
+/// Atomic primary-link rotation. Historical links and device sessions remain valid.
+pub async fn reset_subscription(
+    State(app): State<App>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+    Json(p): Json<ResetSubscription>,
+) -> Result<Json<store::Resource>, Error> {
+    let user = auth::user(&app, &h, true).await?;
+    let mut tx = app.db.begin().await?;
+    store::lock(&mut tx, user).await?;
+    let mut bundle = store::get(&app, &mut tx, user, id).await?;
+    if bundle.kind != "bundle" {
+        return Err(Error::not_found());
+    }
+    if bundle.version != p.version {
+        return Err(Error::new(
+            StatusCode::CONFLICT,
+            "identity changed; reload before resetting",
+        ));
+    }
+    if let Some(hash) = primary_hash(&bundle) {
+        sqlx::query("DELETE FROM access_tokens WHERE user_id=$1 AND bundle_id=$2 AND device_id IS NULL AND hash=$3")
+            .bind(user).bind(id).bind(hash).execute(&mut *tx).await?;
+    }
+    let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+    sqlx::query("INSERT INTO access_tokens(hash,user_id,bundle_id,label) VALUES($1,$2,$3,$4)")
+        .bind(camofy::digest(&token))
+        .bind(user)
+        .bind(id)
+        .bind("Identity subscription")
+        .execute(&mut *tx)
+        .await?;
+    bundle.data["subscription_url"] = json!(format!("{}/sub/{token}", app.origin));
+    bundle.version += 1;
+    store::put(&app, &mut tx, user, &bundle).await?;
+    store::notify(&mut tx, user).await?;
+    tx.commit().await?;
+    Ok(Json(bundle))
+}
+
+pub async fn revoke_subscription(
+    State(app): State<App>,
+    h: HeaderMap,
+    Path((id, hash)): Path<(Uuid, String)>,
+) -> Result<StatusCode, Error> {
+    let user = auth::user(&app, &h, true).await?;
+    let mut tx = app.db.begin().await?;
+    store::lock(&mut tx, user).await?;
+    let bundle = store::get(&app, &mut tx, user, id).await?;
+    if bundle.kind != "bundle" {
+        return Err(Error::not_found());
+    }
+    if primary_hash(&bundle).as_deref() == Some(hash.as_str()) {
+        return Err(Error::new(
+            StatusCode::CONFLICT,
+            "use reset to replace the primary subscription link",
+        ));
+    }
+    let result = sqlx::query("DELETE FROM access_tokens WHERE user_id=$1 AND bundle_id=$2 AND device_id IS NULL AND hash=$3")
+        .bind(user).bind(id).bind(hash).execute(&mut *tx).await?;
+    if result.rows_affected() == 0 {
+        return Err(Error::not_found());
+    }
+    store::notify(&mut tx, user).await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn token(
     State(app): State<App>,
     h: HeaderMap,

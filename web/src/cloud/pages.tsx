@@ -16,6 +16,8 @@ import {
   Empty,
   Icon,
   Modal,
+  Panel,
+  PanelBody,
   ResourceLink,
   Status,
 } from "./ui";
@@ -89,16 +91,12 @@ function Confirm({
   );
 }
 export function CollectionPage({ section }: { section: Section }) {
-  const { resources, tokens, busy, run } = useWorkspace();
+  const { resources } = useWorkspace();
   const [search, setSearch] = useSearchParams();
-  const [revoke, setRevoke] = useState<string | null>(null);
   const query = search.get("q") ?? "";
   const all = resources.filter((r) => sectionOf(r) === section);
   const rows = all.filter((r) =>
     r.data.name.toLowerCase().includes(query.toLowerCase()),
-  );
-  const filteredTokens = tokens.filter((t) =>
-    t.label.toLowerCase().includes(query.toLowerCase()),
   );
   const create = (
     <Link className="button primary" to={`/${section}/new`}>
@@ -114,7 +112,7 @@ export function CollectionPage({ section }: { section: Section }) {
     ).length;
   return (
     <>
-      <Heading section={section}>{section !== "tokens" && create}</Heading>
+      <Heading section={section}>{create}</Heading>
       {section === "identities" && (
         <div className="identity-intro">
           <div>
@@ -156,9 +154,7 @@ export function CollectionPage({ section }: { section: Section }) {
       <div className="collection-bar">
         <div className="collection-label">
           全部{meta(section).name}
-          <span className="count">
-            {section === "tokens" ? tokens.length : all.length}
-          </span>
+          <span className="count">{all.length}</span>
         </div>
         <label className="search-field">
           <Icon name="search" size={16} />
@@ -175,18 +171,16 @@ export function CollectionPage({ section }: { section: Section }) {
           />
         </label>
       </div>
-      {(section === "tokens" ? !filteredTokens.length : !rows.length) ? (
+      {!rows.length ? (
         <div className="panel">
           <Empty
             title={query ? "没有匹配的结果" : `还没有${meta(section).name}`}
             text={
               query
                 ? "试试其他名称，或清空搜索条件。"
-                : section === "tokens"
-                  ? "在身份或设备详情中生成专用凭据。"
-                  : "从创建第一项开始，逐步组织你的网络配置。"
+                : "从创建第一项开始，逐步组织你的网络配置。"
             }
-            action={!query && section !== "tokens" ? create : undefined}
+            action={!query ? create : undefined}
           />
         </div>
       ) : section === "identities" ? (
@@ -246,7 +240,7 @@ export function CollectionPage({ section }: { section: Section }) {
             <thead>
               <tr>
                 <th>名称</th>
-                <th>{section === "tokens" ? "关联身份" : "状态 / 类型"}</th>
+                <th>状态 / 类型</th>
                 {section === "subscriptions" && <th>套餐使用量</th>}
                 <th>
                   {section === "subscriptions"
@@ -270,123 +264,95 @@ export function CollectionPage({ section }: { section: Section }) {
                           ? "最近上报"
                           : "操作"}
                 </th>
-                {section !== "tokens" && (
-                  <th>
-                    <span className="sr-only">查看详情</span>
-                  </th>
-                )}
+                <th>
+                  <span className="sr-only">查看详情</span>
+                </th>
               </tr>
             </thead>
             <tbody>
-              {section === "tokens"
-                ? filteredTokens.map((t) => (
-                    <tr key={t.id}>
-                      <td>
-                        <strong>{t.label}</strong>
-                        <small>独立访问凭据</small>
-                      </td>
-                      <td>
+              {rows.map((r) => (
+                <tr key={r.id}>
+                  <td>
+                    <Link className="row-title" to={resourcePath(r)}>
+                      <span className="small-resource-icon">
+                        <Icon name={meta(section).icon} />
+                      </span>
+                      {r.data.name}
+                    </Link>
+                    <small className="row-subtitle">
+                      {section === "subscriptions"
+                        ? host(r.data.url)
+                        : section === "profiles"
+                          ? r.data.store
+                            ? `商店组件 · v${r.data._package?.version ?? "—"} · 手动锁定`
+                            : `独立配置 · v${r.version}`
+                          : section === "proxies"
+                            ? r.data.provider === "xiequ"
+                              ? "每次刷新即时提取"
+                              : host(r.data.endpoint ?? r.data.url)
+                            : `配置版本 ${r.data.reported?.revision?.slice(0, 8) ?? "未上报"}`}
+                    </small>
+                  </td>
+                  <td>
+                    {section === "proxies" ? (
+                      <span className="chip">
+                        {r.data.provider === "xiequ"
+                          ? "携趣 · 短效"
+                          : "固定代理"}
+                      </span>
+                    ) : (
+                      <Status r={r} />
+                    )}
+                  </td>
+                  {section === "subscriptions" && (
+                    <td>
+                      <UsageCompact summary={r.data.usage_summary} />
+                    </td>
+                  )}
+                  <td>
+                    {section === "subscriptions" ? (
+                      r.data.proxy_id ? (
                         <ResourceLink
-                          r={resources.find((r) => r.id === t.bundle_id)}
+                          r={resources.find((p) => p.id === r.data.proxy_id)}
                         />
-                      </td>
-                      <td>{t.device_id ? "设备专用" : "客户端订阅"}</td>
-                      <td>
-                        <button
-                          className="danger-text"
-                          disabled={busy}
-                          onClick={() => setRevoke(t.id)}
-                        >
-                          撤销
-                        </button>
-                      </td>
-                    </tr>
-                  ))
-                : rows.map((r) => (
-                    <tr key={r.id}>
-                      <td>
-                        <Link className="row-title" to={resourcePath(r)}>
-                          <span className="small-resource-icon">
-                            <Icon name={meta(section).icon} />
-                          </span>
-                          {r.data.name}
-                        </Link>
-                        <small className="row-subtitle">
-                          {section === "subscriptions"
-                            ? host(r.data.url)
-                            : section === "profiles"
-                              ? r.data.store
-                                ? `商店组件 · v${r.data._package?.version ?? "—"} · 手动锁定`
-                                : `独立配置 · v${r.version}`
-                              : section === "proxies"
-                                ? r.data.provider === "xiequ"
-                                  ? "每次刷新即时提取"
-                                  : host(r.data.endpoint ?? r.data.url)
-                                : `配置版本 ${r.data.reported?.revision?.slice(0, 8) ?? "未上报"}`}
-                        </small>
-                      </td>
-                      <td>
-                        {section === "proxies" ? (
-                          <span className="chip">
-                            {r.data.provider === "xiequ"
-                              ? "携趣 · 短效"
-                              : "固定代理"}
-                          </span>
-                        ) : (
-                          <Status r={r} />
-                        )}
-                      </td>
-                      {section === "subscriptions" && (
-                        <td>
-                          <UsageCompact summary={r.data.usage_summary} />
-                        </td>
-                      )}
-                      <td>
-                        {section === "subscriptions" ? (
-                          r.data.proxy_id ? (
-                            <ResourceLink
-                              r={resources.find(
-                                (p) => p.id === r.data.proxy_id,
-                              )}
-                            />
-                          ) : (
-                            "直连"
-                          )
-                        ) : section === "profiles" ? (
-                          `${refCount(r.id)} 个身份引用`
-                        ) : section === "proxies" ? (
-                          `${resources.filter((p) => p.data.proxy_id === r.id).length} 个订阅源`
-                        ) : (
-                          <ResourceLink
-                            r={resources.find((p) => p.id === r.data.bundle_id)}
-                          />
-                        )}
-                      </td>
-                      <td>
-                        {section === "subscriptions" ? (
-                          <>
-                            {displayTime(r.data.last_fetch)}
-                            <small>{interval(r)}</small>
-                          </>
-                        ) : section === "profiles" ? (
-                          `${(r.data.content ?? "").split("\n").length} 行 YAML`
-                        ) : section === "proxies" ? (
-                          (r.data.whitelist_ip ?? "—")
-                        ) : (
-                          displayTime(r.data.reported?.seen_at)
-                        )}
-                      </td>
-                      <td>
-                        <Link
-                          className="row-action"
-                          aria-label={`查看 ${r.data.name}`}
-                          to={resourcePath(r)}
-                        >
-                          <Icon name="arrow" />
-                        </Link>
-                      </td>
-                    </tr>
-                  ))}
+                      ) : (
+                        "直连"
+                      )
+                    ) : section === "profiles" ? (
+                      `${refCount(r.id)} 个身份引用`
+                    ) : section === "proxies" ? (
+                      `${resources.filter((p) => p.data.proxy_id === r.id).length} 个订阅源`
+                    ) : (
+                      <ResourceLink
+                        r={resources.find((p) => p.id === r.data.bundle_id)}
+                      />
+                    )}
+                  </td>
+                  <td>
+                    {section === "subscriptions" ? (
+                      <>
+                        {displayTime(r.data.last_fetch)}
+                        <small>{interval(r)}</small>
+                      </>
+                    ) : section === "profiles" ? (
+                      `${(r.data.content ?? "").split("\n").length} 行 YAML`
+                    ) : section === "proxies" ? (
+                      (r.data.whitelist_ip ?? "—")
+                    ) : (
+                      displayTime(r.data.reported?.seen_at)
+                    )}
+                  </td>
+                  <td>
+                    <Link
+                      className="row-action"
+                      aria-label={`查看 ${r.data.name}`}
+                      to={resourcePath(r)}
+                    >
+                      <Icon name="arrow" />
+                    </Link>
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
@@ -402,16 +368,6 @@ export function CollectionPage({ section }: { section: Section }) {
           <Icon name="code" size={15} />
           一个 Profile 可以被多个身份复用；修改后，所有关联身份会自动重新生成。
         </p>
-      )}
-      {revoke && (
-        <Confirm
-          title="撤销访问凭据？"
-          text="使用此凭据的客户端将无法继续获取配置。其他凭据不受影响。"
-          close={() => setRevoke(null)}
-          action={() =>
-            run(() => api(`/tokens/${revoke}`, "DELETE"), "访问凭据已撤销。")
-          }
-        />
       )}
     </>
   );
@@ -468,7 +424,6 @@ const outputFormats = [
   { value: "shadowrocket-nodes", label: "Shadowrocket 节点" },
 ];
 function Distribution({ r }: { r: Resource }) {
-  const { issue, busy } = useWorkspace();
   const [format, setFormat] = useState("router"),
     [reveal, setReveal] = useState(false);
   const url = r.data.subscription_url
@@ -513,22 +468,155 @@ function Distribution({ r }: { r: Resource }) {
           </div>
         </>
       ) : (
-        <p className="muted">身份保存后将生成订阅地址。</p>
+        <p className="muted">当前没有订阅地址，请在「更多」中重新生成。</p>
       )}
       <div className="distribution-note">
         <Icon name="shield" size={15} />
         <span>订阅地址包含访问凭据，请勿公开分享。</span>
       </div>
-      <button
-        className="full-width"
-        disabled={busy}
-        onClick={() => {
-          void issue(r.id);
-        }}
-      >
-        生成独立客户端凭据
-      </button>
+      <Link className="text-link" to={`${resourcePath(r)}?tab=more`}>
+        更多订阅管理 <Icon name="arrow" size={14} />
+      </Link>
     </section>
+  );
+}
+type HistoricalLink = { id: string; label: string; created_at: number };
+function SubscriptionManagement({ r }: { r: Resource }) {
+  const { busy, run } = useWorkspace();
+  const [reset, setReset] = useState<number | null>(null);
+  const [revoke, setRevoke] = useState<HistoricalLink | null>(null);
+  const [refresh, setRefresh] = useState(0);
+  const [result, setResult] = useState<{
+    key: string;
+    links?: HistoricalLink[];
+    error?: string;
+  } | null>(null);
+  const key = `${r.id}:${r.version}:${refresh}`;
+  useEffect(() => {
+    let active = true;
+    void api<HistoricalLink[]>(`/bundles/${r.id}/subscription-links`)
+      .then((links) => {
+        if (active) setResult({ key, links });
+      })
+      .catch((e) => {
+        if (active) setResult({ key, error: e.message });
+      });
+    return () => {
+      active = false;
+    };
+  }, [key, r.id]);
+  const current = result?.key === key ? result : null;
+  return (
+    <div className="settings-stack">
+      <Panel
+        title="订阅链接"
+        description="一个身份，一个稳定地址。多个客户端可以共用，配置更新不会改变地址。"
+      >
+        <PanelBody>
+          <p className="muted">
+            怀疑链接泄露时可以重置。只有当前默认链接失效；历史链接和已绑定设备不受影响。
+          </p>
+          <div className="distribution-actions">
+            {r.data.subscription_url && (
+              <Copy value={r.data.subscription_url} label="复制当前链接" />
+            )}
+            <button
+              className="danger"
+              disabled={busy}
+              onClick={() => setReset(r.version)}
+            >
+              {r.data.subscription_url ? "重置订阅链接" : "重新生成订阅链接"}
+            </button>
+          </div>
+        </PanelBody>
+      </Panel>
+      <Panel
+        title="历史订阅链接"
+        description="此前生成的额外链接继续有效，不会自动清理。仅在确认不再使用或已经泄露时撤销。"
+      >
+        <PanelBody>
+          {current?.error ? (
+            <p className="inline-error" role="alert">
+              {current.error}{" "}
+              <button onClick={() => setRefresh((n) => n + 1)}>重试</button>
+            </p>
+          ) : !current?.links ? (
+            <p className="muted" role="status">
+              正在加载历史链接…
+            </p>
+          ) : current.links.length === 0 ? (
+            <p className="muted">没有历史订阅链接。</p>
+          ) : (
+            <div className="reference-list">
+              {current.links.map((link) => (
+                <div key={link.id}>
+                  <div>
+                    <strong>
+                      {link.label === "客户端订阅" ||
+                      link.label === "Identity subscription"
+                        ? "历史订阅链接"
+                        : link.label}
+                    </strong>
+                    <p className="muted">
+                      创建于 {displayTime(link.created_at)}
+                    </p>
+                    <small className="muted">
+                      标识 {link.id.slice(0, 16)} · 非订阅密钥
+                    </small>
+                  </div>
+                  <button
+                    className="danger-text"
+                    disabled={busy}
+                    onClick={() => setRevoke(link)}
+                  >
+                    撤销
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          <p className="muted">
+            系统不保存这些额外链接的可恢复明文，无法重新复制。名称相同不代表同一个链接，请勿批量撤销。
+          </p>
+        </PanelBody>
+      </Panel>
+      {reset !== null && (
+        <Confirm
+          title="重置订阅链接？"
+          text="当前默认链接将立即失效，使用它的所有客户端都需要重新导入新地址。历史订阅链接和已绑定设备不受影响。"
+          close={() => setReset(null)}
+          action={async () => {
+            const updated = await run(
+              () =>
+                api<Resource>(
+                  `/bundles/${r.id}/subscription-links/reset`,
+                  "POST",
+                  { version: reset },
+                ),
+              "新订阅链接已生成，请复制并重新导入客户端。",
+            );
+            if (updated) setRefresh((n) => n + 1);
+          }}
+        />
+      )}
+      {revoke && (
+        <Confirm
+          title="撤销这条历史链接？"
+          text={`标识 ${revoke.id.slice(0, 16)}。使用此链接的客户端将无法继续更新配置；当前默认链接、其他历史链接和设备不受影响。此操作不可撤销。`}
+          close={() => setRevoke(null)}
+          action={async () => {
+            const ok = await run(async () => {
+              await api(
+                `/bundles/${r.id}/subscription-links/${revoke.id}`,
+                "DELETE",
+              );
+              return true;
+            }, "历史订阅链接已撤销。");
+            if (ok) setRefresh((n) => n + 1);
+          }}
+        />
+      )}
+    </div>
   );
 }
 function Preview({ r, source = false }: { r: Resource; source?: boolean }) {
@@ -816,6 +904,7 @@ export function DetailPage({ section }: { section: Section }) {
         { id: "usage", label: "套餐用量" },
         { id: "history", label: "发布历史" },
         { id: "settings", label: "设置" },
+        { id: "more", label: "更多" },
       ]
     : [
         { id: "overview", label: section === "profiles" ? "配置内容" : "概览" },
@@ -1115,6 +1204,9 @@ export function DetailPage({ section }: { section: Section }) {
           </aside>
         </div>
       )}
+      {tab === "more" && isBundle && (
+        <SubscriptionManagement key={r.id} r={r} />
+      )}
       {tab === "settings" && (
         <div className="settings-stack">
           <section className="panel">
@@ -1132,23 +1224,35 @@ export function DetailPage({ section }: { section: Section }) {
           </section>
           <section className="panel danger-zone">
             <div>
-              <h2>删除{meta(section).name}</h2>
-              <p>删除不可撤销。被其他资源引用时，请先解除关联。</p>
+              <h2>
+                {r.kind === "device" ? "解绑设备" : `删除${meta(section).name}`}
+              </h2>
+              <p>
+                {r.kind === "device"
+                  ? "解绑会移除设备记录并撤销云端授权；不停止本地 Mihomo，设备会保留最后有效配置。重新连接需要再次授权。"
+                  : "删除不可撤销。被其他资源引用时，请先解除关联。"}
+              </p>
             </div>
             <button
               className="danger"
               disabled={busy}
               onClick={() => setRemove(true)}
             >
-              删除
+              {r.kind === "device" ? "解绑" : "删除"}
             </button>
           </section>
         </div>
       )}
       {remove && (
         <Confirm
-          title={`删除「${r.data.name}」？`}
-          text="此操作不可撤销。身份删除后，使用该身份的订阅链接将失效。"
+          title={`${r.kind === "device" ? "解绑" : "删除"}「${r.data.name}」？`}
+          text={
+            r.kind === "device"
+              ? "设备将失去云端同步与远程控制授权，但本地 Mihomo 不会因此停止。身份订阅链接和其他设备不受影响。"
+              : isBundle
+                ? "此操作不可撤销。身份删除后，使用该身份的订阅链接将失效。"
+                : "此操作不可撤销。被其他资源引用时，请先解除关联。"
+          }
           close={() => setRemove(false)}
           action={async () => {
             const result = await run(async () => {

@@ -1110,6 +1110,225 @@ async fn cloud_end_to_end() {
             .iter()
             .any(|n| p["id"] == n["id"])
     }));
+    // Primary rotation never revokes historical links or device authorization.
+    let link_profile = request(&client,&origin,&alice,"POST","/resources",json!({"kind":"profile","data":{"name":"Lifecycle base","type":"overlay","content":"rules: ['MATCH,DIRECT']"}}),200).await;
+    let identity = request(
+        &client,
+        &origin,
+        &alice,
+        "POST",
+        "/resources",
+        json!({"kind":"bundle","data":{"name":"Link lifecycle","profiles":[{"profile_id":link_profile["id"],"enabled":true}]}}),
+        200,
+    )
+    .await;
+    let iid = identity["id"].as_str().unwrap();
+    let old_url = identity["data"]["subscription_url"].as_str().unwrap();
+    let old_hash = camofy::digest(old_url.rsplit('/').next().unwrap());
+    let path = format!("/bundles/{iid}/subscription-links");
+    let historical = request(
+        &client,
+        &origin,
+        &alice,
+        "POST",
+        "/tokens",
+        json!({"bundle_id":iid,"label":"legacy"}),
+        200,
+    )
+    .await;
+    let history_hash = camofy::digest(historical["token"].as_str().unwrap());
+    let history_url = historical["subscription_base"].as_str().unwrap();
+    let dev = request(
+        &client,
+        &origin,
+        &alice,
+        "POST",
+        "/resources",
+        json!({"kind":"device","data":{"name":"Lifecycle device","bundle_id":iid}}),
+        200,
+    )
+    .await;
+    let dev_id = dev["id"].as_str().unwrap();
+    let dev_token = request(
+        &client,
+        &origin,
+        &alice,
+        "POST",
+        "/tokens",
+        json!({"bundle_id":iid,"device_id":dev_id,"label":"device"}),
+        200,
+    )
+    .await;
+    let dev_secret = dev_token["token"].as_str().unwrap();
+    let other = request(
+        &client,
+        &origin,
+        &alice,
+        "POST",
+        "/resources",
+        json!({"kind":"bundle","data":{"name":"Unrelated identity","profiles":[{"profile_id":link_profile["id"],"enabled":true}]}}),
+        200,
+    )
+    .await;
+    let list = request(&client, &origin, &alice, "GET", &path, json!(null), 200).await;
+    assert_eq!(list.as_array().unwrap().len(), 1);
+    assert_eq!(list[0]["id"], history_hash);
+    assert!(list[0]["created_at"].is_i64());
+    request(&client, &origin, &bob, "GET", &path, json!(null), 404).await;
+    request(
+        &client,
+        &origin,
+        &bob,
+        "POST",
+        &format!("{path}/reset"),
+        json!({"version":identity["version"]}),
+        404,
+    )
+    .await;
+    request(
+        &client,
+        &origin,
+        &bob,
+        "DELETE",
+        &format!("{path}/{history_hash}"),
+        json!(null),
+        404,
+    )
+    .await;
+    request(
+        &client,
+        &origin,
+        &alice,
+        "DELETE",
+        &format!("{path}/{old_hash}"),
+        json!(null),
+        409,
+    )
+    .await;
+    request(
+        &client,
+        &origin,
+        &alice,
+        "DELETE",
+        &format!("{path}/{}", camofy::digest(dev_secret)),
+        json!(null),
+        404,
+    )
+    .await;
+    assert_eq!(
+        client
+            .post(format!("{origin}/api{path}/reset"))
+            .header("cookie", &alice)
+            .json(&json!({"version":identity["version"]}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        403
+    );
+    let reset_path = format!("{path}/reset");
+    let (first, second) = tokio::join!(
+        client
+            .post(format!("{origin}/api{reset_path}"))
+            .header("cookie", &alice)
+            .header("origin", &origin)
+            .json(&json!({"version":identity["version"]}))
+            .send(),
+        client
+            .post(format!("{origin}/api{reset_path}"))
+            .header("cookie", &alice)
+            .header("origin", &origin)
+            .json(&json!({"version":identity["version"]}))
+            .send()
+    );
+    let (first, second) = (first.unwrap(), second.unwrap());
+    let rotated: Value = if first.status() == 200 {
+        assert_eq!(second.status(), 409);
+        first.json().await.unwrap()
+    } else {
+        assert_eq!(first.status(), 409);
+        assert_eq!(second.status(), 200);
+        second.json().await.unwrap()
+    };
+    assert_eq!(
+        rotated["data"]["published_revision"],
+        identity["data"]["published_revision"]
+    );
+    let new_url = rotated["data"]["subscription_url"].as_str().unwrap();
+    assert_ne!(new_url, old_url);
+    for url in [old_url.to_string(), format!("{old_url}/clash")] {
+        assert_eq!(client.get(url).send().await.unwrap().status(), 401);
+    }
+    for url in [
+        new_url,
+        history_url,
+        other["data"]["subscription_url"].as_str().unwrap(),
+    ] {
+        assert_eq!(client.get(url).send().await.unwrap().status(), 200);
+    }
+    assert_eq!(
+        client
+            .get(format!("{origin}/api/sync/desired"))
+            .bearer_auth(dev_secret)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    request(
+        &client,
+        &origin,
+        &alice,
+        "DELETE",
+        &format!(
+            "/bundles/{}/subscription-links/{history_hash}",
+            other["id"].as_str().unwrap()
+        ),
+        json!(null),
+        404,
+    )
+    .await;
+    request(
+        &client,
+        &origin,
+        &alice,
+        "DELETE",
+        &format!("{path}/{history_hash}"),
+        json!(null),
+        204,
+    )
+    .await;
+    assert_eq!(client.get(history_url).send().await.unwrap().status(), 401);
+    assert_eq!(client.get(new_url).send().await.unwrap().status(), 200);
+    request(
+        &client,
+        &origin,
+        &alice,
+        "DELETE",
+        &format!("/resources/{dev_id}"),
+        json!(null),
+        204,
+    )
+    .await;
+    assert_eq!(
+        client
+            .get(format!("{origin}/api/sync/desired"))
+            .bearer_auth(dev_secret)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    assert_eq!(client.get(new_url).send().await.unwrap().status(), 200);
+    assert!(
+        request(&client, &origin, &alice, "GET", &path, json!(null), 200)
+            .await
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
     server.abort();
     proxy.abort();
     sqlx::query("DELETE FROM users WHERE id=ANY($1)")

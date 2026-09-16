@@ -78,18 +78,6 @@ export type UsageSummary = {
   updated_at: number | null;
   pools: UsagePool[];
 };
-export type Token = {
-  id: string;
-  label: string;
-  bundle_id: string;
-  device_id?: string;
-};
-export type Issued = {
-  token: string;
-  cloud_url: string;
-  subscription_base: string;
-  device_id?: string;
-};
 export type User = { email: string; nickname?: string };
 export const formats = ["clash", "shadowrocket", "shadowrocket-nodes"];
 export const labels: Record<string, string> = {

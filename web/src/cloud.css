@@ -973,6 +973,21 @@ p {
   display: grid;
   gap: 20px;
 }
+.panel-body > .reference-list {
+  padding: 0;
+}
+.panel-body > .reference-list > div {
+  padding: 16px 0;
+  gap: 16px;
+}
+.reference-list > div > button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.reference-list > div > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .field-action-row {
   display: flex;
   align-items: end;
