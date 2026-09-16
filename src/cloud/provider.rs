@@ -43,7 +43,7 @@ async fn egress() -> Result<String> {
 }
 
 pub async fn preview(State(app): State<App>, h: HeaderMap) -> Result<Json<Value>, Error> {
-    let user = auth::user(&app, &h, true).await?;
+    let user = auth::admin(&app, &h, true).await?;
     auth::rate(&app, format!("egress:{user}"), 10, 60).await?;
     let ip = egress().await.map_err(|e| Error::bad(e.to_string()))?;
     let expires = crate::now() + 300;

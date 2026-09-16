@@ -4,8 +4,8 @@
 向路由器 Agent、Clash Verge Rev 和 Shadowrocket 分发生成的配置。
 
 - 多个 Clash YAML 订阅与独立 Profile，按身份内的顺序和启用状态组合。
-- 多个拉取代理；每条订阅选择 HTTP / HTTPS / SOCKS5 出口。
-- 手动和定时刷新共用代理路径，失败保留最后有效配置。
+- 管理员维护平台代理池，全局选择 HTTP / HTTPS / SOCKS5 订阅出口。
+- 首次、手动和定时刷新共用全局代理；失败保留最后有效配置，禁止回退直连。
 - 多设备绑定、版本历史、发布回滚、独立订阅令牌与撤销。
 - WebSocket 通知 + HTTPS 拉取；Agent 五分钟轮询兜底、离线恢复。
 - 云端不运行 Mihomo，不接收客户端日志；测速由受管设备执行。
@@ -27,10 +27,16 @@ docker compose up -d --build
 `https://config.example.com`。反向代理需支持 WebSocket。
 自托管实例不会连接其他 Camofy 云平台。
 
+注册账号始终为普通用户。自托管管理员需由数据库运维显式授予：
+`UPDATE users SET role='admin' WHERE id='<已核对的账号 UUID>';`。
+在管理员“系统管理 → 订阅出口”创建并选定代理后，订阅才能刷新；
+未配置出口时暂停拉取，不使用服务器直连。角色与迁移说明见
+[账号角色与全局出口](docs/admin-egress-proposal.md)。
+
 ## 使用流程
 
-1. 在“拉取代理”创建可选出口。
-2. 在“订阅源”添加 Clash YAML 订阅，选择代理与刷新间隔。
+1. 管理员在“系统管理 → 订阅出口”创建代理并设置全局生效出口。
+2. 用户在“订阅源”添加 Clash YAML 订阅及刷新间隔，无需选择代理。
 3. 创建功能 profiles，例如 [工作节点示例](examples/work-profile.yaml)。
 4. 新建“身份”，关联任意订阅/独立 Profile，在关联上启用、禁用和排序。
 5. 两条下发渠道：第三方客户端使用身份订阅 URL；路由器打开本地绑定页，通过云端登录授权绑定设备，云端分配身份并自动下发，用户无需配置订阅 URL。
