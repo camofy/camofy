@@ -2,6 +2,7 @@ mod admin;
 mod api;
 mod auth;
 mod catalog;
+mod control;
 mod downloads;
 mod history;
 mod oauth;
@@ -101,6 +102,14 @@ pub fn now() -> u64 {
 
 pub fn router(app: App) -> Router {
     Router::new()
+        .route("/api/resources/:id/proxies", get(control::view))
+        .route(
+            "/api/resources/:id/selections",
+            axum::routing::put(control::select),
+        )
+        .route("/api/devices/:id/rpc", post(control::enqueue))
+        .route("/api/sync/control", post(control::agent_report))
+        .route("/api/sync/overrides", post(control::agent_overrides))
         .merge(downloads::routes(&app.origin))
         .route(
             "/api/health",
@@ -279,5 +288,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod control_tests;
 #[cfg(test)]
 mod tests;

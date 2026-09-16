@@ -30,7 +30,7 @@
         background: #fff;
         border: 1px solid #dce5d3;
         border-radius: 18px;
-        max-width: 480px;
+        max-width: 960px;
         width: 100%;
         padding: 38px;
         box-shadow: 0 18px 80px #25412508;
@@ -168,6 +168,16 @@
       #core-error {
         color: #a75e42;
       }
+      .proxy-grid {display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px;margin:16px 0}
+      .proxy-group {border:1px solid #dce5d3;border-radius:12px;padding:20px;margin:20px 0}
+      .proxy-group h3 {margin:0;overflow-wrap:anywhere}
+      .proxy-node {display:flex;border:1px solid #dce5d3;border-radius:8px;overflow:hidden;min-width:0}
+      .proxy-node.selected {border-color:#287654;background:#eff6ec}
+      .proxy-node button {margin:0;background:transparent;color:#244235;text-align:left;font-weight:500;overflow-wrap:anywhere;padding:12px}
+      .proxy-node .delay {width:auto;font-size:11px;white-space:nowrap}
+      .proxy-group .reset {width:auto;margin:10px 0;padding:8px 12px;font-size:12px}
+      button:focus-visible,a:focus-visible {outline:3px solid #80b09a;outline-offset:3px}
+      #proxy-feedback {overflow-wrap:anywhere}
       @media (max-width: 500px) {
         body {
           padding: 17px;
@@ -224,6 +234,18 @@
       </div>
       <button id="retry" class="secondary" hidden>重新开始</button
       ><a id="manage" class="button" hidden>打开云端工作区</a>
+      <section id="unlock" hidden>
+        <h2>解锁本地控制台</h2>
+        <p>管理密钥保存在 Agent 数据目录的 local-admin-key 文件中，可通过 SSH 读取。此密钥只用于本地应急管理，无需云端连接。</p>
+        <form id="unlock-form"><label>本地管理密钥<input id="admin-key" type="password" required autocomplete="current-password"/></label><button>解锁</button></form>
+        <p id="unlock-error" role="alert"></p>
+      </section>
+      <section id="proxy-panel" hidden>
+        <h2>代理分组</h2><p>此处仅覆盖当前设备，离线也可切换。恢复跟随身份后使用共享选择；切换不强制断开已有连接。</p>
+        <label>搜索分组或节点<input id="proxy-search" type="search" placeholder="输入名称筛选"/></label>
+        <p id="proxy-feedback" role="status"></p>
+        <div id="proxy-groups"></div>
+      </section>
       <p class="note">
         设备只接收所选身份的配置<br />授权可随时在云端的访问凭据中撤销
       </p>
