@@ -19,6 +19,7 @@ use uuid::Uuid;
 pub struct Credentials {
     email: String,
     password: String,
+    nickname: Option<String>,
 }
 pub fn bearer(headers: &HeaderMap) -> Option<&str> {
     headers
@@ -106,6 +107,14 @@ async fn credentials(app: App, c: Credentials, register: bool) -> Result<Respons
         .acquire_owned()
         .await
         .map_err(|_| Error::bad("server shutting down"))?;
+    let nickname = c
+        .nickname
+        .unwrap_or_else(|| "新用户".into())
+        .trim()
+        .to_owned();
+    if register {
+        validate_nickname(&nickname)?;
+    }
     let id = if register {
         let hash = tokio::task::spawn_blocking(move || {
             let _permit = permit;
@@ -116,12 +125,14 @@ async fn credentials(app: App, c: Credentials, register: bool) -> Result<Respons
         })
         .await??;
         let id = Uuid::new_v4();
-        let result = sqlx::query("INSERT INTO users(id,email,password) VALUES($1,$2,$3)")
-            .bind(id)
-            .bind(&email)
-            .bind(hash)
-            .execute(&app.db)
-            .await;
+        let result =
+            sqlx::query("INSERT INTO users(id,email,password,nickname) VALUES($1,$2,$3,$4)")
+                .bind(id)
+                .bind(&email)
+                .bind(hash)
+                .bind(&nickname)
+                .execute(&app.db)
+                .await;
         if let Err(sqlx::Error::Database(e)) = &result
             && e.is_unique_violation()
         {
@@ -156,7 +167,12 @@ async fn credentials(app: App, c: Credentials, register: bool) -> Result<Respons
     .bind(id)
     .execute(&app.db)
     .await?;
-    let mut response = Json(json!({"user_id":id,"email":email})).into_response();
+    let nickname: String = sqlx::query_scalar("SELECT nickname FROM users WHERE id=$1")
+        .bind(id)
+        .fetch_one(&app.db)
+        .await?;
+    let mut response =
+        Json(json!({"user_id":id,"email":email,"nickname":nickname})).into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
         format!(
@@ -177,7 +193,53 @@ pub async fn me(
         .bind(id)
         .fetch_one(&app.db)
         .await?;
-    Ok(Json(json!({"user_id":id,"email":email})))
+    let nickname: String = sqlx::query_scalar("SELECT nickname FROM users WHERE id=$1")
+        .bind(id)
+        .fetch_one(&app.db)
+        .await?;
+    Ok(Json(
+        json!({"user_id":id,"email":email,"nickname":nickname}),
+    ))
+}
+fn validate_nickname(s: &str) -> Result<(), Error> {
+    if s.is_empty() || s.chars().count() > 40 || s.chars().any(char::is_control) {
+        return Err(Error::bad("昵称需要 1–40 个字符，不能包含控制字符。"));
+    }
+    Ok(())
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AccountEdit {
+    nickname: String,
+}
+pub async fn update_account(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Json(edit): Json<AccountEdit>,
+) -> Result<Json<serde_json::Value>, Error> {
+    let id = user(&app, &headers, true).await?;
+    rate(&app, format!("account:{id}"), 20, 60).await?;
+    let name = edit.nickname.trim();
+    validate_nickname(name)?;
+    let mut tx = app.db.begin().await?;
+    let email: String =
+        sqlx::query_scalar("UPDATE users SET nickname=$2 WHERE id=$1 RETURNING email")
+            .bind(id)
+            .bind(name)
+            .fetch_one(&mut *tx)
+            .await?;
+    sqlx::query("UPDATE catalog_publishers SET display_name=$2 WHERE user_id=$1")
+        .bind(id)
+        .bind(name)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE catalog_packages SET publisher=$2 WHERE owner_id=$1")
+        .bind(id)
+        .bind(name)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(Json(json!({"user_id":id,"email":email,"nickname":name})))
 }
 pub async fn logout(State(app): State<App>, headers: HeaderMap) -> Result<Response, Error> {
     user(&app, &headers, true).await?;

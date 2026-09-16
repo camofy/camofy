@@ -2,11 +2,13 @@ import { useState, useRef, useCallback } from "react";
 import { useBlocker, useBeforeUnload } from "react-router-dom";
 import { api, type Data, type Resource, type User } from "./model";
 import { Modal } from "./ui";
+import { type IdentityPreview } from "./Store";
 
 export function Login({ onLogin }: { onLogin: (u: User) => void }) {
   const [register, setRegister] = useState(false),
     [email, setEmail] = useState(""),
     [password, setPassword] = useState(""),
+    [nickname, setNickname] = useState(""),
     [error, setError] = useState(""),
     [busy, setBusy] = useState(false);
   return (
@@ -29,7 +31,13 @@ export function Login({ onLogin }: { onLogin: (u: User) => void }) {
                 await api<User>(
                   `/auth/${register ? "register" : "login"}`,
                   "POST",
-                  { email, password },
+                  {
+                    email,
+                    password,
+                    ...(register && nickname.trim()
+                      ? { nickname: nickname.trim() }
+                      : {}),
+                  },
                 ),
               );
             } catch (e) {
@@ -49,6 +57,18 @@ export function Login({ onLogin }: { onLogin: (u: User) => void }) {
               onChange={(e) => setEmail(e.target.value)}
             />
           </label>
+          {register && (
+            <label>
+              昵称（可选）
+              <input
+                maxLength={40}
+                value={nickname}
+                onChange={(e) => setNickname(e.target.value)}
+                placeholder="稍后也可在个人资料中修改"
+                autoComplete="nickname"
+              />
+            </label>
+          )}
           <label>
             密码
             <input
@@ -107,6 +127,13 @@ export function Editor({
   const [baseline] = useState(() => JSON.stringify(resource.data));
   const [initialSelections] = useState(selections);
   const saved = useRef(false);
+  const [preview, setPreview] = useState<IdentityPreview | null>(null),
+    [previewData, setPreviewData] = useState("");
+  const managedIdentity =
+    resource.kind === "bundle" &&
+    data.profiles?.some(
+      (b) => b.enabled && all.find((r) => r.id === b.profile_id)?.data.store,
+    );
   const dirty =
     JSON.stringify(data) !== baseline || selections !== initialSelections;
   const blocker = useBlocker(() => dirty && !saved.current);
@@ -154,6 +181,10 @@ export function Editor({
             const next = { ...data };
             if (resource.kind === "bundle")
               next.selections = JSON.parse(selections);
+            if (managedIdentity && previewData !== JSON.stringify(next)) {
+              setError("商店组件需要先预览当前配置，再确认保存。");
+              return;
+            }
             const result = await onSave({ ...original, data: next });
             if (result) {
               saved.current = true;
@@ -350,25 +381,32 @@ export function Editor({
             </p>
           </>
         )}
-        {resource.kind === "profile" && data.type === "overlay" && (
-          <>
-            <label>
-              独立配置 YAML
-              <textarea
-                className="code"
-                rows={16}
-                required
-                value={data.content ?? ""}
-                onChange={(e) => set("content", e.target.value)}
-              />
-            </label>
-            <p className="muted">
-              节点/代理组按名称合并，后者覆盖同名项；规则按顺序拼接；对象深合并，其他数组覆盖。
-              支持 prepend-/append-rules、proxies、proxy-groups；prepend
-              将内容放到已有列表前面。
-            </p>
-          </>
+        {resource.kind === "profile" && data.store && (
+          <p className="store-readonly">
+            商店托管 Profile 只能在此改名。版本变更和独立副本请在详情页操作。
+          </p>
         )}
+        {resource.kind === "profile" &&
+          data.type === "overlay" &&
+          !data.store && (
+            <>
+              <label>
+                独立配置 YAML
+                <textarea
+                  className="code"
+                  rows={16}
+                  required
+                  value={data.content ?? ""}
+                  onChange={(e) => set("content", e.target.value)}
+                />
+              </label>
+              <p className="muted">
+                节点/代理组按名称合并，后者覆盖同名项；规则按顺序拼接；对象深合并，其他数组覆盖。
+                支持 prepend-/append-rules、proxies、proxy-groups；prepend
+                将内容放到已有列表前面。
+              </p>
+            </>
+          )}
         {resource.kind === "bundle" && (
           <>
             <label>
@@ -391,6 +429,31 @@ export function Editor({
                   />
                   {all.find((r) => r.id === binding.profile_id)?.data.name}
                 </label>
+                {all.find((r) => r.id === binding.profile_id)?.data.store && (
+                  <label className="store-policy">
+                    此身份的策略
+                    <input
+                      placeholder={
+                        all.find((r) => r.id === binding.profile_id)?.data
+                          ._package?.manifest.default_policy ??
+                        "必填：现有策略组名称"
+                      }
+                      value={binding.parameters?.policy ?? ""}
+                      onChange={(e) => {
+                        set(
+                          "profiles",
+                          data.profiles?.map((x, index) =>
+                            index === i
+                              ? { ...x, parameters: { policy: e.target.value } }
+                              : x,
+                          ),
+                        );
+                        setPreview(null);
+                      }}
+                    />
+                    <small>留空采用默认值；不存在的策略不会发布。</small>
+                  </label>
+                )}
                 <button
                   type="button"
                   disabled={i === 0}
@@ -459,6 +522,59 @@ export function Editor({
               例如 {`{"服务节点":"我的节点"}`}。Agent
               会立即应用；第三方客户端将收到首选节点顺序，已有本地选择可能优先。
             </p>
+            {managedIdentity && (
+              <section className="store-draft">
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => {
+                    setError("");
+                    setPreview(null);
+                    try {
+                      const next = {
+                        ...data,
+                        selections: JSON.parse(selections),
+                      };
+                      void api<IdentityPreview>(
+                        "/store/identity-preview",
+                        "POST",
+                        { data: next },
+                      )
+                        .then((p) => {
+                          setPreview(p);
+                          setPreviewData(JSON.stringify(next));
+                        })
+                        .catch((e) => setError(e.message));
+                    } catch {
+                      setError("节点选择 JSON 无效");
+                    }
+                  }}
+                >
+                  预览合并与最终规则
+                </button>
+                {preview && (
+                  <>
+                    <h3>预览完成 · 保存后才发布</h3>
+                    {preview.warnings.map((w, i) => (
+                      <p className="inline-error" key={i}>
+                        {w}
+                      </p>
+                    ))}
+                    {Object.entries(preview.artifacts)
+                      .filter(([, a]) => a.error)
+                      .map(([f, a]) => (
+                        <p className="inline-error" key={f}>
+                          {f}：{a.error}
+                        </p>
+                      ))}
+                    <details>
+                      <summary>最终 YAML（包含私有节点，请勿公开）</summary>
+                      <pre>{preview.artifacts.router.content}</pre>
+                    </details>
+                  </>
+                )}
+              </section>
+            )}
           </>
         )}
         {resource.kind === "device" && (

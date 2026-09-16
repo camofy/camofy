@@ -8,6 +8,7 @@ import {
 import { api, displayTime, type Resource } from "./model";
 import { useWorkspace } from "./context";
 import { Editor } from "./Forms";
+import { ManagedProfile } from "./Store";
 import {
   CodeBlock,
   Copy,
@@ -702,6 +703,8 @@ function Composition({ r }: { r: Resource }) {
                       <small>
                         {p?.data.type === "source" ? "订阅源" : "配置 Profile"}
                         {p ? ` · v${p.version}` : ""}
+                        {p?.data.store &&
+                          ` · 商店 ${p.data._package?.version} · ${b.parameters?.policy || p.data._package?.manifest.default_policy || "未选择策略"}`}
                       </small>
                     </div>
                     <label className="switch">
@@ -890,7 +893,9 @@ export function DetailPage({ section }: { section: Section }) {
       {tab === "overview" && (
         <div className="detail-columns">
           <div className="detail-main">
-            {section === "profiles" ? (
+            {section === "profiles" && r.data.store ? (
+              <ManagedProfile key={`${r.id}-${r.version}`} resource={r} />
+            ) : section === "profiles" ? (
               <section className="panel preview-panel">
                 <div className="panel-heading">
                   <h2>独立配置</h2>
