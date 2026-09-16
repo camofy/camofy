@@ -1,5 +1,34 @@
 # Router migration and no-TUN verification (2026-09-16)
 
+## GitHub Actions Agent v0.1.2 upgrade
+
+The router was upgraded to the ARMv7 v0.1.2 release built by GitHub Actions
+run `35127578173`, following explicit authorization to keep router changes deployed.
+The shared engine now rejects missing RULE-SET providers before applying a config.
+No local/server cross-build was used. CI run `35127572066` passed; local Agent
+tests also passed, including rejected-config rollback and offline restoration.
+
+Installed binary: 2,724,064 bytes; SHA256:
+`ca35028833d88efa7948935b0588a52d93fd8d1ae55217157af9ba87bb49c50d`.
+The archive checksum was checked before staging, and the installed executable was
+copied back and checked against the GitHub artifact. A full pre-upgrade backup
+was saved outside the repository on the deployment workstation; temporary on-device
+recovery files are under `/tmp/camofy-upgrade-v012` (not persistent across reboot).
+
+Device binding and persisted control intent were byte-identical after deployment.
+Mihomo remained running after restart, TUN remained disabled, and routes, policy
+routes and counter-normalized firewall rules were unchanged. The Agent received a
+new cloud revision successfully. This upgrade did not modify Mihomo or cloud services.
+
+The initial byte-for-byte runtime YAML gate was too strict: the Agent generates a
+new loopback controller secret on startup, and a cloud refresh can reorder mapping
+keys. Its recovery helper could not confirm a safe stop and correctly refused to
+overwrite the executable. Manual verification confirmed the new release remained
+healthy; parsed YAML was semantically identical after excluding the generated
+top-level controller secret. Automatic recovery of this helper is not claimed as
+validated. Future upgrade gates must compare semantic YAML and independently verify
+process shutdown before restoring binaries.
+
 ## Current device-control upgrade (supersedes the URL/headless notes below)
 
 Explicitly authorized by the user. Cloud image was built locally, pushed to
