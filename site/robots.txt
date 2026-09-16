@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /api/
+Disallow: /sub/
+Sitemap: https://camofy.app/sitemap.xml
