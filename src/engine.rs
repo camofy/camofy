@@ -212,6 +212,31 @@ pub fn compose_profiles(
     Ok(v)
 }
 
+/// Export defaults are preferences, not runtime state. Stale selections must not
+/// prevent a valid upstream configuration from publishing.
+pub fn selection_defaults(v: &mut Value, selections: &BTreeMap<String, String>) {
+    if let Some(groups) = v.get_mut("proxy-groups").and_then(Value::as_sequence_mut) {
+        for group in groups {
+            if group["type"].as_str() != Some("select") {
+                continue;
+            }
+            let Some(node) = group["name"].as_str().and_then(|name| selections.get(name)) else {
+                continue;
+            };
+            group
+                .as_mapping_mut()
+                .unwrap()
+                .insert("default-selected".into(), node.clone().into());
+            if let Some(nodes) = group.get_mut("proxies").and_then(Value::as_sequence_mut)
+                && let Some(index) = nodes.iter().position(|n| n.as_str() == Some(node))
+            {
+                let selected = nodes.remove(index);
+                nodes.insert(0, selected);
+            }
+        }
+    }
+}
+
 fn select(v: &mut Value, selections: &BTreeMap<String, String>) -> Result<()> {
     validate(v)?;
     if let Some(groups) = v.get_mut("proxy-groups").and_then(Value::as_sequence_mut) {
