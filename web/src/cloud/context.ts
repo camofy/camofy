@@ -1,8 +1,7 @@
 import { createContext, useContext } from "react";
-import type { Resource, Token, Issued, User } from "./model";
+import type { Resource, User } from "./model";
 export type Workspace = {
   resources: Resource[];
-  tokens: Token[];
   user: User;
   loading: boolean;
   busy: boolean;
@@ -12,7 +11,6 @@ export type Workspace = {
   load: () => Promise<void>;
   run: <T>(fn: () => Promise<T>, message?: string) => Promise<T | undefined>;
   save: (r: Resource) => Promise<Resource | undefined>;
-  issue: (bundle: string, device?: string) => Promise<Issued | undefined>;
 };
 export const WorkspaceContext = createContext<Workspace | null>(null);
 export function useWorkspace() {
