@@ -578,6 +578,10 @@ async fn upgrade_inner(
             .filter_map(|b| b["id"].as_str()?.parse().ok())
             .collect::<Vec<Uuid>>();
         store::rebuild_selected(&app, &mut tx, user, Some(&ids)).await?;
+        // An unused installation still changed, even if no identity was rebuilt.
+        if ids.is_empty() {
+            store::notify(&mut tx, user).await?;
+        }
         tx.commit().await?;
     }
     Ok(Json(
