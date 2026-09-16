@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback } from "react";
+import brandMark from "../assets/flower.png";
 import { useBlocker, useBeforeUnload } from "react-router-dom";
 import { api, type Data, type Resource, type User } from "./model";
 import { Modal, ConfigPreview, Icon } from "./ui";
@@ -15,11 +16,12 @@ export function Login({ onLogin }: { onLogin: (u: User) => void }) {
     <div className="login">
       <section>
         <span className="brand">
+          <img className="brand-symbol" src={brandMark} alt="" />
           camofy<span>cloud</span>
         </span>
-        <h1>一份配置，连接每一端。</h1>
+        <h1>{register ? "创建你的工作区" : "欢迎回来。"}</h1>
         <p className="muted">
-          管理订阅与功能配置，让你的设备使用一致的网络策略。
+          {register ? "从一份配置开始。" : "登录你的 Camofy 工作区。"}
         </p>
         <form
           onSubmit={async (e) => {
@@ -81,7 +83,7 @@ export function Login({ onLogin }: { onLogin: (u: User) => void }) {
               onChange={(e) => setPassword(e.target.value)}
             />
           </label>
-          <p className="muted">至少 12 个字符。</p>
+          {register && <p className="muted">至少 12 个字符。</p>}
           {error && (
             <p role="alert" className="inline-error">
               {error}
@@ -94,9 +96,10 @@ export function Login({ onLogin }: { onLogin: (u: User) => void }) {
         <button onClick={() => setRegister(!register)}>
           {register ? "已有账号？登录" : "首次使用？注册账号"}
         </button>
-        <p className="footnote">
-          此实例可独立自托管，账号与数据留在当前服务器。
-        </p>
+        <p className="footnote">账号与数据保存在当前实例。</p>
+        <a className="home-link" href={import.meta.env.DEV && import.meta.env.MODE === "design" ? "http://127.0.0.1:18741/" : "https://camofy.app/"}>
+          返回官网 ↗
+        </a>
       </section>
     </div>
   );

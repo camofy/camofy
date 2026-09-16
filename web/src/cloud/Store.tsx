@@ -95,8 +95,8 @@ export function StorePage() {
       <header className="page-heading">
         <div>
           <div className="eyebrow">PROFILE STORE</div>
-          <h1>为你的网络，添加一种能力。</h1>
-          <p>精选规则 · 固定版本 · 自由组合</p>
+          <h1>Profile 商店</h1>
+          <p>发现并安装可复用的配置。</p>
         </div>
         <Link className="button" to="/profiles">
           我的 Profiles <Icon name="arrow" size={16} />
@@ -105,7 +105,7 @@ export function StorePage() {
       <section className="store-intro">
         <Icon name="layers" size={32} />
         <div>
-          <h2>小组件，组成你的网络习惯。</h2>
+          <h2>安装到配置库，按需关联身份。</h2>
           <p>
             安装只添加到你的配置库。选择身份、指定策略并确认预览后，规则才会生效。
           </p>

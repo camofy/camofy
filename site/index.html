@@ -1,96 +1,210 @@
 <!doctype html>
 <html lang="zh-CN">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f6f7f2">
-  <title>Camofy — 一份配置，每一端都懂。</title>
-  <meta name="description" content="Camofy 是开源的网络配置管理平台。组合订阅与 Profile，通过一条订阅链接或绑定设备，把配置同步到电脑、手机和路由器。使用云平台，也可以自行部署。">
-  <link rel="canonical" href="https://camofy.app/">
-  <meta property="og:title" content="Camofy — 一份配置，每一端都懂。">
-  <meta property="og:description" content="把订阅、规则和设备，连接成你的网络配置工作区。开源，也在云端。">
-  <meta property="og:type" content="website">
-  <meta property="og:url" content="https://camofy.app/">
-  <link rel="icon" type="image/svg+xml" href="/site-assets/mark.svg">
-  <link rel="stylesheet" href="/site-assets/site.css">
-  <script src="/site-assets/site.js" defer></script>
-</head>
-<body>
-  <a class="skip" href="#main">跳到主要内容</a>
-  <header class="header wrap">
-    <a href="/" class="brand" aria-label="Camofy 官网"><img src="/site-assets/mark.svg" alt="" width="32" height="32">camofy</a>
-    <nav aria-label="主导航"><a href="#how-it-works">工作原理</a><a href="#everywhere">连接每一端</a><a href="#open-source">开源</a></nav>
-    <a class="button small" href="https://cloud.camofy.app/">进入云平台 <span aria-hidden="true">↗</span></a>
-  </header>
-
-  <main id="main">
-    <section class="hero wrap" aria-labelledby="hero-title">
-      <div class="hero-copy">
-        <div class="eyebrow"><span class="live-dot"></span> 开源的网络配置工作区</div>
-        <h1 id="hero-title">一份配置，<br><span>每一端都懂。</span></h1>
-        <p class="hero-description">把订阅、规则和设备，连在一起。<br>在云端组合你的网络配置，<br class="desktop-break">让电脑、手机和路由器保持一致。</p>
-        <div class="hero-actions"><a class="button" href="https://cloud.camofy.app/">开始使用云平台 <span aria-hidden="true">↗</span></a><a class="text-link" href="https://github.com/camofy/camofy">探索 GitHub <span aria-hidden="true">↗</span></a></div>
-        <p class="quiet hero-note">开源可自部署 <span>·</span> 兼容 Mihomo / Clash 生态</p>
-      </div>
-      <div class="network" aria-label="配置分发示意：订阅源与独立规则组合成身份，再分发到电脑、手机和路由器。">
-        <div class="network-grid"></div>
-        <div class="diagram-heading"><span>YOUR NETWORK, COMPOSED.</span><span class="diagram-tag">配置流示意</span></div>
-        <svg class="wires" viewBox="0 0 600 500" fill="none" aria-hidden="true"><path d="M150 139V207Q150 227 170 227H280M450 139V207Q450 227 430 227H320M300 275V326M105 378V351Q105 331 125 331H475Q495 331 495 351V378M300 331V378"/><path class="wire-active" d="M150 139V207Q150 227 170 227H280M300 275V378"/></svg>
-        <div class="source source-one"><span class="node-icon">↙</span><div><strong>订阅源</strong><small>节点 · 定时更新</small></div><span class="mini-dot"></span></div>
-        <div class="source source-two"><span class="node-icon">≡</span><div><strong>配置 Profile</strong><small>规则 · 自由组合</small></div><span class="mini-dot"></span></div>
-        <div class="identity-node"><span class="identity-symbol" aria-hidden="true">⌘</span><div><span>IDENTITY / 身份</span><strong>我的网络</strong></div><span class="identity-check" aria-hidden="true">✓</span></div>
-        <div class="endpoint laptop"><svg viewBox="0 0 32 32" aria-hidden="true"><rect x="7" y="5" width="18" height="15" rx="2"/><path d="M3 25h26l-4-5H7z"/></svg><strong>电脑</strong><small>Clash Verge Rev</small></div>
-        <div class="endpoint phone"><svg viewBox="0 0 32 32" aria-hidden="true"><rect x="9" y="3" width="14" height="26" rx="3"/><path d="M13 6h6M15 25h2"/></svg><strong>手机</strong><small>Shadowrocket</small></div>
-        <div class="endpoint router"><svg viewBox="0 0 32 32" aria-hidden="true"><rect x="5" y="17" width="22" height="10" rx="2"/><path d="M8 17V6M24 17V6M10 22h1M15 22h1M20 22h2"/></svg><strong>路由器</strong><small>Camofy Agent</small></div>
-        <div class="diagram-foot"><span><i></i> 云端组合，按需分发</span><span>01 — 03</span></div>
-      </div>
-    </section>
-
-    <div class="compatibility wrap"><span>配置统一，使用习惯不变</span><div><strong>Mihomo</strong><strong>Clash Verge Rev</strong><strong>Shadowrocket</strong><strong>Camofy Agent</strong></div></div>
-
-    <section class="section wrap" id="how-it-works" aria-labelledby="compose-title">
-      <div class="section-heading"><div><p class="eyebrow">01 / COMPOSE</p><h2 id="compose-title">不再为每台设备，<br>重复配置一遍。</h2></div><p>订阅是素材，Profile 是模块，身份是组合。<br>把变化留在云端，把可用的配置交给设备。</p></div>
-      <div class="steps">
-        <article><span class="step-number">01</span><h3>收好你的订阅</h3><p>添加 Clash YAML 订阅，按计划刷新节点。订阅拉取与客户端使用相互独立。</p><div class="step-detail"><span>订阅 A</span><span>订阅 B</span><span class="pill-muted">自动刷新 ↻</span></div></article>
-        <article><span class="step-number">02</span><h3>像模块一样组合</h3><p>用独立 Profile 管理规则、节点或参数。在身份里决定启用哪些模块，以及合并顺序。</p><div class="step-detail"><span>自定义节点</span><span>直连规则</span><span>设备参数</span></div></article>
-        <article><span class="step-number">03</span><h3>一次调整，多端同步</h3><p>给客户端一条身份订阅链接，或将路由器绑定到身份。组合变化后，云端重新生成配置。</p><div class="step-detail"><span class="mono">camofy.app/sub/…</span><span class="pill-muted">绑定设备 ↗</span></div></article>
-      </div>
-    </section>
-
-    <section class="showcase" id="everywhere" aria-labelledby="everywhere-title"><div class="wrap showcase-grid">
-      <div class="showcase-copy"><p class="eyebrow">02 / CONNECT</p><h2 id="everywhere-title">不同的设备，<br>同一套想法。</h2><p>保留熟悉的客户端。<br>Camofy 负责配置，不替代你的网络工具。</p>
-        <div class="device-tabs" role="tablist" aria-label="选择设备类型">
-          <button id="tab-desktop" type="button" role="tab" aria-selected="true" aria-controls="device-panel" data-device="desktop">电脑 <span>01</span></button>
-          <button id="tab-mobile" type="button" role="tab" aria-selected="false" aria-controls="device-panel" tabindex="-1" data-device="mobile">手机 <span>02</span></button>
-          <button id="tab-router" type="button" role="tab" aria-selected="false" aria-controls="device-panel" tabindex="-1" data-device="router">路由器 <span>03</span></button>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#ffffff" />
+    <title>Camofy — 一份配置，连接每一端。</title>
+    <meta
+      name="description"
+      content="开源的网络配置管理平台。组合订阅与规则，将配置同步到电脑、手机和路由器。"
+    />
+    <link rel="canonical" href="https://camofy.app/" />
+    <meta property="og:title" content="Camofy — 一份配置，连接每一端。" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://camofy.app/" />
+    <link rel="icon" type="image/png" href="/site-assets/flower.png" />
+    <link rel="stylesheet" href="/site-assets/site.css" />
+    <script src="/site-assets/site.js" defer></script>
+  </head>
+  <body>
+    <a class="skip" href="#main">跳到主要内容</a>
+    <header class="header wrap">
+      <a href="/" class="brand" aria-label="Camofy 官网"
+        ><img
+          src="/site-assets/flower.png"
+          alt=""
+          width="42"
+          height="42"
+        />camofy</a
+      >
+      <nav aria-label="主导航">
+        <a href="#workspace">产品</a><a href="#open-source">开源</a
+        ><a href="https://github.com/camofy/camofy">GitHub ↗</a>
+      </nav>
+      <a class="button small" href="https://cloud.camofy.app/"
+        >进入云平台 <span aria-hidden="true">↗</span></a
+      >
+    </header>
+    <main id="main">
+      <section class="hero wrap" aria-labelledby="hero-title">
+        <p class="eyebrow"><span class="leaf-dot"></span> 开源的网络配置平台</p>
+        <h1 id="hero-title">一份配置。<br />连接你的每一端。</h1>
+        <p class="hero-description">订阅、规则、设备。在一个地方，井井有条。</p>
+        <div class="actions">
+          <a class="button primary" href="https://cloud.camofy.app/"
+            >打开云平台 ↗</a
+          ><a class="button" href="#open-source">自行部署 ↓</a>
         </div>
-      </div>
-      <div class="device-panel" id="device-panel" role="tabpanel" aria-labelledby="tab-desktop" tabindex="0">
-        <div class="panel-top"><span class="window-dots" aria-hidden="true">● ● ●</span><span id="device-label">DESKTOP / 电脑</span><span class="demo-label">流程示意</span></div>
-        <div class="preview-body"><div class="preview-icon" id="device-glyph" aria-hidden="true">⌘</div><h3 id="device-title">在 Clash Verge Rev 中，继续你的习惯。</h3><p id="device-description">复制身份的订阅链接，导入客户端。节点、策略组和规则来自同一份合并配置。</p><div class="subscription-demo"><span id="demo-label">身份订阅链接</span><code id="demo-value">https://camofy.app/sub/…</code><span class="demo-status" id="demo-status">在客户端刷新订阅后生效</span></div><div class="preview-bottom"><span id="device-detail">你的端口、系统代理等设置仍由客户端管理。</span><a id="device-action" href="https://cloud.camofy.app/identities">创建一个身份 <span aria-hidden="true">↗</span></a></div></div>
-      </div>
-    </div></section>
-
-    <section class="section wrap principles" aria-labelledby="principles-title"><div><p class="eyebrow">03 / YOURS</p><h2 id="principles-title">控制权，<br>始终在你手里。</h2></div><div class="principle-list">
-      <article><span>↗</span><div><h3>云端管理，本地运行</h3><p>云平台处理配置。实际代理流量由你的客户端与节点处理，不经过 Camofy 云端转发。</p></div></article>
-      <article><span>↻</span><div><h3>断开连接，也不丢掉配置</h3><p>Agent 在云端暂不可达时继续使用最后有效配置。路由器本地页面保留内核启停与重启控制。</p></div></article>
-      <article><span>⌥</span><div><h3>开放源码，不锁定部署方式</h3><p>可以使用托管云平台，也可以部署自己的服务。规则与模块可查看，配置可以带走。</p></div></article>
-    </div></section>
-
-    <section class="start-section wrap" id="open-source" aria-labelledby="start-title">
-      <div class="start-heading"><p class="eyebrow">LET'S GET CONNECTED</p><h2 id="start-title">选择你的起点。</h2><p>开箱即用，或亲手掌控。</p></div>
-      <div class="start-options"><article class="cloud-start"><span class="option-label">CAMOFY CLOUD</span><h3>把配置交给云端。</h3><p>登录工作区，添加订阅、组合身份，<br>让你的下一台设备也轻松加入。</p><a class="button light" href="https://cloud.camofy.app/">进入云平台 <span aria-hidden="true">↗</span></a><div class="cloud-art" aria-hidden="true"><span></span><span></span><span></span></div></article>
-      <article class="self-start"><span class="option-label">OPEN SOURCE</span><h3>也可以，部署你自己的。</h3><p>服务端支持 Docker Compose 部署。<br>源代码、部署说明与发布记录都在 GitHub。</p><a class="text-link" href="https://github.com/camofy/camofy#readme">查看自部署文档 <span aria-hidden="true">↗</span></a><div class="repo-stamp"><img src="/site-assets/mark.svg" width="24" height="24" alt=""><span>camofy / camofy</span><span>PUBLIC ↗</span></div></article></div>
-      <div class="install" id="install"><div><h3>给路由器安装轻量 Agent</h3><p>适用于 Linux amd64 / ARMv7 的全新安装。已有安装不会被覆盖，Mihomo 初始保持停止。</p></div><div class="command-row"><code id="install-command">curl -fsSL https://camofy.app/install.sh | sh</code><button type="button" id="copy-command" aria-label="复制 Agent 安装命令">复制 <span aria-hidden="true">⧉</span></button></div><p class="install-note">建议先<a href="/install.sh">查看脚本</a>。安装后在设备本地页面授权绑定；自部署用户可通过更多选项填写自己的云端地址。</p><p id="copy-status" class="copy-status" role="status" aria-live="polite"></p></div>
-    </section>
-
-    <section class="section wrap faq" aria-labelledby="faq-title"><div><p class="eyebrow">A FEW ANSWERS</p><h2 id="faq-title">你可能想知道。</h2></div><div class="faq-list">
-      <details><summary>Camofy 提供代理节点吗？<span aria-hidden="true">+</span></summary><p>不提供。Camofy 是配置管理与分发工具，你需要自行准备上游订阅或代理节点，并遵守适用的法律及服务条款。</p></details>
-      <details><summary>“身份”和 Profile 有什么区别？<span aria-hidden="true">+</span></summary><p>Profile 是可复用的配置模块。身份按指定顺序组合多个订阅和配置 Profile，每个关联可以单独启用或禁用。身份提供订阅链接，也可以关联设备。</p></details>
-      <details><summary>更改配置后，设备会立即更新吗？<span aria-hidden="true">+</span></summary><p>云端重新生成身份配置后，绑定的 Agent 通过实时通知获取更新，并在连接失败时以五分钟轮询兜底。Clash Verge Rev、Shadowrocket 等客户端则在刷新订阅后获取新配置，具体频率取决于客户端设置。</p></details>
-      <details><summary>已有订阅链接还能继续使用吗？<span aria-hidden="true">+</span></summary><p>可以。云平台的管理入口是 cloud.camofy.app，订阅、安装脚本和下载地址继续由简短的 camofy.app 提供。</p></details>
-    </div></section>
-  </main>
-  <footer class="wrap footer"><div><a class="brand" href="/" aria-label="Camofy 首页"><img src="/site-assets/mark.svg" width="27" height="27" alt="">camofy</a><p>Compose once. Connect everywhere.</p></div><nav aria-label="页脚导航"><a href="https://cloud.camofy.app/">云平台 ↗</a><a href="https://github.com/camofy/camofy">GitHub ↗</a><a href="https://github.com/camofy/camofy/releases">版本发布 ↗</a></nav><span class="footer-note">开源 · 自由组合 · 多端同步</span></footer>
-</body>
+        <p class="hero-note">
+          Clash Verge Rev <span>·</span> Shadowrocket <span>·</span> Mihomo
+        </p>
+      </section>
+      <section id="workspace" class="product wrap" aria-label="配置工作区示意">
+        <div class="product-caption">
+          <span>一个工作区，连接所有配置。</span><span>CAMOFY / WORKSPACE</span>
+        </div>
+        <div class="product-window">
+          <div class="window-bar">
+            <span class="window-dots" aria-hidden="true"
+              ><i></i><i></i><i></i></span
+            ><span>个人工作区 <b>/</b> 日常网络</span
+            ><span class="demo-label">产品示意</span>
+          </div>
+          <div class="product-body">
+            <div class="source-stack">
+              <p class="column-caption">01 / 自由组合</p>
+              <div class="mini-row">
+                <span class="tile-icon">↗</span>
+                <div>
+                  <strong>我的订阅</strong><small>订阅源 · 自动更新</small>
+                </div>
+                <span class="checkmark">✓</span>
+              </div>
+              <div class="mini-row">
+                <span class="tile-icon">≡</span>
+                <div>
+                  <strong>日常分流</strong
+                  ><small>配置 Profile · 自定义规则</small>
+                </div>
+                <span class="checkmark">✓</span>
+              </div>
+              <div class="mini-row">
+                <span class="tile-icon">⊕</span>
+                <div>
+                  <strong>自建节点</strong
+                  ><small>配置 Profile · 代理节点</small>
+                </div>
+                <span class="checkmark">✓</span>
+              </div>
+            </div>
+            <span class="connector" aria-hidden="true">⟶</span>
+            <div class="identity-example">
+              <div class="identity-top">
+                <img
+                  src="/site-assets/flower.png"
+                  width="44"
+                  height="44"
+                  alt=""
+                /><span class="published"><i></i> 已发布</span>
+              </div>
+              <h2>日常网络</h2>
+              <p>一个身份，一套网络策略。</p>
+              <div class="identity-rules">
+                <span>我的订阅</span><span>日常分流</span><span>自建节点</span>
+              </div>
+              <div class="short-url">
+                camofy.app/sub/… <span aria-hidden="true">↗</span>
+              </div>
+            </div>
+            <span class="connector" aria-hidden="true">⟶</span>
+            <div class="device-stack">
+              <p class="column-caption">02 / 随处使用</p>
+              <div class="device-row">
+                <span class="device-symbol" aria-hidden="true">▱</span>
+                <div><strong>电脑</strong><small>Clash Verge Rev</small></div>
+                <span>订阅</span>
+              </div>
+              <div class="device-row">
+                <span class="device-symbol" aria-hidden="true">▯</span>
+                <div><strong>手机</strong><small>Shadowrocket</small></div>
+                <span>订阅</span>
+              </div>
+              <div class="device-row">
+                <span class="device-symbol" aria-hidden="true">⌁</span>
+                <div><strong>路由器</strong><small>Camofy Agent</small></div>
+                <span>设备绑定</span>
+              </div>
+            </div>
+          </div>
+          <div class="product-foot">
+            <span
+              ><i class="leaf-dot"></i> 配置在云端管理，网络在设备上运行。</span
+            ><span>由你掌控</span>
+          </div>
+        </div>
+      </section>
+      <section class="features wrap" aria-label="产品能力">
+        <article>
+          <span class="feature-number">01</span>
+          <h2>配置，不必重复。</h2>
+          <p>订阅源与独立 Profile 自由组合。按身份启用，复用到不同场景。</p>
+        </article>
+        <article>
+          <span class="feature-number">02</span>
+          <h2>每一端，各得其所。</h2>
+          <p>客户端通过订阅导入；绑定的路由器自动同步。保留设备自己的设置。</p>
+        </article>
+        <article>
+          <span class="feature-number">03</span>
+          <h2>开源，不被绑定。</h2>
+          <p>使用现成的云平台，也可以自行部署。代码开放，配置属于你。</p>
+        </article>
+      </section>
+      <section id="open-source" class="open-source wrap">
+        <div class="open-copy">
+          <p class="eyebrow">OPEN BY DESIGN</p>
+          <h2>在云端。<br />也在你的掌握中。</h2>
+          <a class="text-link" href="https://github.com/camofy/camofy"
+            >在 GitHub 上探索 Camofy ↗</a
+          >
+        </div>
+        <div class="install" id="install">
+          <div class="install-heading">
+            <span>安装路由器 Agent</span><span>SHELL</span>
+          </div>
+          <div class="command">
+            <span aria-hidden="true">$</span
+            ><code id="install-command"
+              >curl -fsSL https://camofy.app/install.sh | sh</code
+            >
+          </div>
+          <button id="copy-command" type="button">复制命令 ⧉</button>
+          <p id="copy-status" aria-live="polite">
+            安装后，在设备本地页面授权绑定云端。
+          </p>
+          <details>
+            <summary>安装前需要知道什么？</summary>
+            <p>
+              请先阅读项目的安装要求并检查脚本。首次安装后 Mihomo
+              保持停止；确认配置，再启动服务。
+            </p>
+            <a href="https://github.com/camofy/camofy#readme">查看安装文档 ↗</a>
+          </details>
+        </div>
+      </section>
+      <section class="closing wrap">
+        <img
+          src="/site-assets/logo.png"
+          alt="Camofy 花叶字标"
+          width="144"
+          height="144"
+          loading="lazy"
+        />
+        <div>
+          <h2>让配置简单一点。</h2>
+          <a class="button primary" href="https://cloud.camofy.app/"
+            >开始使用 Camofy ↗</a
+          >
+        </div>
+      </section>
+    </main>
+    <footer class="footer wrap">
+      <span>© Camofy</span><span>开源的网络配置平台</span>
+      <nav aria-label="页脚导航">
+        <a href="https://github.com/camofy/camofy">GitHub ↗</a
+        ><a href="https://cloud.camofy.app/">云平台 ↗</a>
+      </nav>
+    </footer>
+  </body>
 </html>

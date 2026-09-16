@@ -23,7 +23,7 @@ test('canonical public services stay on the short domain', () => {
   assert.ok(!edge.includes('handle_path'));
 });
 test('accessible controls and isolation policy remain explicit', () => {
-  for (const value of ['role="tablist"', 'role="tabpanel"', 'aria-live="polite"', '<summary>', 'class="skip"']) assert.ok(html.includes(value));
+  for (const value of ['aria-label="配置工作区示意"', 'aria-live="polite"', '<summary>', 'class="skip"']) assert.ok(html.includes(value));
   const css = fs.readFileSync(path.join(root, 'site-assets/site.css'), 'utf8');
   assert.ok(css.includes('focus-visible'));
   assert.ok(css.includes('prefers-reduced-motion'));
