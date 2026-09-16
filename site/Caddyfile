@@ -1,0 +1,16 @@
+{
+  admin off
+  auto_https off
+}
+:8080 {
+  root * /srv
+  encode gzip zstd
+  header {
+    X-Content-Type-Options nosniff
+    Referrer-Policy strict-origin-when-cross-origin
+    X-Frame-Options DENY
+    Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'none'"
+    Cache-Control "public, max-age=0, must-revalidate"
+  }
+  file_server
+}
