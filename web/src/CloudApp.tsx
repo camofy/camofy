@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import brandMark from "./assets/flower.png";
 import {
   createBrowserRouter,
   RouterProvider,
@@ -70,6 +71,7 @@ function CloudWorkspace() {
       });
     };
     const connect = () => {
+      if (import.meta.env.DEV && import.meta.env.MODE === "design") return;
       socket = new WebSocket(
         `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}/api/sync/ws`,
       );
@@ -91,7 +93,7 @@ function CloudWorkspace() {
       closed = true;
       clearTimeout(reconnect);
       clearInterval(timer);
-      socket.close();
+      socket?.close();
     };
   }, [user, load]);
   useEffect(() => {
@@ -139,6 +141,7 @@ function CloudWorkspace() {
     return (
       <div className="loading">
         <span className="brand">
+          <img className="brand-symbol" src={brandMark} alt="" />
           camofy<span>cloud</span>
         </span>
         <p>正在连接工作区…</p>
@@ -199,9 +202,7 @@ function CloudWorkspace() {
             className="brand"
             onClick={() => setMobile(false)}
           >
-            <span className="brand-symbol">
-              <Icon name="layers" size={22} />
-            </span>
+            <img className="brand-symbol" src={brandMark} alt="" />
             camofy<span className="brand-edition">CLOUD</span>
           </Link>
           <div className="workspace-switch">
@@ -210,7 +211,7 @@ function CloudWorkspace() {
             </span>
             <div>
               <strong>个人工作区</strong>
-              <small>一份配置，每一端</small>
+              <small>{user.nickname || user.email}</small>
             </div>
             <Icon name="shield" size={16} />
           </div>
@@ -261,12 +262,17 @@ function CloudWorkspace() {
             )}
           </nav>
           <div className="sidebar-note">
-            <Icon name="shield" />
-            <p>
-              配置留在云端
-              <br />
-              <span>网络运行在你的设备上</span>
-            </p>
+            <a
+              href={
+                import.meta.env.DEV && import.meta.env.MODE === "design"
+                  ? "http://127.0.0.1:18741/"
+                  : "https://camofy.app/"
+              }
+              target="_blank"
+              rel="noreferrer"
+            >
+              Camofy 官网 <Icon name="arrow" size={14} />
+            </a>
           </div>
           <div className="sidebar-account">
             <span className="account-avatar">
@@ -315,7 +321,11 @@ function CloudWorkspace() {
             </div>
             <div className={`live-indicator ${connected ? "connected" : ""}`}>
               <i />
-              {connected ? "变更推送已连接" : "等待连接 · 定时同步可用"}
+              {import.meta.env.DEV && import.meta.env.MODE === "design"
+                ? "本地演示 · 无线上连接"
+                : connected
+                  ? "变更推送已连接"
+                  : "等待连接 · 定时同步可用"}
             </div>
           </div>
           <main className="workspace-content">
