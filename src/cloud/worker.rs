@@ -1,4 +1,4 @@
-use crate::{App, Error, history, security, store, usage};
+use crate::{App, Error, history, retry, security, store, usage};
 use serde_json::{Value, json};
 use sqlx::Row;
 use uuid::Uuid;
@@ -73,26 +73,88 @@ pub async fn once(app: &App) -> Result<bool, Error> {
     };
     let mut last_proxy = None;
     let mut stage = "proxy";
+    let mut attempts = 0;
+    let mut failures = Vec::new();
+    let deadline = tokio::time::Instant::now() + retry::TOTAL_TIMEOUT;
     let fetch = async {
-        let endpoint = if let Some(p) = &proxy {
-            crate::provider::extraction_slot(app, &p.data).await?;
-            let endpoint = crate::provider::resolve(&p.data, app.private_egress).await?;
-            if p.data["provider"] == "xiequ" {
-                last_proxy = Some((endpoint.clone(), crate::now()));
+        loop {
+            attempts += 1;
+            stage = "proxy";
+            let attempt = async {
+                let endpoint = if let Some(p) = &proxy {
+                    crate::provider::extraction_slot(app, &p.data).await?;
+                    let endpoint = crate::provider::resolve(&p.data, app.private_egress).await?;
+                    if p.data["provider"] == "xiequ" {
+                        last_proxy = Some((endpoint.clone(), crate::now()));
+                    }
+                    Some(endpoint)
+                } else {
+                    None
+                };
+                stage = "fetch";
+                security::fetch(
+                    profile.data["url"].as_str().unwrap_or(""),
+                    endpoint.as_deref(),
+                    app.private_egress,
+                )
+                .await
+            };
+            let result = match tokio::time::timeout(retry::ATTEMPT_TIMEOUT, attempt).await {
+                Ok(result) => result,
+                Err(e) => {
+                    stage = "attempt_timeout";
+                    Err(anyhow::Error::new(e))
+                }
+            };
+            let Err(ref error) = result else {
+                break result;
+            };
+            let (code, _) = history::failure(error, stage);
+            failures.push(format!("第 {attempts} 次：{code}"));
+            let Some(server_delay) = retry::delay(error) else {
+                break result;
+            };
+            if attempts >= retry::ATTEMPTS {
+                break result;
             }
-            Some(endpoint)
-        } else {
-            None
-        };
-        stage = "fetch";
-        security::fetch(
-            profile.data["url"].as_str().unwrap_or(""),
-            endpoint.as_deref(),
-            app.private_egress,
-        )
-        .await
+            let jitter = (Uuid::new_v4().as_u128() % 1000) as u64;
+            let wait = retry::backoff(attempts, jitter, server_delay);
+            // Don't violate Retry-After or hold a lease for a retry that cannot start.
+            if wait >= deadline.saturating_duration_since(tokio::time::Instant::now()) {
+                break result;
+            }
+            sqlx::query(
+                "UPDATE refresh_history SET message=$2 WHERE claim=$1 AND status='running'",
+            )
+            .bind(claim)
+            .bind(format!(
+                "已尝试 {attempts}/{} 次（{code}），约 {} 秒后自动重试。",
+                retry::ATTEMPTS,
+                wait.as_secs() + 1
+            ))
+            .execute(&app.db)
+            .await?;
+            tokio::time::sleep(wait).await;
+            // Superseded requests and configuration changes must not spend another proxy IP.
+            let mut conn = app.db.acquire().await?;
+            let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM fetch_jobs WHERE profile_id=$1 AND claim=$2 AND request_id=$3 AND leased_until>now())")
+            .bind(id).bind(claim).bind(request_id).fetch_one(&mut *conn).await?;
+            let unchanged = store::get(app, &mut conn, user, id)
+                .await
+                .is_ok_and(|p| p.version == profile.version);
+            let same_proxy = if let Some(p) = &proxy {
+                store::get(app, &mut conn, user, p.id)
+                    .await
+                    .is_ok_and(|r| r.version == p.version)
+            } else {
+                true
+            };
+            if !active || !unchanged || !same_proxy {
+                break result;
+            }
+        }
     };
-    let result = match tokio::time::timeout(std::time::Duration::from_secs(100), fetch).await {
+    let result = match tokio::time::timeout(retry::TOTAL_TIMEOUT, fetch).await {
         Ok(result) => result,
         Err(_) => {
             stage = "timeout";
@@ -178,12 +240,25 @@ pub async fn once(app: &App) -> Result<bool, Error> {
         .as_ref()
         .map(|(_, message)| json!(message))
         .unwrap_or(Value::Null);
+    let message = if attempts > 1 || !failures.is_empty() {
+        Some(format!(
+            "{} 已尝试 {attempts}/{} 次。{}",
+            failure
+                .as_ref()
+                .map(|(_, m)| m.as_str())
+                .unwrap_or("重试成功，已更新订阅内容。"),
+            retry::ATTEMPTS,
+            failures.join("；")
+        ))
+    } else {
+        failure.as_ref().map(|(_, m)| m.clone())
+    };
     history::finish(
         &mut tx,
         claim,
         current.data["fetch_status"].as_str().unwrap(),
         failure.as_ref().map(|(code, _)| *code),
-        failure.as_ref().map(|(_, m)| m.as_str()),
+        message.as_deref(),
         current.data["usage"]["status"].as_str(),
     )
     .await?;

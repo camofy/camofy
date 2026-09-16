@@ -76,6 +76,10 @@ pub fn failure(error: &anyhow::Error, stage: &str) -> (&'static str, String) {
         }
     }
     match stage {
+        "attempt_timeout" => (
+            "timeout",
+            "单次刷新超过 30 秒时限，已保留上次成功配置。".into(),
+        ),
         "proxy" => (
             "proxy_failure",
             "代理解析、提取或连接失败，请检查供应商额度、白名单及代理可用性。".into(),

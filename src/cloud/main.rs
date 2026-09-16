@@ -5,6 +5,9 @@ mod downloads;
 mod history;
 mod oauth;
 mod provider;
+mod retry;
+#[cfg(test)]
+mod retry_tests;
 mod security;
 mod store;
 mod sync;
