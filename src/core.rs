@@ -448,7 +448,7 @@ async fn resolve_core_download_url(
     client: &reqwest::Client,
     arch_tag: &str,
 ) -> Result<(String, String, String), String> {
-    let api_url = "https://mirror.camofy.app/repos/MetaCubeX/mihomo/releases/latest";
+    let api_url = "https://camofy.app/github/repos/MetaCubeX/mihomo/releases/latest";
     tracing::info!("fetching latest core release from {api_url} for arch {arch_tag}");
 
     let resp = client
@@ -472,7 +472,7 @@ async fn resolve_core_download_url(
     let version = tag.trim_start_matches('v').to_string();
     let file_name = format!("mihomo-{arch_tag}-v{version}.gz");
     let url =
-        format!("https://mirror.camofy.app/MetaCubeX/mihomo/releases/download/{tag}/{file_name}");
+        format!("https://camofy.app/github/MetaCubeX/mihomo/releases/download/{tag}/{file_name}");
 
     Ok((url, version, file_name))
 }

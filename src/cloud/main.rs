@@ -1,5 +1,6 @@
 mod api;
 mod auth;
+mod downloads;
 mod oauth;
 mod provider;
 mod security;
@@ -93,6 +94,7 @@ pub fn now() -> u64 {
 
 pub fn router(app: App) -> Router {
     Router::new()
+        .merge(downloads::routes(&app.origin))
         .route(
             "/api/health",
             get(|| async { Json(json!({"status":"ok","service":"camofy-cloud"})) }),
