@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crate::app::app_state;
 
 const GEOIP_URL: &str =
-    "https://mirror.camofy.app/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb";
+    "https://camofy.app/github/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb";
 
 pub(crate) fn geoip_target_path(root: &PathBuf) -> PathBuf {
     let mut path = root.clone();

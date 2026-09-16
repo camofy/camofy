@@ -10,6 +10,7 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY src/ src/
 COPY migrations/ migrations/
+COPY install.sh ./
 RUN cargo build --release --locked --bin camofy-cloud
 
 FROM build AS verify

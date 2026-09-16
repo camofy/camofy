@@ -17,7 +17,7 @@ required-features = ["agent"]
 
 [features]
 default = ["cloud"]
-cloud = ["dep:axum", "dep:sqlx", "dep:argon2", "dep:rand_core", "dep:tower-http", "dep:aes-gcm", "dep:tokio-rustls", "dep:webpki-roots"]
+cloud = ["dep:axum", "dep:sqlx", "dep:argon2", "dep:rand_core", "dep:tower-http", "dep:aes-gcm", "dep:tokio-rustls", "dep:webpki-roots", "dep:futures-util"]
 agent = ["dep:tokio-tungstenite", "dep:futures-util", "dep:axum"]
 
 [dependencies]
