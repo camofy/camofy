@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use std::net::{IpAddr, SocketAddr};
 
 #[derive(Clone)]
-pub struct Vault(Aes256Gcm);
+pub struct Vault(Aes256Gcm, [u8; 32]);
 impl Vault {
     pub fn new(key: &str) -> Result<Self> {
         let bytes = STANDARD.decode(key)?;
@@ -19,7 +19,23 @@ impl Vault {
         Ok(Self(
             Aes256Gcm::new_from_slice(&bytes)
                 .map_err(|_| anyhow::anyhow!("invalid encryption key"))?,
+            bytes.as_slice().try_into().unwrap(),
         ))
+    }
+    pub fn source_fingerprint(&self, user: uuid::Uuid, url: &str) -> String {
+        use hmac::{Hmac, Mac};
+        let normalized = url::Url::parse(url)
+            .map(|u| u.to_string())
+            .unwrap_or_else(|_| url.into());
+        let mut mac = <Hmac<sha2::Sha256> as Mac>::new_from_slice(&self.1).unwrap();
+        mac.update(b"camofy-usage-source-v1\0");
+        mac.update(user.as_bytes());
+        mac.update(normalized.as_bytes());
+        mac.finalize()
+            .into_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
     }
     pub fn seal(&self, v: &Value) -> Result<Value> {
         let mut nonce = [0; 12];
@@ -172,7 +188,11 @@ async fn fetch_text_inner(
 
 /// Pin destination and proxy DNS. Redirects disabled to prevent credential leakage and SSRF.
 /// For proxy requests use a pinned target IP, retaining Host and TLS SNI through reqwest's resolver.
-pub async fn fetch(url: &str, proxy: Option<&str>, private: bool) -> Result<String> {
+pub struct Fetched {
+    pub content: String,
+    pub usage: crate::usage::Snapshot,
+}
+pub async fn fetch(url: &str, proxy: Option<&str>, private: bool) -> Result<Fetched> {
     let target = url::Url::parse(url)?;
     ensure!(
         ["http", "https"].contains(&target.scheme())
@@ -219,6 +239,7 @@ pub async fn fetch(url: &str, proxy: Option<&str>, private: bool) -> Result<Stri
             .is_none_or(|n| n <= 4 * 1024 * 1024),
         "subscription exceeds 4 MiB"
     );
+    let usage = crate::usage::parse_headers(response.headers(), crate::now());
     let mut bytes = Vec::new();
     while let Some(chunk) = response.chunk().await? {
         ensure!(
@@ -228,8 +249,10 @@ pub async fn fetch(url: &str, proxy: Option<&str>, private: bool) -> Result<Stri
         bytes.extend(chunk);
     }
     let text = String::from_utf8(bytes)?;
-    camofy::engine::parse(&text)?;
-    Ok(text)
+    Ok(Fetched {
+        content: text,
+        usage,
+    })
 }
 
 struct AbortOnDrop(Option<tokio::task::JoinHandle<()>>);
@@ -430,7 +453,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(output.contains("proxies"));
+        assert!(output.content.contains("proxies"));
         task.await.unwrap();
         assert!(fetch("http://127.0.0.1/config", None, false).await.is_err());
         let server = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

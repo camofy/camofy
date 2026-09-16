@@ -13,19 +13,30 @@ use uuid::Uuid;
 
 pub async fn resources(State(app): State<App>, h: HeaderMap) -> Result<Json<Value>, Error> {
     let user = auth::user(&app, &h, false).await?;
-    let mut conn = app.db.acquire().await?;
+    let mut conn = app.db.begin().await?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        .execute(&mut *conn)
+        .await?;
     let mut records = store::list(&app, &mut conn, user).await?;
+    let snapshot = records.clone();
     for r in &mut records {
         if r.kind == "bundle" {
             r.data["system_profile"] = store::system_profile(&app.origin)?;
+            r.data["usage_summary"] =
+                json!(crate::usage::published(&app, &mut conn, user, &snapshot, r).await?);
         }
         if r.kind == "proxy" {
             crate::provider::redact(&mut r.data);
         }
         if r.kind == "profile" && r.data["type"] == "source" {
+            r.data["usage_summary"] = json!(crate::usage::profile_view(&app, user, r));
             r.data.as_object_mut().unwrap().remove("content");
+            for key in ["usage", "usage_previous", "content_fingerprint"] {
+                r.data.as_object_mut().unwrap().remove(key);
+            }
         }
     }
+    conn.commit().await?;
     Ok(Json(json!(records)))
 }
 
@@ -34,6 +45,25 @@ pub struct Edit {
     pub kind: String,
     pub version: Option<i64>,
     pub data: Value,
+}
+pub async fn bundle_usage(
+    State(app): State<App>,
+    h: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<Value>, Error> {
+    let user = auth::user(&app, &h, false).await?;
+    let mut tx = app.db.begin().await?;
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        .execute(&mut *tx)
+        .await?;
+    let b = store::get(&app, &mut tx, user, id).await?;
+    if b.kind != "bundle" {
+        return Err(Error::not_found());
+    }
+    let records = store::list(&app, &mut tx, user).await?;
+    let summary = crate::usage::published(&app, &mut tx, user, &records, &b).await?;
+    tx.commit().await?;
+    Ok(Json(json!(summary)))
 }
 pub async fn create(
     State(app): State<App>,
@@ -121,12 +151,16 @@ async fn save(
         "last_proxy",
         "last_proxy_at",
         "system_profile",
+        "usage",
+        "usage_previous",
+        "content_fingerprint",
     ] {
         object.remove(key);
         if let Some(v) = old.as_ref().and_then(|r| r.data.get(key)) {
             object.insert(key.into(), v.clone());
         }
     }
+    object.remove("usage_summary");
     let name = data["name"].as_str().unwrap_or("");
     if name.trim().is_empty() || name.len() > 120 {
         return Err(Error::bad("name must contain 1–120 bytes"));
@@ -182,6 +216,24 @@ async fn save(
                     return Err(Error::bad("refresh interval must be 300–604800 seconds"));
                 }
                 data["interval_seconds"] = json!(interval);
+                if let Some(pool) = data["usage_pool"].as_str() {
+                    if pool.len() > 120 || pool.chars().any(char::is_control) {
+                        return Err(Error::bad("额度池名称不得超过 120 字节或含控制字符"));
+                    }
+                    data["usage_pool"] = json!(pool.trim());
+                } else if !data["usage_pool"].is_null() {
+                    return Err(Error::bad("额度池必须是文本"));
+                }
+                if let Some(previous) = &old {
+                    if data["content_fingerprint"].is_null() && previous.data["content"].is_string()
+                    {
+                        data["content_fingerprint"] =
+                            json!(crate::usage::fingerprint(&app, user, previous));
+                    }
+                    if previous.data["url"] != data["url"] {
+                        crate::usage::invalidate(&mut data);
+                    }
+                }
                 // Source content is exclusively written by the fetch worker.
                 data["content"] = old
                     .as_ref()
@@ -250,7 +302,7 @@ async fn save(
     let mut r = Resource {
         id,
         kind: e.kind,
-        version: old.map(|r| r.version + 1).unwrap_or(1),
+        version: old.as_ref().map(|r| r.version + 1).unwrap_or(1),
         data,
     };
     store::put(&app, &mut tx, user, &r).await?;
@@ -268,16 +320,38 @@ async fn save(
     }
     if r.kind == "profile" && r.data["type"] == "source" {
         // Save schedules even when auto refresh is off: one initial/manual refresh is allowed.
-        if new || r.data["auto_refresh"].as_bool().unwrap_or(true) {
-            sqlx::query("INSERT INTO fetch_jobs(profile_id,user_id) VALUES($1,$2) ON CONFLICT(profile_id) DO UPDATE SET next_run=now()").bind(id).bind(user).execute(&mut *tx).await?;
+        let fetch_changed = old.as_ref().is_some_and(|o| {
+            o.data["url"] != r.data["url"] || o.data["proxy_id"] != r.data["proxy_id"]
+        });
+        if new || fetch_changed {
+            sqlx::query("INSERT INTO fetch_jobs(profile_id,user_id,reason) VALUES($1,$2,$3) ON CONFLICT(profile_id) DO UPDATE SET next_run=now(),reason=EXCLUDED.reason,request_id=gen_random_uuid()")
+                .bind(id).bind(user).bind(if new { "initial" } else { "settings" }).execute(&mut *tx).await?;
+        } else if r.data["auto_refresh"].as_bool().unwrap_or(true) {
+            sqlx::query("INSERT INTO fetch_jobs(profile_id,user_id,next_run) VALUES($1,$2,now()+make_interval(secs=>$3)) ON CONFLICT(profile_id) DO NOTHING")
+                .bind(id).bind(user).bind(r.data["interval_seconds"].as_f64().unwrap_or(3600.0)).execute(&mut *tx).await?;
         } else {
-            sqlx::query("DELETE FROM fetch_jobs WHERE profile_id=$1")
+            sqlx::query("DELETE FROM fetch_jobs WHERE profile_id=$1 AND leased_until<now() AND reason='scheduled'")
                 .bind(id)
                 .execute(&mut *tx)
                 .await?;
         }
     }
-    if r.kind == "profile" || r.kind == "bundle" {
+    let configuration_changed = match r.kind.as_str() {
+        "profile" => {
+            r.data["type"] == "overlay"
+                && old
+                    .as_ref()
+                    .is_some_and(|o| o.data["content"] != r.data["content"])
+        }
+        "bundle" => {
+            new || old.as_ref().is_some_and(|o| {
+                o.data["profiles"] != r.data["profiles"]
+                    || o.data["selections"] != r.data["selections"]
+            })
+        }
+        _ => false,
+    };
+    if configuration_changed {
         store::rebuild(&app, &mut tx, user).await?;
     }
     if r.kind == "device" {
@@ -360,7 +434,8 @@ pub async fn refresh(
     if r.kind != "profile" || r.data["type"] != "source" {
         return Err(Error::bad("not a subscription profile"));
     }
-    sqlx::query("INSERT INTO fetch_jobs(profile_id,user_id) VALUES($1,$2) ON CONFLICT(profile_id) DO UPDATE SET next_run=now()").bind(id).bind(user).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO fetch_jobs(profile_id,user_id,reason) VALUES($1,$2,'manual') ON CONFLICT(profile_id) DO UPDATE SET next_run=now(),reason='manual',request_id=gen_random_uuid()")
+        .bind(id).bind(user).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok(StatusCode::ACCEPTED)
 }

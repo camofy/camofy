@@ -348,6 +348,11 @@ export function Editor({
             <p className="muted">
               定时刷新与立即刷新均通过上面选择的代理。失败会保留上次成功内容。
             </p>
+            <label>
+              共用额度池（可选）
+              <input value={data.usage_pool ?? ""} maxLength={120} placeholder="例如：我的主套餐" onChange={(e) => set("usage_pool", e.target.value)} />
+            </label>
+            <p className="muted">同一套餐的不同链接填写相同名称，身份统计只计一次。留空时按相同上游 URL 自动去重，不按机场域名猜测。</p>
           </>
         )}
         {resource.kind === "profile" && data.type === "overlay" && (

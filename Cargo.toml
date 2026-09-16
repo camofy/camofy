@@ -1,6 +1,6 @@
 [package]
 name = "camofy"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 autobins = false
 default-run = "camofy-cloud"
@@ -17,7 +17,7 @@ required-features = ["agent"]
 
 [features]
 default = ["cloud"]
-cloud = ["dep:axum", "dep:sqlx", "dep:argon2", "dep:rand_core", "dep:tower-http", "dep:aes-gcm", "dep:tokio-rustls", "dep:webpki-roots", "dep:futures-util"]
+cloud = ["dep:axum", "dep:sqlx", "dep:argon2", "dep:rand_core", "dep:tower-http", "dep:aes-gcm", "dep:tokio-rustls", "dep:webpki-roots", "dep:futures-util", "dep:hmac"]
 agent = ["dep:tokio-tungstenite", "dep:futures-util", "dep:axum"]
 
 [dependencies]
@@ -37,6 +37,7 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-r
 tower-http = { version = "0.6", features = ["fs", "set-header"], optional = true }
 aes-gcm = { version = "0.10", optional = true }
 sha2 = "0.10"
+hmac = { version = "0.12", optional = true }
 base64 = "0.22"
 url = "2"
 anyhow = "1"

@@ -161,6 +161,9 @@ async fn cloud_end_to_end() {
     let (bob, bob_id) = register(&client, &origin).await;
     let yaml=Arc::new(Mutex::new("proxies:\n- {name: mine, type: ss, server: example.com, port: 443, cipher: aes-256-gcm, password: secret}\nproxy-groups:\n- {name: route, type: select, proxies: [mine, DIRECT]}\nrules: ['MATCH,route']\n".to_string()));
     let hits = Arc::new(AtomicUsize::new(0));
+    let userinfo = Arc::new(Mutex::new(
+        "upload=100;download=200;total=10000;expire=2000000000".to_string(),
+    ));
     let mock = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy_addr = mock.local_addr().unwrap();
     let proxy = tokio::spawn(
@@ -169,16 +172,23 @@ async fn cloud_end_to_end() {
             Router::new().fallback(get({
                 let hits = hits.clone();
                 let yaml = yaml.clone();
+                let userinfo = userinfo.clone();
                 move |h: HeaderMap| {
                     let hits = hits.clone();
                     let yaml = yaml.clone();
+                    let userinfo = userinfo.clone();
                     async move {
                         assert_eq!(
                             h.get("proxy-authorization").unwrap(),
                             &format!("Basic {}", STANDARD.encode("user:pass"))
                         );
                         hits.fetch_add(1, Ordering::SeqCst);
-                        yaml.lock().await.clone()
+                        let mut headers = HeaderMap::new();
+                        let info = userinfo.lock().await.clone();
+                        if !info.is_empty() {
+                            headers.insert("subscription-userinfo", info.parse().unwrap());
+                        }
+                        (headers, yaml.lock().await.clone())
                     }
                 }
             })),
@@ -244,6 +254,28 @@ async fn cloud_end_to_end() {
     let (a, b) = tokio::join!(worker::once(&app), worker::once(&app));
     assert!(a.unwrap() ^ b.unwrap());
     assert_eq!(hits.load(Ordering::SeqCst), 1);
+    let history = request(
+        &client,
+        &origin,
+        &alice,
+        "GET",
+        &format!("/profiles/{sid}/history"),
+        json!(null),
+        200,
+    )
+    .await;
+    assert_eq!(history["items"][0]["status"], "ok");
+    assert_eq!(history["items"][0]["reason"], "initial");
+    request(
+        &client,
+        &origin,
+        &bob,
+        "GET",
+        &format!("/profiles/{sid}/history"),
+        json!(null),
+        404,
+    )
+    .await;
     let cached = request(
         &client,
         &origin,
@@ -335,6 +367,17 @@ async fn cloud_end_to_end() {
     let r = client.get(&sub).send().await.unwrap();
     assert_eq!(r.status(), 200);
     let etag = r.headers()["etag"].clone();
+    assert_eq!(
+        r.headers()["subscription-userinfo"],
+        "upload=100; download=200; total=10000; expire=2000000000"
+    );
+    assert_eq!(r.headers()["profile-update-interval"], "1");
+    let head = client.head(&sub).send().await.unwrap();
+    assert_eq!(
+        head.headers()["subscription-userinfo"],
+        r.headers()["subscription-userinfo"]
+    );
+    assert!(head.text().await.unwrap().is_empty());
     let rendered = r.text().await.unwrap();
     assert!(rendered.contains("DOMAIN,work.example,DIRECT"));
     assert!(!rendered.contains("external-controller"));
@@ -412,6 +455,147 @@ async fn cloud_end_to_end() {
         .unwrap()
         .unwrap();
     assert!(msg.is_text());
+    // Quota-only updates change public ETags, not config revisions or agent hashes.
+    let before = client
+        .get(format!("{origin}/api/sync/desired"))
+        .bearer_auth(secret)
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    let old_etag = client.get(&sub).send().await.unwrap().headers()["etag"].clone();
+    *userinfo.lock().await = "upload=150;download=300;total=10000;expire=2000000000".into();
+    request(
+        &client,
+        &origin,
+        &alice,
+        "POST",
+        &format!("/profiles/{sid}/refresh"),
+        json!(null),
+        202,
+    )
+    .await;
+    assert!(worker::once(&app).await.unwrap());
+    let after = client
+        .get(format!("{origin}/api/sync/desired"))
+        .bearer_auth(secret)
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(before["revision"], after["revision"]);
+    assert_eq!(before["hash"], after["hash"]);
+    let changed = client
+        .get(&sub)
+        .header("if-none-match", old_etag)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(changed.status(), 200);
+    assert_eq!(
+        changed.headers()["subscription-userinfo"],
+        "upload=150; download=300; total=10000; expire=2000000000"
+    );
+    assert_eq!(changed.text().await.unwrap(), rendered);
+    let summary = request(
+        &client,
+        &origin,
+        &alice,
+        "GET",
+        &format!("/bundles/{bid}/usage"),
+        json!(null),
+        200,
+    )
+    .await;
+    assert_eq!(summary["upload"], "150");
+    assert_eq!(summary["known_pools"], 1);
+    let previous_etag = client.get(&sub).send().await.unwrap().headers()["etag"].clone();
+    *userinfo.lock().await = String::new();
+    request(
+        &client,
+        &origin,
+        &alice,
+        "POST",
+        &format!("/profiles/{sid}/refresh"),
+        json!(null),
+        202,
+    )
+    .await;
+    assert!(worker::once(&app).await.unwrap());
+    let missing = client
+        .get(&sub)
+        .header("if-none-match", previous_etag)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), 200);
+    assert!(missing.headers().get("subscription-userinfo").is_none());
+    *userinfo.lock().await = "upload=150;download=300;total=10000;expire=2000000000".into();
+    // Client writes cannot forge quota; pool-only edits do not fetch or republish.
+    let records = request(
+        &client,
+        &origin,
+        &alice,
+        "GET",
+        "/resources",
+        json!(null),
+        200,
+    )
+    .await;
+    let item = records
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == src["id"])
+        .unwrap();
+    let mut data = item["data"].clone();
+    data["usage"] = json!({"status":"ok","sample":{"total":999999}});
+    data["usage_pool"] = json!("main-plan");
+    request(
+        &client,
+        &origin,
+        &alice,
+        "PUT",
+        &format!("/resources/{sid}"),
+        json!({"kind":"profile","version":item["version"],"data":data}),
+        200,
+    )
+    .await;
+    assert!(!worker::once(&app).await.unwrap());
+    let unaltered = client
+        .get(format!("{origin}/api/sync/desired"))
+        .bearer_auth(secret)
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(before["revision"], unaltered["revision"]);
+    assert!(
+        client
+            .get(&sub)
+            .send()
+            .await
+            .unwrap()
+            .headers()
+            .get("subscription-userinfo")
+            .is_none()
+    );
+    request(
+        &client,
+        &origin,
+        &bob,
+        "GET",
+        &format!("/bundles/{bid}/usage"),
+        json!(null),
+        404,
+    )
+    .await;
     // Force the same scheduled job due (no user refresh endpoint) to verify scheduled proxy use.
     *yaml.lock().await = "not: [valid".into();
     sqlx::query("UPDATE fetch_jobs SET next_run=now() WHERE profile_id=$1")
@@ -420,7 +604,7 @@ async fn cloud_end_to_end() {
         .await
         .unwrap();
     assert!(worker::once(&app).await.unwrap());
-    assert_eq!(hits.load(Ordering::SeqCst), 2);
+    assert_eq!(hits.load(Ordering::SeqCst), 4);
     let mut conn = db.acquire().await.unwrap();
     let stored = store::get(&app, &mut conn, alice_id, sid).await.unwrap();
     assert_eq!(stored.data["fetch_status"], "error");
@@ -441,7 +625,7 @@ async fn cloud_end_to_end() {
     )
     .await;
     assert!(worker::once(&app).await.unwrap());
-    assert_eq!(hits.load(Ordering::SeqCst), 3);
+    assert_eq!(hits.load(Ordering::SeqCst), 5);
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         let msg = tokio::time::timeout_at(deadline, ws.next())
@@ -789,6 +973,44 @@ async fn cloud_end_to_end() {
         404,
     )
     .await;
+    // A manual refresh arriving during an active lease must not get swallowed.
+    let hold = yaml.lock().await;
+    let prior_hits = hits.load(Ordering::SeqCst);
+    request(
+        &client,
+        &origin,
+        &alice,
+        "POST",
+        &format!("/profiles/{sid}/refresh"),
+        json!(null),
+        202,
+    )
+    .await;
+    let running = tokio::spawn({
+        let app = app.clone();
+        async move { worker::once(&app).await }
+    });
+    for _ in 0..100 {
+        if hits.load(Ordering::SeqCst) > prior_hits {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(hits.load(Ordering::SeqCst), prior_hits + 1);
+    request(
+        &client,
+        &origin,
+        &alice,
+        "POST",
+        &format!("/profiles/{sid}/refresh"),
+        json!(null),
+        202,
+    )
+    .await;
+    drop(hold);
+    assert!(running.await.unwrap().unwrap());
+    assert!(worker::once(&app).await.unwrap());
+    assert_eq!(hits.load(Ordering::SeqCst), prior_hits + 2);
     // A provider error never silently selects direct egress or erases the cached YAML.
     let mut conn = db.acquire().await.unwrap();
     let mut pr = store::get(
@@ -827,6 +1049,67 @@ async fn cloud_end_to_end() {
     assert!(failed.data["error"].as_str().unwrap().contains("白名单"));
     assert_eq!(hits.load(Ordering::SeqCst), previous_hits);
     drop(conn);
+    let history = request(
+        &client,
+        &origin,
+        &alice,
+        "GET",
+        &format!("/profiles/{sid}/history"),
+        json!(null),
+        200,
+    )
+    .await;
+    assert_eq!(history["items"][0]["error_code"], "proxy_failure");
+    assert!(
+        history["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|h| h["reason"] == "scheduled" && h["error_code"] == "invalid_yaml")
+    );
+    assert!(!history.to_string().contains("user:pass"));
+    assert!(!history.to_string().contains("http://"));
+    sqlx::query("INSERT INTO refresh_history(user_id,profile_id,claim,reason,status) SELECT $1,$2,gen_random_uuid(),'scheduled','ok' FROM generate_series(1,110)").bind(alice_id).bind(sid).execute(&db).await.unwrap();
+    let mut conn = db.acquire().await.unwrap();
+    crate::history::prune(&mut conn, alice_id, sid)
+        .await
+        .unwrap();
+    drop(conn);
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM refresh_history WHERE profile_id=$1")
+        .bind(sid)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(count, 100);
+    let page = request(
+        &client,
+        &origin,
+        &alice,
+        "GET",
+        &format!("/profiles/{sid}/history"),
+        json!(null),
+        200,
+    )
+    .await;
+    assert_eq!(page["items"].as_array().unwrap().len(), 20);
+    let cursor = page["next_cursor"].as_str().unwrap();
+    let next = request(
+        &client,
+        &origin,
+        &alice,
+        "GET",
+        &format!("/profiles/{sid}/history?before={cursor}"),
+        json!(null),
+        200,
+    )
+    .await;
+    assert!(!page["items"].as_array().unwrap().iter().any(|p| {
+        next["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| p["id"] == n["id"])
+    }));
     server.abort();
     proxy.abort();
     sqlx::query("DELETE FROM users WHERE id=ANY($1)")
