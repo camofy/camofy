@@ -33,13 +33,6 @@
   border-radius: 14px;
   color: var(--ink);
   text-decoration: none;
-  transition:
-    border-color 0.15s,
-    transform 0.15s;
-}
-.store-card:hover {
-  border-color: var(--accent);
-  transform: translateY(-2px);
 }
 .store-card-top {
   display: flex;
