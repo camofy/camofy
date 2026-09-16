@@ -790,22 +790,25 @@ async fn notifications(s: Settings, tx: tokio::sync::watch::Sender<u64>) {
     }
 }
 
-async fn shutdown() {
+fn shutdown() -> impl std::future::Future<Output = ()> {
     #[cfg(unix)]
-    {
-        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("install SIGTERM handler");
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .expect("install SIGTERM handler");
+    async move {
+        #[cfg(unix)]
         tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = term.recv() => {} }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = tokio::signal::ctrl_c().await;
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
     }
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().with_env_filter("info").init();
+    let shutdown_requested = shutdown();
+    tokio::pin!(shutdown_requested);
     let path = std::env::args()
         .nth(1)
         .context("usage: camofy-agent /path/to/agent.json")?;
@@ -850,7 +853,7 @@ async fn main() -> Result<()> {
                         break;
                     }
                 },
-                _ = shutdown() => return Ok(()),
+                _ = &mut shutdown_requested => return Ok(()),
             }
         }
         s.resolve_subscription()?;
@@ -890,8 +893,6 @@ async fn main() -> Result<()> {
     let notification = tokio::spawn(notifications(s, tx));
     let mut poll = tokio::time::interval(Duration::from_secs(300));
     let mut health = tokio::time::interval(Duration::from_secs(10));
-    let shutdown_requested = shutdown();
-    tokio::pin!(shutdown_requested);
     loop {
         tokio::select! {
             Some(request)=controls.recv()=>{
