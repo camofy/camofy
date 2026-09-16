@@ -1,0 +1,38 @@
+# Example public gateway. Service names are deployment-specific.
+# Keep CAMOFY_PUBLIC_URL=https://camofy.app on camofy-cloud.
+# Add https://cloud.camofy.app to CAMOFY_LEGACY_ORIGINS (trusted UI origins).
+(cloud_backend) {
+  reverse_proxy camofy-cloud:3000 {
+    header_up Host {host}
+    header_up X-Real-IP {remote_host}
+    stream_close_delay 5m
+  }
+}
+camofy.app {
+  request_body {
+    max_size 5MB
+  }
+  @distribution path /api /api/* /sub /sub/* /install.sh /github /github/* /downloads /downloads/* /assets /assets/*
+  handle @distribution {
+    import cloud_backend
+  }
+  @website path / /site-assets/* /robots.txt /sitemap.xml
+  handle @website {
+    reverse_proxy camofy-site:8080
+  }
+  handle {
+    redir https://cloud.camofy.app{uri} 308
+  }
+}
+cloud.camofy.app {
+  request_body {
+    max_size 5MB
+  }
+  header X-Robots-Tag "noindex, nofollow"
+  handle /robots.txt {
+    respond "User-agent: *\nDisallow: /\n" 200
+  }
+  handle {
+    import cloud_backend
+  }
+}

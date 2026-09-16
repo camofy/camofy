@@ -19,6 +19,7 @@ jobs:
         with:
           components: rustfmt
       - uses: oven-sh/setup-bun@v2
+      - run: node --check site/site-assets/site.js && node --test site/tests/site.test.cjs
       - run: cargo fmt --all -- --check
       - run: sh scripts/test-installer.sh "$PWD/install.sh"
       - run: cargo test --locked --lib --bin camofy-cloud
