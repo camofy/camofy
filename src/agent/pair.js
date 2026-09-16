@@ -191,7 +191,7 @@ function renderProxies(state){
   proxyState=state;
   if(proxyBusy)return;
   const query=$("proxy-search").value.toLowerCase();
-  const fingerprint=JSON.stringify([state?.groups,state?.desired,state?.errors,state?.status,state?.pending_local,query,[...delays]]);
+  const fingerprint=JSON.stringify([state?.groups,state?.desired,state?.overrides,state?.errors,state?.status,state?.pending_local,query,[...delays]]);
   if(fingerprint===proxyFingerprint)return;proxyFingerprint=fingerprint;
   const container=$("proxy-groups");container.replaceChildren();
   if(!state?.groups?.length){container.textContent=state?.status==="stopped"?"内核已停止，启动后可以查询和选择节点。":"等待内核分组信息…";return;}

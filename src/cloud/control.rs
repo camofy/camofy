@@ -73,14 +73,6 @@ pub async fn enqueue(
         }
         return Ok(Json(j.clone()));
     }
-    if queue
-        .iter()
-        .filter(|j| ["queued", "executing"].contains(&j.status.as_str()))
-        .count()
-        >= 16
-    {
-        return Err(Error::new(StatusCode::TOO_MANY_REQUESTS, "设备队列已满"));
-    }
     let now = crate::now();
     if ["core.start", "core.stop", "core.restart"].contains(&req.method.as_str()) {
         for j in &mut queue {
@@ -90,6 +82,19 @@ pub async fn enqueue(
                 j.status = "superseded".into();
             }
         }
+    }
+    let limit = if req.method.starts_with("core.") {
+        16
+    } else {
+        14
+    };
+    if queue
+        .iter()
+        .filter(|j| ["queued", "executing"].contains(&j.status.as_str()))
+        .count()
+        >= limit
+    {
+        return Err(Error::new(StatusCode::TOO_MANY_REQUESTS, "设备队列已满"));
     }
     let job = Job {
         id: Uuid::new_v4().to_string(),
