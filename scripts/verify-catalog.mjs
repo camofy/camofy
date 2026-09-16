@@ -68,6 +68,7 @@ try {
     assert(!bundle.data.error,bundle.data.error);
     const url=new URL(bundle.data.subscription_url);
     const r=await fetch(base+url.pathname);assert.equal(r.status,200);
+    assert(!r.headers.has('subscription-userinfo'),'store/independent Profiles must not fabricate airport quota');
     const yaml=await r.text();
     for (const d of domains) assert(yaml.includes(`${d},${policy}`),`Missing ${d} -> ${policy}`);
     assert(yaml.includes('Copyright (c) 2018-2019 V2Ray'),'license missing from delivered configuration');
