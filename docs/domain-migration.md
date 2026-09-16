@@ -27,3 +27,19 @@ accounts and private deployment paths. Actual infrastructure credentials and rol
 backups belong outside this source repository. Git history rewriting changes commit
 IDs: remote repositories, forks and hosting caches require separate cleanup, and old
 clones must not be merged back into the sanitized history.
+
+## Verification (2026-09-16)
+
+- Cloudflare-proxied DNS and valid origin/public HTTPS verified.
+- All five existing identity links use the canonical origin. Each published YAML
+  contains its DIRECT protection; the legacy URL follows a 308 to identical YAML.
+- Root, detail, API and subscription redirects preserve paths and query strings.
+- The bound router uses the new origin, Mihomo remains running, TUN remains off,
+  and the routing table, policy rules and firewall rules are unchanged.
+- 24 unit tests, the database/Agent integration test and the Agent rollback/offline
+  recovery test passed; Clippy completed without warnings.
+- Builds ran on the workstation only. Unrelated service health and container
+  identities were verified unchanged throughout deployment.
+- Local project contents, all main-repository Git objects and submodule Git objects
+  passed the privacy keyword audit. Prior history and generated diagnostic files
+  were archived outside the source repository; no remote force push was performed.
