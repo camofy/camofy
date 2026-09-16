@@ -230,6 +230,7 @@ impl Agent {
         for key in [
             "external-controller-unix",
             "external-controller-pipe",
+            "external-controller-tls",
             "external-ui",
             "external-ui-url",
         ] {

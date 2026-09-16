@@ -170,3 +170,10 @@ test("expired binding can retry without terminal polling hiding the form", async
   });
   assert.equal(f.calls[1].redirect, "https://cloud.camofy.app/authorize");
 });
+test("bound LAN visitors cannot control the device without unlocking",async()=>{
+  const f=fixture({...bound(),authorized:false});await f.flush();
+  assert.equal(f.element("unlock").hidden,false);
+  assert.equal(f.element("dashboard").hidden,true);
+  assert.equal(f.element("proxy-panel").hidden,true);
+  assert.ok(f.buttons.every(b=>b.disabled));
+});
