@@ -11,13 +11,13 @@ architecture replacement. They are not a second supported deployment mode.
 
 ## Model and composition
 
-Each registered account is one isolated tenant. Profiles, proxies, bundles,
+Each registered account is one isolated tenant. Profiles, bundles,
 devices, tokens and revisions are always queried with the authenticated tenant ID.
 No user-supplied tenant ID is trusted. Teams and cross-account sharing are not
 implemented. A self-hosted installation has its own independent accounts/data;
 it does not contact a central Camofy account server.
 
-* Source profile: a single Clash/Mihomo YAML subscription URL, optional proxy ID,
+* Source profile: a single Clash/Mihomo YAML subscription URL,
   refresh interval (300–604800 seconds), auto-refresh flag, last fetch result.
 * Independent profile (`type: overlay`): arbitrary partial YAML such as nodes,
   groups, rules or runtime settings. Neither profile type has global activation.
@@ -31,8 +31,16 @@ it does not contact a central Camofy account server.
   atomically invalidates only the current primary link; all of its client formats
   need re-importing. Historical links and bound devices remain valid. No automatic
   credential cleanup or rotation occurs during deployment.
-* Proxy: HTTP, HTTPS or SOCKS5 endpoint with optional URL credentials. Proxy
-  credentials are not returned by list/edit responses; a blank edit preserves them.
+* Platform proxy: administrators share a separate encrypted platform pool of HTTP,
+  HTTPS or SOCKS5 endpoints. Ordinary users cannot read or manage these records.
+  One global selection controls every subscription fetch; unset or failed egress
+  stops refresh, never falls back to direct. Legacy tenant proxy data is retained
+  but ignored and no longer exposed. Secrets are write-only; blank edits preserve them.
+
+Registration always defaults to `user`. Only private database operations grant
+`admin`; authorization checks the current database role, including existing sessions.
+Platform administration does not grant access to other tenants' subscriptions.
+See [roles and global egress](admin-egress-proposal.md) for migration and verification.
 * Device: bundle binding, scoped credential, last application result and optional
   explicitly requested delay measurements. No process logs or traffic history.
 
@@ -137,8 +145,11 @@ makes existing data unreadable. HTTPS should terminate at your reverse proxy.
 
 Refresh work uses an indexed durable `fetch_jobs` queue, leases, fencing claim IDs
 and `FOR UPDATE SKIP LOCKED`. Manual and automatic refresh share the same fetch
-function, including the selected proxy; proxy failure never falls back to direct.
-Source/proxy generation checks prevent in-flight stale responses from publishing.
+function, using only the global platform selection; unset/failed proxy never falls
+back to direct. Source/policy/proxy generation checks prevent stale responses from
+publishing; workers poll the policy during requests and cancel changes within about
+one second. Publication shares an advisory lock with other workers while platform
+changes take its exclusive form; network requests do not hold that lock.
 API publication serializes per account, not globally. Multiple cloud replicas can
 run API and worker consumers; PostgreSQL LISTEN/NOTIFY fans out changes to locally
 connected tenant WebSockets. Reconnect/periodic pulls repair missed notifications.
@@ -149,8 +160,10 @@ product quota. Extra issued tokens are limited to 100 per account; 100 concurren
 WebSocket connections per account. Source response
 limit 4 MiB, request timeout 60 seconds, DNS/connect timeout 10 seconds, no redirects.
 Set final subscription URLs explicitly. Public egress blocks private, loopback,
-metadata, mapped/transition and reserved network destinations. DNS is resolved and
-pinned for direct, SOCKS5 and HTTP(S) proxy paths; the latter rewrites the proxy
+metadata, mapped/transition and reserved network destinations. Subscription names
+are resolved using fixed HTTPS DNS with ECS disabled, not the host resolver;
+failures do not fall back. All returned target addresses must be public and are
+pinned for SOCKS5 and HTTP(S) proxy paths; the latter rewrites the proxy
 target to a validated IP while preserving origin Host/SNI. Self-host operators may
 explicitly allow private egress; never enable this for untrusted public users.
 

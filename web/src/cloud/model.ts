@@ -78,7 +78,7 @@ export type UsageSummary = {
   updated_at: number | null;
   pools: UsagePool[];
 };
-export type User = { email: string; nickname?: string };
+export type User = { email: string; nickname?: string; role: "user" | "admin" };
 export const formats = ["clash", "shadowrocket", "shadowrocket-nodes"];
 export const labels: Record<string, string> = {
   profile: "配置 Profile",
