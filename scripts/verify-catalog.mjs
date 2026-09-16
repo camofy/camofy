@@ -6,8 +6,12 @@
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
+import { createServer, request as httpRequest } from 'node:http';
+import { createServer as tcpServer } from 'node:net';
+import { once } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
 const env=process.env;
 for (const k of ['CAMOFY_TEST_URL','CAMOFY_TEST_EMAIL','CAMOFY_TEST_PASSWORD','MIHOMO_TEST_BINARY','CAMOFY_TEST_OUTPUT']) assert(env[k],`${k} required`);
 const base=env.CAMOFY_TEST_URL.replace(/\/$/,''), origin=env.CAMOFY_TEST_ORIGIN??base;
@@ -20,10 +24,40 @@ async function request(path, method='GET', body) {
   return r.status===204?null:r.json();
 }
 async function create(kind,data) {const r=await request('/resources','POST',{kind,data});resources.push(r.id);return r;}
+async function exerciseRules(yaml, slug, domains, policy) {
+  // Test only loopback traffic. No system proxy, TUN, DNS listener or active client changes.
+  const source=createServer((_,r)=>r.end('camofy-catalog-loopback'));
+  source.listen(0,'127.0.0.1');await once(source,'listening');
+  const reservation=tcpServer();reservation.listen(0,'127.0.0.1');await once(reservation,'listening');
+  const proxyPort=reservation.address().port;await new Promise(r=>reservation.close(r));
+  const path=join(output,`${slug}.runtime.yaml`);
+  assert(/^mixed-port: 0$/m.test(yaml));
+  const runtime=yaml.replace(/^mixed-port: 0$/m,`mixed-port: ${proxyPort}`)+'\nhosts:\n'+domains.map(d=>`  ${d}: 127.0.0.1`).join('\n')+'\n';
+  writeFileSync(path,runtime);
+  let log='';const core=spawn(env.MIHOMO_TEST_BINARY,['-d',output,'-f',path],{windowsHide:true});
+  let spawnError;core.on('error',e=>{spawnError=e});
+  core.stdout.on('data',b=>{log+=b});core.stderr.on('data',b=>{log+=b});
+  try {
+    for(let i=0;i<100&&!log.includes('Mixed(http+socks) proxy listening at');i++) {if(spawnError)throw spawnError;if(core.exitCode!==null)throw new Error(log);await delay(100);}
+    assert(log.includes('Mixed(http+socks) proxy listening at'),`Mihomo startup failed: ${log}`);
+    for(const d of domains) {
+      const text=await new Promise((ok,fail)=>{
+        const r=httpRequest({host:'127.0.0.1',port:proxyPort,path:`http://${d}:${source.address().port}/catalog-test`,headers:{host:`${d}:${source.address().port}`}},res=>{let body='';res.on('data',b=>body+=b);res.on('end',()=>ok(body));});
+        r.setTimeout(5000,()=>r.destroy(new Error('loopback proxy timeout')));r.on('error',fail);r.end();
+      });
+      assert.equal(text,'camofy-catalog-loopback');
+    }
+    await delay(100);
+    for(const d of domains) assert(log.split('\n').some(line=>line.includes(d)&&line.includes('match Domain')&&line.includes(`using ${policy}`)),`Expected domain/policy not matched: ${d}\n${log}`);
+  } finally {
+    core.kill();await Promise.race([once(core,'close'),delay(2000)]);
+    await new Promise(r=>source.close(r));writeFileSync(join(output,`${slug}.runtime.log`),log);
+  }
+}
 const expected={'douyin-direct':['douyin.com','douyinec.com','douyinpay.com'],'bilibili-direct':['bilibili.com','acgvideo.com'],'steam-cn-download':['dl.steam.clngaa.com'],'telegram-routing':['telegram.org','t.me'],'openai-routing':['openai.com','chatgpt.com']};
 try {
   const me=await request('/auth/login','POST',{email:env.CAMOFY_TEST_EMAIL,password:env.CAMOFY_TEST_PASSWORD});assert.equal(me.email,env.CAMOFY_TEST_EMAIL);
-  const baseProfile=await create('profile',{name:'Catalog smoke base',type:'overlay',content:"tun: {enable: false}\nmixed-port: 0\nproxies: [{name: smoke, type: ss, server: example.com, port: 443, cipher: aes-256-gcm, password: fixture-only}]\nproxy-groups: [{name: SmokeRoute, type: select, proxies: [smoke, DIRECT]}]\nrules: ['MATCH,SmokeRoute']\n"});
+  const baseProfile=await create('profile',{name:'Catalog smoke base',type:'overlay',content:"tun: {enable: false}\ndns: {enable: false}\nexternal-controller: ''\nallow-lan: false\nmixed-port: 0\nproxies: [{name: smoke, type: ss, server: example.com, port: 443, cipher: aes-256-gcm, password: fixture-only}]\nproxy-groups: [{name: SmokeRoute, type: select, proxies: [DIRECT, smoke]}]\nrules: ['MATCH,SmokeRoute']\n"});
   const report=[];
   for(const [slug,domains] of Object.entries(expected)) {
     const detail=await request(`/store/packages/${slug}`),v=detail.versions[0];
@@ -45,10 +79,11 @@ try {
     const core=spawnSync(env.MIHOMO_TEST_BINARY,['-t','-d',output,'-f',config],{encoding:'utf8',timeout:30000,windowsHide:true});
     writeFileSync(join(output,`${slug}.validation.log`),`${core.stdout??''}\n${core.stderr??''}`);
     assert.equal(core.status,0,`Mihomo rejected ${slug}: ${core.stdout} ${core.stderr}`);
+    await exerciseRules(yaml,slug,domains,policy);
     const sr=await fetch(base+url.pathname+'/shadowrocket');assert.equal(sr.status,200);const full=await sr.text();assert(full.includes('rules:'));assert(full.includes('proxy-groups:'));assert(full.includes(domains[0]));
     const nodes=await fetch(base+url.pathname+'/shadowrocket-nodes');assert.equal(nodes.status,200);assert(Buffer.from(await nodes.text(),'base64').toString().includes('ss://')); 
     const conditional=await fetch(base+url.pathname,{headers:{'if-none-match':r.headers.get('etag')}});assert.equal(conditional.status,304);
-    report.push({slug,version:v.version,rules:v.rules.length,mihomo:'passed',shadowrocket:'export-checked',subscription:'200 / 304'});console.log(`${slug}: subscription, rule coverage, Mihomo -t, Shadowrocket exports passed`);
+    report.push({slug,version:v.version,rules:v.rules.length,mihomo:'passed',routing:'loopback domain/policy matched',shadowrocket:'export-checked',subscription:'200 / 304'});console.log(`${slug}: subscription, rule coverage, Mihomo -t + live loopback routing, Shadowrocket exports passed`);
   }
   writeFileSync(join(output,'report.json'),JSON.stringify(report,null,2));
 } finally {
