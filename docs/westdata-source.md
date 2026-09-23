@@ -89,11 +89,14 @@ JavaScript，纯 HTTP 客户端直接以 403 结束；而在被标记的出口�
 | 无头 Chromium（Playwright） | 携趣 | 403 → 升级为「请稍候…」，7 秒后仍卡住 |
 | **有头真 Chrome**（channel=chrome，非自动化参数） | 携趣 | 403 → 「正在进行安全验证…正在验证…」**转圈 30 秒不放行，始终没有 `cf_clearance`** |
 | **有头真 Chrome（同一客户端）** | **WestData 节点** | **200，登录表单直接出现** |
+| Chromium net DLL（Chromium 141 的 `net` 栈，Cookie 上下文共享，首页→clientarea→重试） | 携趣（`221.227.255.222`，江苏南通电信） | **403，`server: cloudflare`、`cf-mitigated: challenge`，全程 0 Cookie** |
+| 同一个 Chromium net DLL | WestData 节点 | 200，登录表单出现，拿到 `WHMCS` 会话 Cookie |
 | reqwest（云端实际使用的客户端） | WestData 节点 | 200（联调测试全绿） |
 
 结论：**这是按来源 IP 段下发的托管挑战，不是 TLS/UA 指纹问题，也不是"缺少 JS 执行"能解释的**——
 同一个浏览器、同一台机器只换出口，携趣永远停在验证页，机场自己的节点直接 200。
-因此：
+连 Chromium 自己的 `net` 栈（`chromium_net.dll`，非浏览器但网络实现与 Chrome 同源）在携趣出口上
+同样只拿到 `cf-mitigated: challenge`，换出口即 200。因此：
 
 - 伪造 JA3/JA4 指纹（`curl_cffi`、`rquest` 一类）无效，不要往这个方向修；
 - 携趣整条产品线都是公开代理 IP，属于风控标记段，换多少个 IP、换什么客户端都一样。
