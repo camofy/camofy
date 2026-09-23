@@ -2,10 +2,10 @@
 //!
 //! The panel keeps its subscription link disabled by default and serves it only for ten
 //! minutes after 「打开订阅更新开关」. A refresh therefore has to log in, read the current
-//! Clash address, activate it again and only then fetch — with no browser anywhere.
+//! Clash address, activate it again and only then fetch.
 //!
-//! Only the platform egress proxy is used: the panel never sees the cloud IP, and a missing
-//! or failed egress is a failure, not a direct fallback.
+//! Panel traffic follows the configured platform egress unless Zyte is enabled. A failed proxy
+//! never silently falls back to direct; direct access must be selected explicitly by an admin.
 
 use crate::{captcha, security};
 use anyhow::{Result, bail, ensure};

@@ -532,8 +532,8 @@ pub struct PanelScan {
 }
 
 /// Lists the services a panel account can manage, so the editor can pick one instead of
-/// typing a service id. Runs through the platform egress like every other panel request and
-/// returns only id, name, status and next due date — never credentials or page content.
+/// typing a service id. Uses Zyte when configured, otherwise the selected platform egress mode.
+/// Returns only id, name, status and next due date — never credentials or page content.
 pub async fn westdata_services(
     State(app): State<App>,
     h: HeaderMap,
@@ -572,21 +572,24 @@ pub async fn westdata_services(
     let endpoint = if crate::zyte::Zyte::configured() {
         None
     } else {
-        let proxy = {
+        let policy = {
             let mut conn = app.db.acquire().await?;
-            crate::admin::snapshot(&app, &mut conn)
-                .await?
-                .proxy
-                .ok_or_else(|| Error::bad("平台订阅出口不可用，请先在系统管理中配置出口"))?
+            crate::admin::snapshot(&app, &mut conn).await?
         };
-        crate::provider::extraction_slot(&app, &proxy.data)
-            .await
-            .map_err(|e| Error::bad(e.to_string()))?;
-        Some(
-            crate::provider::resolve(&proxy.data, app.private_egress)
-                .await
-                .map_err(|e| Error::bad(e.to_string()))?,
-        )
+        match policy.proxy {
+            Some(proxy) => {
+                crate::provider::extraction_slot(&app, &proxy.data)
+                    .await
+                    .map_err(|e| Error::bad(e.to_string()))?;
+                Some(
+                    crate::provider::resolve(&proxy.data, app.private_egress)
+                        .await
+                        .map_err(|e| Error::bad(e.to_string()))?,
+                )
+            }
+            None if policy.direct => None,
+            None => return Err(Error::bad("平台订阅出口不可用，请先在系统管理中配置出口")),
+        }
     };
     let config = crate::westdata::Config {
         username,

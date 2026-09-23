@@ -154,12 +154,14 @@ pub async fn once(app: &App) -> Result<bool, Error> {
             attempts += 1;
             stage = "proxy";
             let attempt = async {
-                let p = policy
-                    .proxy
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("platform egress unavailable"))?;
-                crate::provider::extraction_slot(app, &p.data).await?;
-                let endpoint = crate::provider::resolve(&p.data, app.private_egress).await?;
+                let endpoint = match policy.proxy.as_ref() {
+                    Some(p) => {
+                        crate::provider::extraction_slot(app, &p.data).await?;
+                        Some(crate::provider::resolve(&p.data, app.private_egress).await?)
+                    }
+                    None if policy.direct => None,
+                    None => return Err(anyhow::anyhow!("platform egress unavailable")),
+                };
                 let url = match westdata::config(&profile.data) {
                     Some(cfg) => match &panel {
                         Some((resolved, at)) if at.elapsed() < retry::PANEL_REUSE => {
@@ -173,7 +175,7 @@ pub async fn once(app: &App) -> Result<bool, Error> {
                             })?;
                             let resolved: westdata::Resolved = westdata::resolve(
                                 vision,
-                                Some(&endpoint),
+                                endpoint.as_deref(),
                                 app.private_egress,
                                 &cfg,
                             )
@@ -195,7 +197,7 @@ pub async fn once(app: &App) -> Result<bool, Error> {
                     None => profile.data["url"].as_str().unwrap_or("").to_string(),
                 };
                 stage = "fetch";
-                let outcome = security::fetch(&url, Some(&endpoint), app.private_egress).await;
+                let outcome = security::fetch(&url, endpoint.as_deref(), app.private_egress).await;
                 if let Err(error) = &outcome
                     && rejected(error)
                 {
@@ -266,7 +268,7 @@ pub async fn once(app: &App) -> Result<bool, Error> {
         }
         Ok::<(), Error>(())
     };
-    let result = match tokio::time::timeout(retry::TOTAL_TIMEOUT, async {
+    let result = match tokio::time::timeout(total_timeout, async {
         tokio::select! {
             result = fetch => result,
             _ = changed => Err(anyhow::anyhow!("platform egress changed or unavailable")),
@@ -376,7 +378,7 @@ pub async fn once(app: &App) -> Result<bool, Error> {
                 .as_ref()
                 .map(|(_, m)| m.as_str())
                 .unwrap_or("重试成功，已更新订阅内容。"),
-            retry::ATTEMPTS,
+            max_attempts,
             failures.join("；")
         ))
     } else {

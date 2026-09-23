@@ -178,18 +178,21 @@ pub async fn delete(
 }
 pub async fn policy(State(app): State<App>, h: HeaderMap) -> Result<Json<Value>, Error> {
     auth::admin(&app, &h, false).await?;
-    let row =
-        sqlx::query("SELECT proxy_id,version FROM subscription_egress_policy WHERE singleton")
-            .fetch_one(&app.db)
-            .await?;
+    let row = sqlx::query(
+        "SELECT proxy_id,direct,version FROM subscription_egress_policy WHERE singleton",
+    )
+    .fetch_one(&app.db)
+    .await?;
     Ok(Json(
-        json!({"proxy_id":row.get::<Option<Uuid>,_>("proxy_id"),"version":row.get::<i64,_>("version")}),
+        json!({"proxy_id":row.get::<Option<Uuid>,_>("proxy_id"),"direct":row.get::<bool,_>("direct"),"version":row.get::<i64,_>("version")}),
     ))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PolicyEdit {
     proxy_id: Option<Uuid>,
+    #[serde(default)]
+    direct: bool,
     version: i64,
 }
 pub async fn set_policy(
@@ -198,32 +201,39 @@ pub async fn set_policy(
     Json(e): Json<PolicyEdit>,
 ) -> Result<Json<Value>, Error> {
     let actor = auth::admin(&app, &h, true).await?;
+    if e.direct && e.proxy_id.is_some() {
+        return Err(Error::bad("直连模式不能同时选择代理"));
+    }
     let mut tx = app.db.begin().await?;
     lock(&mut tx).await?;
     if let Some(id) = e.proxy_id {
         get(&app, &mut tx, id).await?;
     }
-    let version: Option<i64>=sqlx::query_scalar("UPDATE subscription_egress_policy SET proxy_id=$1,version=version+1,updated_by=$3,updated_at=now() WHERE singleton AND version=$2 RETURNING version")
-        .bind(e.proxy_id).bind(e.version).bind(actor).fetch_optional(&mut *tx).await?;
+    let version: Option<i64>=sqlx::query_scalar("UPDATE subscription_egress_policy SET proxy_id=$1,direct=$2,version=version+1,updated_by=$4,updated_at=now() WHERE singleton AND version=$3 RETURNING version")
+        .bind(e.proxy_id).bind(e.direct).bind(e.version).bind(actor).fetch_optional(&mut *tx).await?;
     let version = version.ok_or_else(conflict)?;
     audit(&mut tx, actor, "egress.select", e.proxy_id, version).await?;
     tx.commit().await?;
-    Ok(Json(json!({"proxy_id":e.proxy_id,"version":version})))
+    Ok(Json(
+        json!({"proxy_id":e.proxy_id,"direct":e.direct,"version":version}),
+    ))
 }
 #[derive(Clone)]
 pub struct Snapshot {
     pub version: i64,
+    pub direct: bool,
     pub proxy: Option<Resource>,
 }
 impl Snapshot {
     pub fn same(&self, other: &Self) -> bool {
         self.version == other.version
+            && self.direct == other.direct
             && self.proxy.as_ref().map(|r| (r.id, r.version))
                 == other.proxy.as_ref().map(|r| (r.id, r.version))
     }
 }
 pub async fn snapshot(app: &App, conn: &mut PgConnection) -> Result<Snapshot, Error> {
-    let row=sqlx::query("SELECT e.version,p.id,p.version AS proxy_version,p.data FROM subscription_egress_policy e LEFT JOIN platform_proxies p ON p.id=e.proxy_id WHERE singleton")
+    let row=sqlx::query("SELECT e.version,e.direct,p.id,p.version AS proxy_version,p.data FROM subscription_egress_policy e LEFT JOIN platform_proxies p ON p.id=e.proxy_id WHERE singleton")
         .fetch_one(conn).await?;
     let proxy = if let Some(id) = row.get::<Option<Uuid>, _>("id") {
         Some(Resource {
@@ -237,6 +247,7 @@ pub async fn snapshot(app: &App, conn: &mut PgConnection) -> Result<Snapshot, Er
     };
     Ok(Snapshot {
         version: row.get("version"),
+        direct: row.get("direct"),
         proxy,
     })
 }

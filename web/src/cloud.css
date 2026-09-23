@@ -1343,6 +1343,9 @@ p {
 .secret-field {
   margin: 0 24px 24px;
 }
+.source-activation-note {
+  margin: 0 24px 12px;
+}
 .secret-field label {
   font-size: 11px;
   color: #8b8b8a;
@@ -2048,6 +2051,10 @@ textarea {
   }
   .facts {
     padding: 5px 19px;
+  }
+  .source-activation-note {
+    margin-right: 19px;
+    margin-left: 19px;
   }
   .facts > div {
     grid-template-columns: 85px minmax(0, 1fr);

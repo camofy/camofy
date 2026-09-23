@@ -288,6 +288,53 @@ async fn cloud_end_to_end() {
         409,
     )
     .await;
+    let selected = request(
+        &client,
+        &origin,
+        &alice,
+        "GET",
+        "/admin/subscription-egress",
+        json!(null),
+        200,
+    )
+    .await;
+    request(
+        &client,
+        &origin,
+        &alice,
+        "PUT",
+        "/admin/subscription-egress",
+        json!({"version":selected["version"],"proxy_id":p["id"],"direct":true}),
+        400,
+    )
+    .await;
+    let direct = request(
+        &client,
+        &origin,
+        &alice,
+        "PUT",
+        "/admin/subscription-egress",
+        json!({"version":selected["version"],"proxy_id":null,"direct":true}),
+        200,
+    )
+    .await;
+    assert_eq!(direct["direct"], true);
+    assert!(direct["proxy_id"].is_null());
+    let direct_snapshot = admin::snapshot(&app, &mut *db.acquire().await.unwrap())
+        .await
+        .unwrap();
+    assert!(direct_snapshot.direct && direct_snapshot.proxy.is_none());
+    let restored = request(
+        &client,
+        &origin,
+        &alice,
+        "PUT",
+        "/admin/subscription-egress",
+        json!({"version":direct["version"],"proxy_id":p["id"],"direct":false}),
+        200,
+    )
+    .await;
+    assert_eq!(restored["direct"], false);
     // A second administrator sees the same platform pool; demotion affects the existing session.
     sqlx::query("UPDATE users SET role='admin' WHERE id=$1")
         .bind(bob_id)
