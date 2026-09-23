@@ -567,27 +567,36 @@ pub async fn westdata_services(
         return Err(Error::bad("请填写面板登录密码"));
     }
 
-    let proxy = {
-        let mut conn = app.db.acquire().await?;
-        crate::admin::snapshot(&app, &mut conn)
-            .await?
-            .proxy
-            .ok_or_else(|| Error::bad("平台订阅出口不可用，请先在系统管理中配置出口"))?
+    // A Zyte-driven panel conversation runs inside Zyte's browser, so it spends no platform egress
+    // address; only the direct path needs one.
+    let endpoint = if crate::zyte::Zyte::configured() {
+        None
+    } else {
+        let proxy = {
+            let mut conn = app.db.acquire().await?;
+            crate::admin::snapshot(&app, &mut conn)
+                .await?
+                .proxy
+                .ok_or_else(|| Error::bad("平台订阅出口不可用，请先在系统管理中配置出口"))?
+        };
+        crate::provider::extraction_slot(&app, &proxy.data)
+            .await
+            .map_err(|e| Error::bad(e.to_string()))?;
+        Some(
+            crate::provider::resolve(&proxy.data, app.private_egress)
+                .await
+                .map_err(|e| Error::bad(e.to_string()))?,
+        )
     };
-    crate::provider::extraction_slot(&app, &proxy.data)
-        .await
-        .map_err(|e| Error::bad(e.to_string()))?;
-    let endpoint = crate::provider::resolve(&proxy.data, app.private_egress)
-        .await
-        .map_err(|e| Error::bad(e.to_string()))?;
     let config = crate::westdata::Config {
         username,
         password,
         product_id: String::new(),
     };
-    let services = crate::westdata::discover(vision, Some(&endpoint), app.private_egress, &config)
-        .await
-        .map_err(|e| Error::bad(crate::westdata::describe(&e)))?;
+    let services =
+        crate::westdata::discover(vision, endpoint.as_deref(), app.private_egress, &config)
+            .await
+            .map_err(|e| Error::bad(crate::westdata::describe(&e)))?;
     Ok(Json(json!({ "services": services })))
 }
 

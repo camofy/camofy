@@ -17,6 +17,7 @@ mod sync;
 mod usage;
 mod westdata;
 mod worker;
+mod zyte;
 
 use axum::{
     Json, Router,
