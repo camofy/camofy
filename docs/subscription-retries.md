@@ -17,6 +17,13 @@ an unrecognized/date-form value ends this refresh rather than retrying too soon.
 Every attempt runs platform proxy admission, extraction and subscription fetch again.
 Short lived proxy addresses are not reused. A missing platform proxy fails closed;
 no attempt falls back to direct. Existing global supplier rate limiting applies to each attempt.
+
+A panel-managed source ([WestData](westdata-source.md)) additionally logs in on the first
+attempt, reads the address the panel currently serves and opens its ten-minute update
+switch. That resolved address is reused for the next eight minutes of attempts, so a
+retry re-fetches instead of repeating a login and image recognition. A 401/403/404 from
+the panel link (expired switch or rotated token) discards the cached address immediately
+and the following attempt logs in again.
 The same lease remains held during backoff, excluding other workers. Before the
 next attempt, changes to request ID, configuration, proxy version or lease ownership
 stop the old retry sequence; the existing publication/version checks still apply.

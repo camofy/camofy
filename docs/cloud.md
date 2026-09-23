@@ -19,6 +19,11 @@ it does not contact a central Camofy account server.
 
 * Source profile: a single Clash/Mihomo YAML subscription URL,
   refresh interval (300–604800 seconds), auto-refresh flag, last fetch result.
+  A source may instead be bound to a WestData panel account: every refresh then
+  logs in, rewrites the stored URL with the address the panel currently serves,
+  opens the panel's ten-minute update switch and fetches immediately. Credentials
+  are encrypted with the resource, write-only over the API, and the fetcher is
+  unchanged otherwise. See [WestData 账号订阅](westdata-source.md).
 * Independent profile (`type: overlay`): arbitrary partial YAML such as nodes,
   groups, rules or runtime settings. Neither profile type has global activation.
 * Identity (`kind: bundle` in the API): an ordered `profiles` array of
@@ -186,6 +191,10 @@ and geo-distributed delivery are outside this initial implementation.
 * GET/POST `/api/resources`; PUT/DELETE `/api/resources/{id}`. Writes contain
   `{kind, version, data}`; updates require the latest user-edit version (409 on conflict).
 * POST `/api/profiles/{id}/refresh` enqueues and returns 202.
+* POST `/api/profiles/westdata-services` logs in to the panel account supplied in the
+  body (`username`, `password`, optional `profile_id` to reuse the stored password) and
+  returns the services it can manage: `{id, name, status, next_due}`. Uses the platform
+  egress, is rate limited per user, and never returns credentials or page content.
 * GET `/api/bundles/{id}/preview/{format}`, `/revisions`; POST `/rollback` with revision.
 * GET `/api/bundles/{id}/subscription-links` lists historical non-device links,
   excluding the primary link. Returns label, hash identifier and creation time,
