@@ -44,6 +44,28 @@ fn failure(step: &'static str, message: &'static str) -> anyhow::Error {
     anyhow::Error::new(Failure { step, message })
 }
 
+/// A Cloudflare interstitial is a property of the egress address, not of the request, so the
+/// next attempt (which extracts a fresh platform address) may pass. The retry hint must not
+/// hide the step: `history::failure` reports the panel step, `retry::delay` reads the hint.
+fn wall(message: &'static str) -> anyhow::Error {
+    failure("westdata_egress", message).context(crate::retry::SafeFailure {
+        delay: Some(Duration::ZERO),
+    })
+}
+
+/// Best available explanation for a client-facing error: panel failures carry their own
+/// fixed wording, and anything else stays generic instead of exposing a transport chain.
+pub fn describe(error: &anyhow::Error) -> String {
+    match error.downcast_ref::<Failure>() {
+        Some(failure) => failure.message.to_string(),
+        None => "无法登录面板，请检查账号、订阅出口与验证码模型配置。".to_string(),
+    }
+}
+
+/// The panel could not be reached because the egress address is challenged or blocked.
+const WALL: &str = "平台出口被 Cloudflare 挑战或拦截（该出口 IP 信誉不足），请更换订阅出口后重试；\
+                    已有配置不受影响。";
+
 /// Hosts are fixed; only a local test harness may redirect them.
 #[derive(Clone)]
 pub struct Hosts {
@@ -275,20 +297,19 @@ impl Session {
     async fn login(&mut self, vision: &captcha::Vision, cfg: &Config) -> Result<()> {
         let area = self.hosts.client_area();
         let (status, page) = self.get(&area, None).await?;
+        // A challenged or blocked address answers with a challenge page and a non-success
+        // status, so the wall must be recognised before the status is reported.
+        if cloudflare_wall(&page) {
+            return Err(wall(WALL));
+        }
+        if logged_in(&page) {
+            return Ok(());
+        }
         ensure!(
             status.is_success(),
             "WestData 面板返回 HTTP {}",
             status.as_u16()
         );
-        if logged_in(&page) {
-            return Ok(());
-        }
-        if cloudflare_wall(&page) {
-            return Err(failure(
-                "westdata_egress",
-                "平台订阅出口被 Cloudflare 拒绝，请更换或检查订阅出口。",
-            ));
-        }
         for attempt in 1..=LOGIN_ATTEMPTS {
             let token = form_token(&page).ok_or_else(|| {
                 failure(
@@ -329,16 +350,13 @@ impl Session {
                 )
                 .await?;
             let (status, page) = self.get(&area, None).await?;
+            if cloudflare_wall(&page) {
+                return Err(wall(WALL));
+            }
             if status.is_success() && logged_in(&page) {
                 return Ok(());
             }
             tracing::warn!("westdata login attempt {attempt} was rejected");
-            if cloudflare_wall(&page) {
-                return Err(failure(
-                    "westdata_egress",
-                    "平台订阅出口被 Cloudflare 拒绝，请更换或检查订阅出口。",
-                ));
-            }
         }
         Err(failure(
             "westdata_login",
@@ -350,6 +368,9 @@ impl Session {
     async fn discover(&mut self) -> Result<Vec<Service>> {
         let url = format!("{}/clientarea.php?action=services", self.hosts.site);
         let (status, page) = self.get(&url, None).await?;
+        if cloudflare_wall(&page) {
+            bail!(wall(WALL));
+        }
         ensure!(
             status.is_success(),
             "WestData 产品列表返回 HTTP {}",
@@ -375,6 +396,9 @@ impl Session {
     async fn subscription(&mut self, product: &str) -> Result<String> {
         let page_url = self.hosts.product_page(product);
         let (status, page) = self.get(&page_url, None).await?;
+        if cloudflare_wall(&page) {
+            bail!(wall(WALL));
+        }
         ensure!(
             status.is_success(),
             "WestData 产品页返回 HTTP {}",
@@ -399,6 +423,9 @@ impl Session {
         let (status, body) = self
             .get(&self.hosts.activate(product), Some(&referer))
             .await?;
+        if cloudflare_wall(&body) {
+            bail!(wall(WALL));
+        }
         ensure!(
             status.is_success(),
             "WestData 激活接口返回 HTTP {}",
@@ -518,14 +545,23 @@ impl Session {
     }
 
     /// Never logs URLs, cookies, form values or page bodies: only the shape of the response.
+    /// A wall is logged at warning level so an unreachable panel is diagnosable from the
+    /// service log alone, which a bare "HTTP 403" was not.
     fn note(&self, step: &str, status: reqwest::StatusCode, page: Option<&str>) {
+        if page.is_some_and(cloudflare_wall) {
+            tracing::warn!(
+                step,
+                status = status.as_u16(),
+                "westdata panel answered a Cloudflare challenge or block page"
+            );
+            return;
+        }
         tracing::debug!(
             step,
             status = status.as_u16(),
             bytes = page.map(str::len).unwrap_or_default(),
             login_form = page.is_some_and(login_page),
             session = page.is_some_and(logged_in),
-            blocked = page.is_some_and(cloudflare_wall),
             "westdata panel"
         );
     }
@@ -828,6 +864,25 @@ mod tests {
         );
         assert!(service_list("<html><body>no services</body></html>").is_empty());
         assert!(service_list("").is_empty());
+    }
+
+    #[test]
+    fn a_cloudflare_wall_is_reported_and_retried_on_a_fresh_address() {
+        let error = wall(WALL);
+        // The refresh history must name the step, not a transport chain.
+        assert_eq!(
+            crate::history::failure(&error, "westdata").0,
+            "westdata_egress"
+        );
+        // The worker must retry: the next attempt extracts a different egress address.
+        assert_eq!(crate::retry::delay(&error), Some(std::time::Duration::ZERO));
+        assert!(describe(&error).contains("Cloudflare"));
+        // A client-facing message never exposes the transport chain.
+        assert!(!describe(&error).contains("provider request failed"));
+        assert_eq!(
+            crate::westdata::describe(&anyhow::anyhow!("connection reset by peer")),
+            "无法登录面板，请检查账号、订阅出口与验证码模型配置。"
+        );
     }
 
     #[test]
