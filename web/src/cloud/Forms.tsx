@@ -179,7 +179,6 @@ export function Editor({
     void api<{ services: PanelService[] }>("/profiles/westdata-services", "POST", {
       username: data.westdata?.username ?? "",
       password: data.westdata?.password ?? "",
-      panel_proxy: data.westdata?.panel_proxy ?? "",
       profile_id: resource.id,
     })
       .then((r) => {
@@ -528,29 +527,10 @@ export function Editor({
                     当前产品 ID：{data.westdata.product_id}
                   </p>
                 )}
-                <label>
-                  面板出口代理（可选）
-                  <input
-                    placeholder="http://user:password@host:8080，留空沿用已保存，填 none 清除"
-                    value={data.westdata.panel_proxy ?? ""}
-                    onChange={(e) =>
-                      set("westdata", {
-                        ...data.westdata,
-                        panel_proxy: e.target.value.trim(),
-                      })
-                    }
-                  />
-                </label>
-                <p className="muted">
-                  Cloudflare 按出口 IP 信誉下发挑战：共享短效代理池的地址经常被挑战，
-                  而无头客户端无法通过交互式挑战，面板登录就会报 403。给面板单独指定一个
-                  信誉良好的 http/https/socks5 出口即可；不填则使用平台订阅出口，
-                  订阅地址本身的抓取始终走平台出口。
-                </p>
                 <p className="muted">
                   每次刷新都会先登录面板：读取当前 Clash 订阅地址并写回本订阅源，
-                  再打开「订阅更新开关」（仅十分钟有效）后立即拉取。账号密码与面板出口代理
-                  按现有资源模型加密入库，接口不回显，编辑留空即保留原值。
+                  再打开「订阅更新开关」（仅十分钟有效）后立即拉取。账号密码按现有资源模型
+                  加密入库，接口不回显密码，编辑留空即保留原值。
                 </p>
                 {data.westdata.subscription_url && (
                   <p className="muted">
