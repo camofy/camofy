@@ -4,8 +4,11 @@
 //! minutes after 「打开订阅更新开关」. A refresh therefore has to log in, read the current
 //! Clash address, activate it again and only then fetch — with no browser anywhere.
 //!
-//! Only the platform egress proxy is used: the panel never sees the cloud IP, and a missing
-//! or failed egress is a failure, not a direct fallback.
+//! Panel traffic leaves through the platform egress, so the panel never sees the cloud IP and
+//! a missing or failed egress is a failure, not a direct fallback. Cloudflare challenges an
+//! address by reputation rather than by request, and shared short-lived egress pools are
+//! challenged constantly, so a source may pin a dedicated `panel_proxy` for the panel
+//! conversation while subscription delivery keeps using the platform egress.
 
 use crate::{captcha, security};
 use anyhow::{Result, bail, ensure};
@@ -63,8 +66,11 @@ pub fn describe(error: &anyhow::Error) -> String {
 }
 
 /// The panel could not be reached because the egress address is challenged or blocked.
-const WALL: &str = "平台出口被 Cloudflare 挑战或拦截（该出口 IP 信誉不足），请更换订阅出口后重试；\
+const WALL: &str = "面板出口被 Cloudflare 挑战或拦截（该出口 IP 信誉不足），请更换面板出口代理后重试；\
                     已有配置不受影响。";
+
+/// Clears a stored panel egress: the panel conversation returns to the platform egress.
+pub const PANEL_PROXY_NONE: &str = "none";
 
 /// Hosts are fixed; only a local test harness may redirect them.
 #[derive(Clone)]
@@ -112,6 +118,11 @@ pub struct Config {
     pub password: String,
     /// Empty means "whatever the account has"; the refresh discovers it.
     pub product_id: String,
+    /// Optional egress reserved for panel traffic. Cloudflare answers a challenged address
+    /// with an interactive challenge no headless client can clear, so a source whose panel
+    /// account matters can pin an address whose reputation holds. Unset means the platform
+    /// egress, which is also what subscription delivery always uses.
+    pub panel_proxy: Option<String>,
 }
 
 /// One service row from the panel's product list.
@@ -141,7 +152,39 @@ pub fn config(data: &Value) -> Option<Config> {
             .unwrap_or("")
             .trim()
             .to_string(),
+        panel_proxy: entry
+            .get("panel_proxy")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string),
     })
+}
+
+/// The egress a panel conversation uses: a pinned `panel_proxy` wins, otherwise the platform
+/// egress the caller resolved for this attempt.
+pub fn panel_egress<'a>(cfg: &'a Config, platform: Option<&'a str>) -> Option<&'a str> {
+    cfg.panel_proxy.as_deref().or(platform)
+}
+
+/// Validates a panel egress address. It must be one `security::egress_client` accepts, and it
+/// may carry credentials — the whole account block is stored encrypted.
+pub fn proxy_endpoint(value: &str) -> Result<String> {
+    let text = value.trim();
+    let url = url::Url::parse(text).map_err(|_| {
+        anyhow::anyhow!("面板出口代理必须是合法地址，例如 http://user:pass@host:8080")
+    })?;
+    ensure!(
+        matches!(url.scheme(), "http" | "https" | "socks5"),
+        "面板出口代理仅支持 http、https 或 socks5"
+    );
+    ensure!(
+        url.host_str().is_some_and(|host| !host.is_empty()),
+        "面板出口代理缺少主机名"
+    );
+    ensure!(url.port().is_some(), "面板出口代理必须写明端口");
+    ensure!(text.len() <= 512, "面板出口代理地址过长");
+    Ok(text.to_string())
 }
 
 pub fn is_managed(data: &Value) -> bool {
@@ -185,11 +228,24 @@ pub fn normalize(data: &mut Value, old: Option<&Value>) -> Result<()> {
     };
     ensure!(!password.is_empty(), "请填写 WestData 登录密码");
     ensure!(password.len() <= 256, "WestData 密码过长");
+    // Blank keeps the stored address (like the password); the `none` sentinel clears it and
+    // returns the panel conversation to the platform egress.
+    let panel_proxy = match submitted["panel_proxy"].as_str().map(str::trim) {
+        None | Some("") => previous
+            .and_then(|p| p.get("panel_proxy"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        Some(value) if value.eq_ignore_ascii_case(PANEL_PROXY_NONE) => None,
+        Some(value) => Some(proxy_endpoint(value)?),
+    };
 
     let mut entry = serde_json::Map::new();
     entry.insert("username".into(), json!(username));
     entry.insert("password".into(), json!(password));
     entry.insert("product_id".into(), json!(product_id));
+    if let Some(proxy) = &panel_proxy {
+        entry.insert("panel_proxy".into(), json!(proxy));
+    }
     // Worker-owned results survive a settings edit.
     for key in ["subscription_url", "last_activate"] {
         if let Some(value) = previous.and_then(|p| p.get(key)) {
@@ -200,10 +256,11 @@ pub fn normalize(data: &mut Value, old: Option<&Value>) -> Result<()> {
     Ok(())
 }
 
-/// Never returns the password to a client.
+/// Never returns the password or a panel egress (which may embed credentials) to a client.
 pub fn redact(data: &mut Value) {
     if let Some(entry) = data.get_mut("westdata").and_then(Value::as_object_mut) {
         entry.remove("password");
+        entry.remove("panel_proxy");
     }
 }
 
@@ -222,7 +279,7 @@ pub async fn resolve(
     private: bool,
     cfg: &Config,
 ) -> Result<Resolved> {
-    let mut session = open(egress, private).await?;
+    let mut session = open(panel_egress(cfg, egress), private).await?;
     let conversation = async {
         session.login(vision, cfg).await?;
         let product_id = match cfg.product_id.is_empty() {
@@ -264,7 +321,7 @@ pub async fn discover(
     private: bool,
     cfg: &Config,
 ) -> Result<Vec<Service>> {
-    let mut session = open(egress, private).await?;
+    let mut session = open(panel_egress(cfg, egress), private).await?;
     let conversation = async {
         session.login(vision, cfg).await?;
         session.discover().await
@@ -966,6 +1023,67 @@ mod tests {
         assert_eq!(edit["westdata"]["last_activate"], 42);
     }
 
+    #[test]
+    fn panel_egress_is_pinned_kept_and_cleared() {
+        let mut create = json!({"westdata":{"username":"user@example.com","password":"p",
+            "product_id":"123456","panel_proxy":"http://user:pass@proxy.example.com:8080"}});
+        normalize(&mut create, None).unwrap();
+        assert_eq!(
+            create["westdata"]["panel_proxy"],
+            "http://user:pass@proxy.example.com:8080"
+        );
+        // A blank field is an edit that does not touch the stored address.
+        let mut blank = json!({"westdata":{"username":"user@example.com"}});
+        normalize(&mut blank, Some(&create)).unwrap();
+        assert_eq!(
+            blank["westdata"]["panel_proxy"],
+            "http://user:pass@proxy.example.com:8080"
+        );
+        // `none` returns the panel conversation to the platform egress.
+        let mut cleared = json!({"westdata":{"username":"user@example.com","panel_proxy":"NONE"}});
+        normalize(&mut cleared, Some(&blank)).unwrap();
+        assert!(cleared["westdata"].get("panel_proxy").is_none());
+
+        for bad in [
+            "proxy.example.com:8080",
+            "http://proxy.example.com",
+            "ftp://proxy.example.com:8080",
+            "socks5://",
+        ] {
+            assert!(proxy_endpoint(bad).is_err(), "{bad}");
+        }
+        assert_eq!(
+            proxy_endpoint("socks5://user:pass@10.0.0.1:1080").unwrap(),
+            "socks5://user:pass@10.0.0.1:1080"
+        );
+    }
+
+    #[test]
+    fn panel_egress_prefers_the_pinned_address_and_is_never_returned() {
+        let mut pinned = Config {
+            username: "user@example.com".into(),
+            password: "p".into(),
+            product_id: "1".into(),
+            panel_proxy: Some("http://user:pass@proxy.example.com:8080".into()),
+        };
+        assert_eq!(
+            panel_egress(&pinned, Some("http://platform-egress:8080")),
+            Some("http://user:pass@proxy.example.com:8080")
+        );
+        pinned.panel_proxy = None;
+        assert_eq!(
+            panel_egress(&pinned, Some("http://platform-egress:8080")),
+            Some("http://platform-egress:8080")
+        );
+
+        let mut data = json!({"westdata":{"username":"user@example.com","password":"secret",
+            "panel_proxy":"http://user:pass@proxy.example.com:8080","product_id":"1"}});
+        redact(&mut data);
+        assert!(data["westdata"].get("password").is_none());
+        assert!(data["westdata"].get("panel_proxy").is_none());
+        assert!(!data.to_string().contains("proxy.example.com"));
+    }
+
     /// Live panel check for a real account. Credentials and the vision key are read from the
     /// environment at run time; no account, token or key is ever stored in this repository.
     ///
@@ -991,6 +1109,10 @@ mod tests {
             username: required("CAMOFY_WESTDATA_USER"),
             password: required("CAMOFY_WESTDATA_PASS"),
             product_id: required("CAMOFY_WESTDATA_PRODUCT"),
+            // Optional: pin a panel egress whose address Cloudflare does not challenge.
+            panel_proxy: std::env::var("CAMOFY_WESTDATA_PANEL_PROXY")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
         };
         let vision = captcha::Vision::from_env()
             .unwrap()
