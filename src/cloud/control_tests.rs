@@ -47,6 +47,7 @@ async fn control_end_to_end() {
         registration: true,
         private_egress: true,
         workers: 1,
+        captcha: None,
         topics: Default::default(),
         hash_slots: Arc::new(Semaphore::new(1)),
     };

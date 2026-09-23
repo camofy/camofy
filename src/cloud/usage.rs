@@ -424,6 +424,7 @@ mod tests {
             registration: true,
             private_egress: false,
             workers: 1,
+            captcha: None,
             topics: Default::default(),
             hash_slots: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
         }

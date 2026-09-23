@@ -96,6 +96,7 @@ async fn catalog_end_to_end() {
         registration: true,
         private_egress: false,
         workers: 1,
+        captcha: None,
         topics: Default::default(),
         hash_slots: Arc::new(tokio::sync::Semaphore::new(2)),
     };

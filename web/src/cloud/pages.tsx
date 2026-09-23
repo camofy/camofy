@@ -288,7 +288,9 @@ export function CollectionPage({ section }: { section: Section }) {
                     </Link>
                     <small className="row-subtitle">
                       {section === "subscriptions"
-                        ? host(r.data.url)
+                        ? r.data.westdata
+                          ? `WestData · ${r.data.westdata.username ?? "自动获取"}`
+                          : host(r.data.url)
                         : section === "profiles"
                           ? r.data.store
                             ? `商店组件 · v${r.data._package?.version ?? "—"} · 手动锁定`
@@ -1115,16 +1117,37 @@ export function DetailPage({ section }: { section: Section }) {
                   <>
                     <Facts
                       items={[
+                        [
+                          "订阅来源",
+                          r.data.westdata
+                            ? `WestData 账号 · ${r.data.westdata.username ?? "—"}`
+                            : "直接订阅 URL",
+                        ],
                         ["上游站点", host(r.data.url)],
                         ["自动刷新", interval(r)],
                         ["最近刷新", displayTime(r.data.last_fetch)],
                         ["拉取出口", "平台统一管理"],
+                        ...(r.data.westdata
+                          ? ([
+                              [
+                                "最近激活",
+                                displayTime(r.data.westdata.last_activate),
+                              ],
+                            ] as [string, string][])
+                          : []),
                         ["配置版本", `v${r.version}`],
                       ]}
                     />
+                    {r.data.westdata && (
+                      <p className="muted">
+                        刷新时自动登录面板获取并激活该地址，链接由面板决定，无需手工维护。
+                      </p>
+                    )}
                     <div className="secret-field">
                       <label>
-                        上游订阅 URL
+                        {r.data.westdata
+                          ? "当前激活的订阅地址（面板下发）"
+                          : "上游订阅 URL"}
                         <input
                           type={reveal ? "text" : "password"}
                           readOnly
