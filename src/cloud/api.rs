@@ -527,9 +527,6 @@ pub struct PanelScan {
     pub username: String,
     #[serde(default)]
     pub password: String,
-    /// Optional egress for the panel conversation; blank reuses the stored one, `none` clears it.
-    #[serde(default)]
-    pub panel_proxy: String,
     /// The source being edited, so a blank password reuses the stored one.
     pub profile_id: Option<Uuid>,
 }
@@ -569,23 +566,6 @@ pub async fn westdata_services(
     if password.is_empty() {
         return Err(Error::bad("请填写面板登录密码"));
     }
-    // A panel egress is a credential too, so the editor convention applies: blank reuses the
-    // stored address, `none` clears it, anything else must be a valid proxy endpoint.
-    let stored = match p.profile_id {
-        Some(id) => {
-            let mut conn = app.db.acquire().await?;
-            let data = store::get(&app, &mut conn, user, id).await?.data;
-            data["westdata"]["panel_proxy"].as_str().map(str::to_string)
-        }
-        None => None,
-    };
-    let panel_proxy = match p.panel_proxy.trim() {
-        "" => stored,
-        value if value.eq_ignore_ascii_case(crate::westdata::PANEL_PROXY_NONE) => None,
-        value => {
-            Some(crate::westdata::proxy_endpoint(value).map_err(|e| Error::bad(e.to_string()))?)
-        }
-    };
 
     let proxy = {
         let mut conn = app.db.acquire().await?;
@@ -604,7 +584,6 @@ pub async fn westdata_services(
         username,
         password,
         product_id: String::new(),
-        panel_proxy,
     };
     let services = crate::westdata::discover(vision, Some(&endpoint), app.private_egress, &config)
         .await
