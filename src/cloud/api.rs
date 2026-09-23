@@ -587,7 +587,7 @@ pub async fn westdata_services(
     };
     let services = crate::westdata::discover(vision, Some(&endpoint), app.private_egress, &config)
         .await
-        .map_err(|e| Error::bad(e.to_string()))?;
+        .map_err(|e| Error::bad(crate::westdata::describe(&e)))?;
     Ok(Json(json!({ "services": services })))
 }
 
