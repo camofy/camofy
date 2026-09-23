@@ -15,11 +15,14 @@ export type Data = {
   protocol?: "http" | "socks5";
   egress_preview?: unknown;
   // Panel-managed source: the refresh worker logs in, rewrites `url` and activates the link.
-  // `password` is write-only and never returned by the API.
+  // `password` and `panel_proxy` are write-only and never returned by the API.
   westdata?: {
     username?: string;
     password?: string;
     product_id?: string;
+    // Dedicated egress for the panel conversation; blank keeps the stored address, `none`
+    // falls back to the platform egress.
+    panel_proxy?: string;
     subscription_url?: string;
     last_activate?: number;
   };

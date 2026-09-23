@@ -23,7 +23,10 @@ it does not contact a central Camofy account server.
   logs in, rewrites the stored URL with the address the panel currently serves,
   opens the panel's ten-minute update switch and fetches immediately. Credentials
   are encrypted with the resource, write-only over the API, and the fetcher is
-  unchanged otherwise. See [WestData 账号订阅](westdata-source.md).
+  unchanged otherwise. An optional `panel_proxy` gives the panel conversation its
+  own egress while subscription delivery keeps using the platform egress, because
+  Cloudflare challenges an address by reputation and shared egress pools are
+  challenged constantly. See [WestData 账号订阅](westdata-source.md).
 * Independent profile (`type: overlay`): arbitrary partial YAML such as nodes,
   groups, rules or runtime settings. Neither profile type has global activation.
 * Identity (`kind: bundle` in the API): an ordered `profiles` array of

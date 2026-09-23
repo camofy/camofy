@@ -30,14 +30,34 @@ WestData 面板（`wd-gold.com` / `wd-gold.net`）默认**关闭订阅更新**�
 切回「直接订阅 URL」即可恢复普通的固定订阅地址，账号信息同时被清除。
 自动刷新、手动刷新、首次拉取共用同一条队列与同一个平台出口，行为与普通订阅一致。
 
-扫描与刷新一样经平台订阅出口（每次提取一个短效出口 IP），按用户限速 10 次/分钟，
+扫描与刷新默认一样经平台订阅出口（每次提取一个短效出口 IP），按用户限速 10 次/分钟，
 返回内容只有 ID、名称、状态与到期日，不回显密码、Cookie 或页面正文。
+出口 IP 被 Cloudflare 挑战时可另配一条**面板专用出口**（见下节「面板出口代理」），
+扫描与刷新都会使用它。
+
+## 面板出口代理（`panel_proxy`）
+
+Cloudflare 是按出口 IP 的信誉下发托管挑战的：同一个客户端、同一份代码，换个干净出口就是
+200。因此订阅源支持给**面板会话单独指定一条出口**，与订阅地址本身的抓取解耦：
+
+- 字段：WestData 账号区里的「面板出口代理（可选）」，形如
+  `http://user:password@host:8080`，支持 `http` / `https` / `socks5`（`security::egress_client`
+  同一套校验与握手实现，含代理认证）。
+- 生效范围：**只作用于面板会话**（登录、读产品页、开订阅开关、扫描产品）。
+  订阅地址 `wd-turbo.com` / `api.wd-turbo.com` 的抓取始终走平台出口，不受影响。
+- 留空 = 沿用已保存的地址（与密码一致，接口从不回显它）；
+  填写 `none` = 清除，面板会话回到平台出口。
+- 它存在 `data.westdata.panel_proxy`，与账号密码一起 AES-256-GCM 加密入库；
+  列表/保存响应、日志、刷新历史里都不会出现它。
+
+配置位置：编辑订阅源 → 订阅来源选「WestData 账号」→ 「面板出口代理（可选）」。
+命令行联调可传 `CAMOFY_WESTDATA_PANEL_PROXY=…`。
 
 ## 凭据存放与回显
 
-- 账号、密码、服务 ID 存在该订阅源自己的 `data.westdata` 中，随整条
+- 账号、密码、服务 ID、面板出口代理存在该订阅源自己的 `data.westdata` 中，随整条
   `resources.data` 一起用 AES-256-GCM 加密入库，与代理凭据同一套机制。
-- 接口从不回显密码：列表和保存响应都会删除该字段；编辑时密码留空即保留原值。
+- 接口从不回显密码与面板出口代理：列表和保存响应都会删除这两个字段；编辑时留空即保留原值。
 - 日志只记录步骤名、HTTP 状态码与响应体长度，不记录 URL、Cookie、表单值或页面正文。
   刷新历史里的失败信息是固定文案（含具体步骤），不含任何密钥。
 - 服务 ID 不写死在代码里：它属于单个账号，由使用者在界面上填写。
@@ -104,8 +124,24 @@ JavaScript，纯 HTTP 客户端直接以 403 结束；而在被标记的出口�
 可行做法只有两条：
 
 1. 给面板登录换一个不被挑战的出口。实测机场节点与海外干净出口可行，且订阅拉取在这些出口上
-   同样可用，因此可以整条出口替换，或另配一条仅供面板登录使用的出口策略；
+   同样可用，因此可以整条出口替换，或另配一条仅供面板登录使用的出口策略
+   —— 后者已实现为上面「面板出口代理」字段；
 2. 让供应商提供不走 Cloudflare 的面板入口。
+
+2026-09-24 又把这三种"绕过客户端"的方向全部实测排除，结论没有变化：
+
+| 客户端 | 出口 | 结果 |
+| --- | --- | --- |
+| 有头真 Chrome（Playwright，含 `--disable-blink-features=AutomationControlled`） | 2captcha 住宅代理（JP/FR/RU/IT/CA/ES/BR/MY 轮换） | 403 挑战，`cf-mitigated: challenge`；页面停在「请稍候…」，`cf_chl_rc_ni` 限速循环 |
+| **完全不带 CDP 的普通 Chrome**（`--remote-debugging-port`，加载期间无任何自动化连接） | 同一住宅出口 | 同样停在挑战页 120 秒以上，始终没有登录表单 |
+| 真 Chrome + 干净的 CN 住宅出口（2captcha 云浏览器，吉林联通） | CN 住宅 | 403 挑战 |
+| **2captcha 云浏览器（Browser API）+ 其内置 `Captcha.setAutoSolve`** | 其免费 IPv6 出口 | 403 挑战；`Captcha.solve` 返回 `solveFailed`，内置解题器识别不到托管挑战 |
+| 纯 HTTP（`curl` / 应用内的 reqwest） | 本机直连出口（TW，Kirino LLC） | **200，7842B 登录页，`signinform` 齐全，零挑战** |
+
+即：**同一时刻、同一套客户端，唯一变量是出口 IP**。挑战页要求执行 JS，而被标记的出口上
+即使真实浏览器也只会被无限限速循环；换到干净出口后，连 `curl` 都直接拿到登录页。
+`cf_clearance` 不能跨客户端复用（它绑定出口 IP 与浏览器指纹，实测同 IP 同 UA 换 curl 仍 403），
+所以"在别处过一次挑战再把 Cookie 搬回来"也不可行。
 
 **不要把希望放在客户端伪装上**：已验证连有头真实 Chrome 都无法通过携趣出口的验证页。
 云端也不引入浏览器：解 JS 挑战需要真实浏览器运行时，而在这个出口上它同样过不去，
@@ -206,3 +242,23 @@ JA3/JA4 与 UA 一致、PoW），且 token 一次性、服务端 `siteverify` �
   以及视觉模型在更复杂验证码上的长期成功率。
 - 生产环境首次使用即命中托管挑战（见上节）；当时携趣出口与服务器自身出口都被挑战，
   说明"能跑通"依赖一个不被挑战的出口，而不是客户端实现细节。
+
+## 验证记录（2026-09-24）
+
+在干净出口上用**纯 HTTP、无浏览器**复跑了一遍完整面板流程（与云端 reqwest 客户端同形态）：
+
+```
+GET  /clientarea.php                                 200   7842B  signinform ✓  无挑战
+GET  /includes/verifyimage.php                       200   1824B  验证码图片
+POST /dologin.php                                    302 → /clientarea.php
+GET  /clientarea.php                                 200  35634B  已登录（logout.php ✓）
+GET  /clientarea.php?action=productdetails&id=…      200  73673B  2 条订阅地址
+GET  …fuqingsocksAction=ActivateSublink&Serviceid=…  200  "success"   订阅更新开关已打开
+```
+
+期间还确认了三件事：云浏览器自带的 `Captcha.setAutoSolve` 只处理独立验证码组件，
+识别不到 Cloudflare 托管挑战页；2captcha 的 Turnstile 挑战模式（拦截 `turnstile.render`
+取 `action`/`cData`/`chlPageData` + 执行回调）**确实能拿到 `cf_clearance`**，但 token 回填走的是
+加密的 CF 编排请求（`/cdn-cgi/challenge-platform/h/b/fo/…`），纯 Rust 客户端无法复刻，
+且该路径只在 Cloudflare 偶尔升级为交互式组件时才可用 —— 因此不作为产品方案。
+最终实现的是「面板出口代理」：不改客户端、不引入浏览器、不引入解题服务。
