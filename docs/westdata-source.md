@@ -132,10 +132,23 @@ Get failed: v2 challenge solver failed: goja: answer value is empty or undefined
 
 同一程序换到不被挑战的出口：`HTTP 200, 8038 bytes, loginform=true`。
 
-原因是现代挑战要求的信号无法在纯 JS 引擎里凑齐：canvas/WebGL/`OfflineAudioContext` 真机渲染指纹、
-`Event.isTrusted` 交互门、`Function.prototype.toString` 原生代码校验、JA3/JA4 与 UA 一致性、
-IP 信誉与 proof-of-work；token 一次性且由服务端 `siteverify` 校验。
-所以**不存在可用的开源"无浏览器解算"实现**：要么换出口（推荐，且该出口根本不再被挑战），
+**把这条路修到底的结果**（不是只读代码下的结论）：
+
+1. 自己重写了它的 960 字节 DOM shim（原版 `createElement` 里引用了未定义的 `domain`，且 `getElementById`
+   每次返回新对象，脚本写入的值读不回来）——补上 per-id 元素缓存、`location`/`navigator`/`document`、
+   canvas/WebGL/`OfflineAudioContext` 桩、同步定时器后，`location is not defined` 消失；
+2. 仍然失败，且原因变了：挑战页里只有 1 个内联 `window._cf_chl_opt` 脚本，它做的事是**注入一个外部
+   `<script>`**，真正的挑战逻辑在 `…/orchestrate/chl_page/v1`（实测 233–238 KB）；
+3. 再往下一层：自己抓下那个 bundle 塞进 goja 运行 —— **66 ms 跑完、零报错、零网络请求**，
+   只记录了 `createdTags: ["script"]`、`timers: 1`：它把工作继续交给下一层（Turnstile loader），
+   而那一层需要完整浏览器环境。
+
+也就是说，**当前这一代挑战的逻辑根本不在 HTML 里**，纯 JS 引擎要复刻的是整个浏览器环境
+（canvas/WebGL/audio 真机指纹、`isTrusted` 交互、`Function.prototype.toString` 原生代码校验、
+JA3/JA4 与 UA 一致、PoW），且 token 一次性、服务端 `siteverify` 校验。
+连最新的 Rust 实现也这么写：`cloudscraper-rs` 的 `browser` feature 是
+"Headless-browser fallback for interactive challenges (`orchestrate/chl_page`)，需要 Chrome/Chromium 二进制"。
+所以**不存在可用的开源"无浏览器解算"实现**：要么换出口（推荐，该出口根本不再被挑战），
 要么接受付费第三方（并把面板地址/代理凭据交给它，不建议）。
 
 ## 刷新与重试
