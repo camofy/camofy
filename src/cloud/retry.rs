@@ -4,6 +4,9 @@ use std::time::Duration;
 pub const ATTEMPTS: usize = 3;
 pub const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(30);
 pub const TOTAL_TIMEOUT: Duration = Duration::from_secs(100);
+/// A resolved panel subscription stays fetchable for ten minutes after activation; retries
+/// inside one refresh reuse it instead of paying for another login and captcha.
+pub const PANEL_REUSE: Duration = Duration::from_secs(480);
 
 #[derive(Debug)]
 pub struct SafeFailure {

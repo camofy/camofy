@@ -245,6 +245,7 @@ dependencies = [
  "argon2",
  "axum",
  "base64",
+ "flate2",
  "fs2",
  "futures-util",
  "hmac",

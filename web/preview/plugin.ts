@@ -71,6 +71,19 @@ export function designPreview(): Plugin {
   };
   let resources: Item[] = [
     source("everyday-source", "日常订阅", 36),
+    {
+      ...source("panel-source", "机房面板订阅", 12),
+      data: {
+        ...source("panel-source", "机房面板订阅", 12).data,
+        url: "https://panel.example.invalid/generated/clash.yaml",
+        westdata: {
+          username: "demo@example.invalid",
+          product_id: "123456",
+          subscription_url: "https://panel.example.invalid/subscribe/demo-token",
+          last_activate: now - 60,
+        },
+      },
+    },
     source("backup-source", "备用线路", 8),
     {
       ...source("travel-source", "旅行订阅", 12),
@@ -198,6 +211,23 @@ export function designPreview(): Plugin {
               : send(user);
           if (path === "/resources" && req.method === "GET")
             return send(resources);
+          if (path === "/profiles/westdata-services")
+            return send({
+              services: [
+                {
+                  id: "123456",
+                  name: "Plan Beta",
+                  status: "有效的",
+                  next_due: "2026-10-08",
+                },
+                {
+                  id: "654321",
+                  name: "Plan Beta",
+                  status: "已终止",
+                  next_due: "2025-09-06",
+                },
+              ],
+            });
           let body = "";
           for await (const chunk of req) body += chunk;
           const draft = body ? JSON.parse(body) : {};

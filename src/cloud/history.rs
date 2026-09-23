@@ -61,6 +61,10 @@ pub async fn prune(conn: &mut sqlx::PgConnection, user: Uuid, profile: Uuid) -> 
 
 /// Never store upstream bodies, URLs, parser snippets or provider error Display.
 pub fn failure(error: &anyhow::Error, stage: &str) -> (&'static str, String) {
+    // Panel conversations carry their own fixed, secret-free wording and a precise step.
+    if let Some(panel) = error.downcast_ref::<crate::westdata::Failure>() {
+        return (panel.step, panel.message.to_string());
+    }
     if let Some(e) = error.downcast_ref::<reqwest::Error>() {
         if let Some(status) = e.status() {
             return (
@@ -83,6 +87,10 @@ pub fn failure(error: &anyhow::Error, stage: &str) -> (&'static str, String) {
         "proxy" => (
             "proxy_failure",
             "平台订阅出口暂不可用，已保留上次成功配置，请稍后重试。".into(),
+        ),
+        "westdata" => (
+            "westdata_failure",
+            "WestData 面板登录或订阅地址读取失败，已保留上次成功配置。".into(),
         ),
         "timeout" => (
             "timeout",

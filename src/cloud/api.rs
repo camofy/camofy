@@ -49,6 +49,8 @@ fn redact_source(data: &mut Value) {
     for key in ["proxy_id", "last_proxy", "last_proxy_at"] {
         data.as_object_mut().unwrap().remove(key);
     }
+    // A panel password is write-only, exactly like every other credential here.
+    crate::westdata::redact(data);
 }
 
 #[derive(Deserialize)]
@@ -209,20 +211,50 @@ async fn save(
                 if let Some(value) = old.as_ref().and_then(|r| r.data.get("proxy_id")) {
                     data["proxy_id"] = value.clone();
                 }
-                let u = url::Url::parse(
-                    data["url"]
-                        .as_str()
-                        .ok_or_else(|| Error::bad("subscription URL required"))?,
-                )
-                .map_err(|_| Error::bad("invalid subscription URL"))?;
-                if !["http", "https"].contains(&u.scheme())
-                    || u.host_str().is_none()
-                    || !u.username().is_empty()
-                    || u.password().is_some()
-                {
-                    return Err(Error::bad(
-                        "subscription must use HTTP(S) without URL userinfo",
-                    ));
+                crate::westdata::normalize(&mut data, old.as_ref().map(|r| &r.data))
+                    .map_err(|e| Error::bad(e.to_string()))?;
+                if crate::westdata::is_managed(&data) {
+                    // The refresh worker owns this address: it logs in and rewrites it.
+                    if app.captcha.is_none() {
+                        return Err(Error::bad(
+                            "未配置验证码识别模型，无法使用 WestData 账号订阅",
+                        ));
+                    }
+                    if data["url"].as_str().is_none_or(str::is_empty) {
+                        data["url"] = old
+                            .as_ref()
+                            .map(|r| r.data["url"].clone())
+                            .filter(Value::is_string)
+                            .unwrap_or_else(|| json!(""));
+                    } else {
+                        let u = url::Url::parse(data["url"].as_str().unwrap())
+                            .map_err(|_| Error::bad("invalid subscription URL"))?;
+                        if !["http", "https"].contains(&u.scheme())
+                            || u.host_str().is_none()
+                            || !u.username().is_empty()
+                            || u.password().is_some()
+                        {
+                            return Err(Error::bad(
+                                "subscription must use HTTP(S) without URL userinfo",
+                            ));
+                        }
+                    }
+                } else {
+                    let u = url::Url::parse(
+                        data["url"]
+                            .as_str()
+                            .ok_or_else(|| Error::bad("subscription URL required"))?,
+                    )
+                    .map_err(|_| Error::bad("invalid subscription URL"))?;
+                    if !["http", "https"].contains(&u.scheme())
+                        || u.host_str().is_none()
+                        || !u.username().is_empty()
+                        || u.password().is_some()
+                    {
+                        return Err(Error::bad(
+                            "subscription must use HTTP(S) without URL userinfo",
+                        ));
+                    }
                 }
                 let interval = data["interval_seconds"].as_i64().unwrap_or(3600);
                 if !(300..=604800).contains(&interval) {
@@ -381,7 +413,10 @@ async fn save(
     }
     if r.kind == "profile" && r.data["type"] == "source" {
         // Save schedules even when auto refresh is off: one initial/manual refresh is allowed.
-        let fetch_changed = old.as_ref().is_some_and(|o| o.data["url"] != r.data["url"]);
+        // Panel credentials are part of the fetch inputs, so changing them re-queues a refresh.
+        let fetch_changed = old.as_ref().is_some_and(|o| {
+            o.data["url"] != r.data["url"] || o.data["westdata"] != r.data["westdata"]
+        });
         if new || fetch_changed {
             sqlx::query("INSERT INTO fetch_jobs(profile_id,user_id,reason) VALUES($1,$2,$3) ON CONFLICT(profile_id) DO UPDATE SET next_run=now(),reason=EXCLUDED.reason,request_id=gen_random_uuid()")
                 .bind(id).bind(user).bind(if new { "initial" } else { "settings" }).execute(&mut *tx).await?;
@@ -485,6 +520,75 @@ pub async fn profile_content(
     Ok(Json(
         json!({"content":content,"version":r.version,"last_fetch":r.data["last_fetch"]}),
     ))
+}
+
+#[derive(Deserialize)]
+pub struct PanelScan {
+    pub username: String,
+    #[serde(default)]
+    pub password: String,
+    /// The source being edited, so a blank password reuses the stored one.
+    pub profile_id: Option<Uuid>,
+}
+
+/// Lists the services a panel account can manage, so the editor can pick one instead of
+/// typing a service id. Runs through the platform egress like every other panel request and
+/// returns only id, name, status and next due date — never credentials or page content.
+pub async fn westdata_services(
+    State(app): State<App>,
+    h: HeaderMap,
+    Json(p): Json<PanelScan>,
+) -> Result<Json<Value>, Error> {
+    let user = auth::user(&app, &h, true).await?;
+    auth::rate(&app, format!("panel-scan:{user}"), 10, 60).await?;
+    let vision = app
+        .captcha
+        .as_ref()
+        .ok_or_else(|| Error::bad("未配置验证码识别模型，无法登录面板"))?;
+    let username = p.username.trim().to_string();
+    if username.is_empty() || username.len() > 254 || username.chars().any(char::is_control) {
+        return Err(Error::bad("请填写面板登录账号"));
+    }
+    let password = if p.password.is_empty() {
+        match p.profile_id {
+            Some(id) => {
+                let mut conn = app.db.acquire().await?;
+                store::get(&app, &mut conn, user, id).await?.data["westdata"]["password"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string()
+            }
+            None => String::new(),
+        }
+    } else {
+        p.password
+    };
+    if password.is_empty() {
+        return Err(Error::bad("请填写面板登录密码"));
+    }
+
+    let proxy = {
+        let mut conn = app.db.acquire().await?;
+        crate::admin::snapshot(&app, &mut conn)
+            .await?
+            .proxy
+            .ok_or_else(|| Error::bad("平台订阅出口不可用，请先在系统管理中配置出口"))?
+    };
+    crate::provider::extraction_slot(&app, &proxy.data)
+        .await
+        .map_err(|e| Error::bad(e.to_string()))?;
+    let endpoint = crate::provider::resolve(&proxy.data, app.private_egress)
+        .await
+        .map_err(|e| Error::bad(e.to_string()))?;
+    let config = crate::westdata::Config {
+        username,
+        password,
+        product_id: String::new(),
+    };
+    let services = crate::westdata::discover(vision, Some(&endpoint), app.private_egress, &config)
+        .await
+        .map_err(|e| Error::bad(e.to_string()))?;
+    Ok(Json(json!({ "services": services })))
 }
 
 pub async fn refresh(

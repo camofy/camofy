@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback } from "react";
 import brandMark from "../assets/flower.png";
 import { useBlocker, useBeforeUnload } from "react-router-dom";
-import { api, type Data, type Resource, type User } from "./model";
+import { api, type Data, type PanelService, type Resource, type User } from "./model";
 import { Modal, ConfigPreview, Icon } from "./ui";
 import { type IdentityPreview } from "./Store";
 
@@ -167,6 +167,34 @@ export function Editor({
     expires_at: number;
   } | null>(null);
   const [previewing, setPreviewing] = useState(false);
+  // Panel product discovery for the WestData provider: scan first, type an id only on demand.
+  const [services, setServices] = useState<PanelService[] | null>(null);
+  const [manual, setManual] = useState(false);
+  const [scanning, setScanning] = useState(false);
+  const [scanError, setScanError] = useState("");
+  const scan = () => {
+    setScanning(true);
+    setScanError("");
+    setServices(null);
+    void api<{ services: PanelService[] }>("/profiles/westdata-services", "POST", {
+      username: data.westdata?.username ?? "",
+      password: data.westdata?.password ?? "",
+      profile_id: resource.id,
+    })
+      .then((r) => {
+        setServices(r.services);
+        setManual(false);
+        // A single product needs no decision; several require an explicit choice.
+        if (r.services.length === 1)
+          set("westdata", { ...data.westdata, product_id: r.services[0].id });
+      })
+      .catch((e) => {
+        // A failed scan is not an empty account: keep the retry/manual choice visible.
+        setScanError(e.message);
+        setServices(null);
+      })
+      .finally(() => setScanning(false));
+  };
   const options = (kind: string, type?: string) =>
     all.filter((r) => r.kind === kind && (!type || r.data.type === type));
   const reorder = (i: number, delta: number) => {
@@ -342,14 +370,188 @@ export function Editor({
         {resource.kind === "profile" && data.type === "source" && (
           <>
             <label>
-              Clash YAML 订阅 URL
-              <input
-                required
-                type="url"
-                value={data.url ?? ""}
-                onChange={(e) => set("url", e.target.value)}
-              />
+              订阅来源
+              <select
+                value={data.westdata ? "westdata" : "url"}
+                onChange={(e) =>
+                  set(
+                    "westdata",
+                    e.target.value === "westdata"
+                      ? {
+                          ...(resource.data.westdata ?? {}),
+                          username: data.westdata?.username ?? "",
+                          product_id: data.westdata?.product_id ?? "",
+                        }
+                      : undefined,
+                  )
+                }
+              >
+                <option value="url">直接订阅 URL</option>
+                <option value="westdata">WestData 账号（自动获取并激活订阅）</option>
+              </select>
             </label>
+            {data.westdata ? (
+              <>
+                <label>
+                  WestData 登录账号
+                  <input
+                    required
+                    value={data.westdata.username ?? ""}
+                    autoComplete="username"
+                    onChange={(e) =>
+                      set("westdata", {
+                        ...data.westdata,
+                        username: e.target.value,
+                      })
+                    }
+                  />
+                </label>
+                <label>
+                  登录密码
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    required={!resource.data.westdata?.username}
+                    placeholder={
+                      resource.data.westdata?.username
+                        ? "留空保留原密码"
+                        : undefined
+                    }
+                    value={data.westdata.password ?? ""}
+                    onChange={(e) =>
+                      set("westdata", {
+                        ...data.westdata,
+                        password: e.target.value,
+                      })
+                    }
+                  />
+                </label>
+                {services ? (
+                  services.length > 0 ? (
+                    <div className="field-action-row">
+                      <label>
+                        选择产品
+                        <select
+                          value={data.westdata.product_id ?? ""}
+                          onChange={(e) =>
+                            set("westdata", {
+                              ...data.westdata,
+                              product_id: e.target.value,
+                            })
+                          }
+                        >
+                          <option value="">请选择</option>
+                          {services.map((s) => (
+                            <option key={s.id} value={s.id}>
+                              {s.name} · {s.status}
+                              {s.next_due ? ` · ${s.next_due} 到期` : ""}（{s.id}）
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <button type="button" className="quiet" onClick={scan}>
+                        重新扫描
+                      </button>
+                      <button
+                        type="button"
+                        className="quiet"
+                        onClick={() => setManual(true)}
+                      >
+                        手动填写
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="field-action-row">
+                      <p className="muted">
+                        该账号下没有可管理的产品，请先在面板购买或检查账号。
+                      </p>
+                      <button
+                        type="button"
+                        className="quiet"
+                        onClick={() => setManual(true)}
+                      >
+                        手动填写产品 ID
+                      </button>
+                    </div>
+                  )
+                ) : manual ? (
+                  <div className="field-action-row">
+                    <label>
+                      产品 ID（服务 ID）
+                      <input
+                        inputMode="numeric"
+                        pattern="[0-9]{1,20}"
+                        placeholder="留空则自动使用账号下唯一的产品"
+                        value={data.westdata.product_id ?? ""}
+                        onChange={(e) =>
+                          set("westdata", {
+                            ...data.westdata,
+                            product_id: e.target.value.replace(/[^0-9]/g, ""),
+                          })
+                        }
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="quiet"
+                      onClick={() => setManual(false)}
+                    >
+                      返回扫描
+                    </button>
+                  </div>
+                ) : (
+                  <div className="field-action-row">
+                    <button
+                      type="button"
+                      disabled={scanning || !data.westdata.username}
+                      onClick={scan}
+                    >
+                      {scanning ? "正在登录面板…" : "扫描账号下的产品"}
+                    </button>
+                    <button
+                      type="button"
+                      className="quiet"
+                      onClick={() => setManual(true)}
+                    >
+                      手动填写产品 ID
+                    </button>
+                  </div>
+                )}
+                {scanError && (
+                  <p role="alert" className="inline-error">
+                    {scanError}
+                  </p>
+                )}
+                {data.westdata.product_id && !services && !manual && (
+                  <p className="muted">
+                    当前产品 ID：{data.westdata.product_id}
+                  </p>
+                )}
+                <p className="muted">
+                  每次刷新都会先登录面板：读取当前 Clash 订阅地址并写回本订阅源，
+                  再打开「订阅更新开关」（仅十分钟有效）后立即拉取。账号密码按现有资源模型
+                  加密入库，接口不回显密码，编辑留空即保留原值。
+                </p>
+                {data.westdata.subscription_url && (
+                  <p className="muted">
+                    当前离线地址（仅显示前 34 位）：
+                    {data.westdata.subscription_url.slice(0, 34)}…
+                  </p>
+                )}
+              </>
+            ) : (
+              <>
+                <label>
+                  Clash YAML 订阅 URL
+                  <input
+                    required
+                    type="url"
+                    value={data.url ?? ""}
+                    onChange={(e) => set("url", e.target.value)}
+                  />
+                </label>
+              </>
+            )}
             <p className="muted">
               订阅出口由平台统一管理；暂不可用时保留上次成功配置。
             </p>

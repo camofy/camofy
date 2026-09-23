@@ -191,6 +191,62 @@ pub async fn fetch_text(target: &url::Url, private: bool) -> Result<String> {
     fetch_text_inner(target, private, None).await
 }
 
+/// Direct JSON POST to a fixed platform service endpoint (captcha vision). Never uses the
+/// platform egress, never follows redirects, pins a validated address and bounds both
+/// directions. `private` follows CAMOFY_ALLOW_PRIVATE_EGRESS for local/private deployments.
+pub async fn post_json(
+    target: &url::Url,
+    bearer: Option<&str>,
+    body: &Value,
+    limit: usize,
+    private: bool,
+) -> Result<Value> {
+    let request = async {
+        ensure!(
+            ["http", "https"].contains(&target.scheme())
+                && target.host_str().is_some()
+                && target.username().is_empty()
+                && target.password().is_none(),
+            "invalid service URL"
+        );
+        let addrs = addresses(target, private)
+            .await?
+            .into_iter()
+            .filter(SocketAddr::is_ipv4)
+            .collect::<Vec<_>>();
+        ensure!(!addrs.is_empty(), "service needs an IPv4 address");
+        let mut builder = reqwest::Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(45));
+        builder = builder.resolve_to_addrs(target.host_str().unwrap(), &addrs);
+        let mut request = builder.build()?.post(target.clone()).json(body);
+        if let Some(key) = bearer {
+            request = request.bearer_auth(key);
+        }
+        let mut response = request.send().await?;
+        crate::retry::check_http(&response)?;
+        ensure!(response.status().is_success(), "service HTTP failure");
+        ensure!(
+            response.content_length().is_none_or(|n| n <= limit as u64),
+            "service response too large"
+        );
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            ensure!(
+                bytes.len() + chunk.len() <= limit,
+                "service response too large"
+            );
+            bytes.extend(chunk);
+        }
+        Ok::<_, anyhow::Error>(serde_json::from_slice(&bytes)?)
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(45), request)
+        .await
+        .map_err(anyhow::Error::new)
+        .and_then(|r| r)
+}
+
 pub async fn fetch_text_at(target: &url::Url, pinned: Vec<SocketAddr>) -> Result<String> {
     fetch_text_inner(target, false, Some(pinned)).await
 }
@@ -258,29 +314,46 @@ async fn fetch_text_inner(
         })
 }
 
+pub const CLIENT_UA: &str = "clash-verge/camofy-cloud";
+
+/// A client pinned to one validated target address, optionally tunnelled through the
+/// platform egress proxy. The bridge task must outlive every request on this client,
+/// so it is owned here instead of by a single call.
+pub struct Egress {
+    client: reqwest::Client,
+    _bridge: AbortOnDrop,
+}
+impl Egress {
+    pub fn client(&self) -> &reqwest::Client {
+        &self.client
+    }
+}
+
 /// Pin destination and proxy DNS. Redirects disabled to prevent credential leakage and SSRF.
 /// For proxy requests use a pinned target IP, retaining Host and TLS SNI through reqwest's resolver.
-pub struct Fetched {
-    pub content: String,
-    pub usage: crate::usage::Snapshot,
-}
-pub async fn fetch(url: &str, proxy: Option<&str>, private: bool) -> Result<Fetched> {
-    let target = url::Url::parse(url)?;
+pub async fn egress_client(
+    target: &url::Url,
+    proxy: Option<&str>,
+    private: bool,
+    timeout: std::time::Duration,
+) -> Result<Egress> {
     ensure!(
         ["http", "https"].contains(&target.scheme())
+            && target.host_str().is_some()
             && target.username().is_empty()
             && target.password().is_none(),
-        "subscription URL must be HTTP(S), without userinfo"
+        "target URL must be HTTP(S), without userinfo"
     );
-    let addrs = subscription_addresses(&target, private).await?;
+    let host = target.host_str().unwrap().to_string();
+    let addrs = subscription_addresses(target, private).await?;
     let mut bridge = None;
     let mut builder = reqwest::Client::builder()
         .no_proxy()
-        .timeout(std::time::Duration::from_secs(60))
+        .timeout(timeout)
         .connect_timeout(std::time::Duration::from_secs(10))
         .redirect(reqwest::redirect::Policy::none())
-        .user_agent("clash-verge/camofy-cloud");
-    builder = builder.resolve_to_addrs(target.host_str().unwrap(), &addrs);
+        .user_agent(CLIENT_UA);
+    builder = builder.resolve_to_addrs(&host, &addrs);
     if let Some(endpoint) = proxy {
         let p = url::Url::parse(endpoint)?;
         ensure!(
@@ -294,8 +367,26 @@ pub async fn fetch(url: &str, proxy: Option<&str>, private: bool) -> Result<Fetc
         bridge = Some(task);
         builder = builder.proxy(reqwest::Proxy::all(format!("http://{local}"))?);
     }
-    let _bridge = AbortOnDrop(bridge);
-    let mut response = builder.build()?.get(target).send().await?;
+    Ok(Egress {
+        client: builder.build()?,
+        _bridge: AbortOnDrop(bridge),
+    })
+}
+
+pub struct Fetched {
+    pub content: String,
+    pub usage: crate::usage::Snapshot,
+}
+pub async fn fetch(url: &str, proxy: Option<&str>, private: bool) -> Result<Fetched> {
+    let target = url::Url::parse(url)?;
+    ensure!(
+        ["http", "https"].contains(&target.scheme())
+            && target.username().is_empty()
+            && target.password().is_none(),
+        "subscription URL must be HTTP(S), without userinfo"
+    );
+    let egress = egress_client(&target, proxy, private, std::time::Duration::from_secs(60)).await?;
+    let mut response = egress.client().get(target.clone()).send().await?;
     crate::retry::check_http(&response)?;
     ensure!(
         response.status().is_success(),
@@ -343,81 +434,98 @@ async fn http_proxy_bridge(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let task = tokio::spawn(async move {
-        let exchange = async {
-            let (mut local, _) = listener.accept().await?;
-            let mut head = Vec::new();
-            while !head.ends_with(b"\r\n\r\n") {
-                ensure!(head.len() < 16384, "proxy request headers too large");
-                head.push(local.read_u8().await?);
-            }
-            let text = std::str::from_utf8(&head)?;
-            let tunnel = text.starts_with("CONNECT ");
-            let mut stream = tokio::net::TcpStream::connect(proxy_addr).await?;
-            let socks = proxy.scheme() == "socks5";
-            if socks {
-                socks_handshake(&mut stream, &proxy, target_addr).await?;
-                if tunnel {
-                    local
-                        .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-                        .await?;
-                    tokio::io::copy_bidirectional(&mut local, &mut stream).await?;
-                    return Ok(());
-                }
-            }
-            let mut upstream: Box<dyn ProxyIo> = if proxy.scheme() == "https" {
-                let roots = tokio_rustls::rustls::RootCertStore::from_iter(
-                    webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
-                );
-                let config = tokio_rustls::rustls::ClientConfig::builder()
-                    .with_root_certificates(roots)
-                    .with_no_client_auth();
-                let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config));
-                let name = tokio_rustls::rustls::pki_types::ServerName::try_from(
-                    proxy.host_str().unwrap().to_string(),
-                )?;
-                Box::new(connector.connect(name, stream).await?)
-            } else {
-                Box::new(stream)
+        // One bridge serves every request of its client until the client is dropped;
+        // each accepted connection still pins the same validated target address.
+        loop {
+            let (mut local, _) = match listener.accept().await {
+                Ok(v) => v,
+                Err(_) => break,
             };
-            let mut pinned = target.clone();
-            pinned
-                .set_ip_host(target_addr.ip())
-                .map_err(|_| anyhow::anyhow!("target IP"))?;
-            let mut request = if tunnel {
-                format!("CONNECT {target_addr} HTTP/1.1\r\nHost: {target_addr}\r\n")
-            } else if socks {
-                let path = &target[url::Position::BeforePath..url::Position::AfterQuery];
-                format!("GET {path} HTTP/1.1\r\n")
-            } else {
-                format!("GET {} HTTP/1.1\r\n", pinned.as_str())
-            };
-            for line in text.split("\r\n").skip(1).filter(|s| !s.is_empty()) {
-                let lower = line.to_ascii_lowercase();
-                if lower.starts_with("proxy-authorization:")
-                    || lower.starts_with("proxy-connection:")
-                    || (tunnel && lower.starts_with("host:"))
-                {
-                    continue;
-                }
-                request.push_str(line);
-                request.push_str("\r\n");
-            }
-            if !socks && !proxy.username().is_empty() {
-                let username =
-                    percent_encoding::percent_decode_str(proxy.username()).decode_utf8()?;
-                let password = percent_encoding::percent_decode_str(proxy.password().unwrap_or(""))
-                    .decode_utf8()?;
-                request.push_str(&format!(
-                    "Proxy-Authorization: Basic {}\r\n",
-                    STANDARD.encode(format!("{username}:{password}"))
-                ));
-            }
-            request.push_str("\r\n");
-            upstream.write_all(request.as_bytes()).await?;
-            tokio::io::copy_bidirectional(&mut local, &mut upstream).await?;
-            Ok::<(), anyhow::Error>(())
-        };
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(65), exchange).await;
+            let proxy = proxy.clone();
+            let target = target.clone();
+            tokio::spawn(async move {
+                let exchange = async {
+                    let mut head = Vec::new();
+                    while !head.ends_with(b"\r\n\r\n") {
+                        ensure!(head.len() < 16384, "proxy request headers too large");
+                        head.push(local.read_u8().await?);
+                    }
+                    let text = std::str::from_utf8(&head)?;
+                    let tunnel = text.starts_with("CONNECT ");
+                    let mut stream = tokio::net::TcpStream::connect(proxy_addr).await?;
+                    let socks = proxy.scheme() == "socks5";
+                    if socks {
+                        socks_handshake(&mut stream, &proxy, target_addr).await?;
+                        if tunnel {
+                            local
+                                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                                .await?;
+                            tokio::io::copy_bidirectional(&mut local, &mut stream).await?;
+                            return Ok(());
+                        }
+                    }
+                    let mut upstream: Box<dyn ProxyIo> = if proxy.scheme() == "https" {
+                        let roots = tokio_rustls::rustls::RootCertStore::from_iter(
+                            webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
+                        );
+                        let config = tokio_rustls::rustls::ClientConfig::builder()
+                            .with_root_certificates(roots)
+                            .with_no_client_auth();
+                        let connector =
+                            tokio_rustls::TlsConnector::from(std::sync::Arc::new(config));
+                        let name = tokio_rustls::rustls::pki_types::ServerName::try_from(
+                            proxy.host_str().unwrap().to_string(),
+                        )?;
+                        Box::new(connector.connect(name, stream).await?)
+                    } else {
+                        Box::new(stream)
+                    };
+                    let mut pinned = target.clone();
+                    pinned
+                        .set_ip_host(target_addr.ip())
+                        .map_err(|_| anyhow::anyhow!("target IP"))?;
+                    let mut request = if tunnel {
+                        format!("CONNECT {target_addr} HTTP/1.1\r\nHost: {target_addr}\r\n")
+                    } else if socks {
+                        let path = &target[url::Position::BeforePath..url::Position::AfterQuery];
+                        format!("GET {path} HTTP/1.1\r\n")
+                    } else {
+                        format!("GET {} HTTP/1.1\r\n", pinned.as_str())
+                    };
+                    let mut forwarded = Vec::new();
+                    for line in text.split("\r\n").skip(1).filter(|s| !s.is_empty()) {
+                        let lower = line.to_ascii_lowercase();
+                        if lower.starts_with("proxy-authorization:")
+                            || lower.starts_with("proxy-connection:")
+                            || (tunnel && lower.starts_with("host:"))
+                        {
+                            continue;
+                        }
+                        forwarded.push(line);
+                    }
+                    for line in forwarded {
+                        request.push_str(line);
+                        request.push_str("\r\n");
+                    }
+                    if !socks && !proxy.username().is_empty() {
+                        let username =
+                            percent_encoding::percent_decode_str(proxy.username()).decode_utf8()?;
+                        let password =
+                            percent_encoding::percent_decode_str(proxy.password().unwrap_or(""))
+                                .decode_utf8()?;
+                        request.push_str(&format!(
+                            "Proxy-Authorization: Basic {}\r\n",
+                            STANDARD.encode(format!("{username}:{password}"))
+                        ));
+                    }
+                    request.push_str("\r\n");
+                    upstream.write_all(request.as_bytes()).await?;
+                    tokio::io::copy_bidirectional(&mut local, &mut upstream).await?;
+                    Ok::<(), anyhow::Error>(())
+                };
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(65), exchange).await;
+            });
+        }
     });
     Ok((address, task))
 }

@@ -1,4 +1,4 @@
-use crate::{App, Error, history, retry, security, store, usage};
+use crate::{App, Error, history, retry, security, store, usage, westdata};
 use serde_json::{Value, json};
 use sqlx::Row;
 use uuid::Uuid;
@@ -32,6 +32,62 @@ pub async fn start(app: App) {
         }
     });
 }
+/// A disabled or rotated panel link answers 401/403/404; retrying it unchanged is pointless.
+fn rejected(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<reqwest::Error>()
+        .and_then(reqwest::Error::status)
+        .is_some_and(|code| matches!(code.as_u16(), 401 | 403 | 404))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rejected;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Only a rejected panel link invalidates the resolved address; transient and server
+    /// errors keep it so the retry re-fetches instead of logging in again.
+    #[tokio::test]
+    async fn only_link_rejections_invalidate_a_resolved_panel_address() {
+        for (status, expected) in [
+            (401u16, true),
+            (403, true),
+            (404, true),
+            (429, false),
+            (500, false),
+            (502, false),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut buffer = [0; 1024];
+                let _ = socket.read(&mut buffer).await.unwrap();
+                socket
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 {status} X\r\nContent-Length: 1\r\nConnection: close\r\n\r\nx"
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            });
+            let response = reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .unwrap()
+                .get(format!("http://{address}/sub"))
+                .send()
+                .await
+                .unwrap();
+            let error = crate::retry::check_http(&response).unwrap_err();
+            assert_eq!(rejected(&error), expected, "status {status}");
+            server.await.unwrap();
+        }
+        assert!(!rejected(&anyhow::anyhow!("transport failure")));
+    }
+}
 pub async fn once(app: &App) -> Result<bool, Error> {
     let claim = Uuid::new_v4();
     let mut tx = app.db.begin().await?;
@@ -62,6 +118,9 @@ pub async fn once(app: &App) -> Result<bool, Error> {
     let mut stage = "proxy";
     let mut attempts = 0;
     let mut failures = Vec::new();
+    // A panel login costs a captcha and its activation window lasts ten minutes, so one
+    // resolution serves every retry inside this refresh.
+    let mut panel: Option<(westdata::Resolved, tokio::time::Instant)> = None;
     let deadline = tokio::time::Instant::now() + retry::TOTAL_TIMEOUT;
     let fetch = async {
         loop {
@@ -74,13 +133,49 @@ pub async fn once(app: &App) -> Result<bool, Error> {
                     .ok_or_else(|| anyhow::anyhow!("platform egress unavailable"))?;
                 crate::provider::extraction_slot(app, &p.data).await?;
                 let endpoint = crate::provider::resolve(&p.data, app.private_egress).await?;
+                let url = match westdata::config(&profile.data) {
+                    Some(cfg) => match &panel {
+                        Some((resolved, at)) if at.elapsed() < retry::PANEL_REUSE => {
+                            resolved.clash.clone()
+                        }
+                        _ => {
+                            // Log in, read the current Clash address, open the update switch.
+                            stage = "westdata";
+                            let vision = app.captcha.as_ref().ok_or_else(|| {
+                                anyhow::anyhow!("未配置验证码识别模型，无法刷新 WestData 订阅")
+                            })?;
+                            let resolved: westdata::Resolved = westdata::resolve(
+                                vision,
+                                Some(&endpoint),
+                                app.private_egress,
+                                &cfg,
+                            )
+                            .await?;
+                            let clash = resolved.clash.clone();
+                            panel = Some((resolved, tokio::time::Instant::now()));
+                            clash
+                        }
+                    },
+                    // Managed, but the account block is incomplete: never fall back to a
+                    // stale address that the panel has already rotated.
+                    None if westdata::is_managed(&profile.data) => {
+                        stage = "westdata";
+                        return Err(anyhow::Error::new(westdata::Failure {
+                            step: "westdata_login",
+                            message: "WestData 账号信息不完整，请重新填写账号与密码。",
+                        }));
+                    }
+                    None => profile.data["url"].as_str().unwrap_or("").to_string(),
+                };
                 stage = "fetch";
-                security::fetch(
-                    profile.data["url"].as_str().unwrap_or(""),
-                    Some(&endpoint),
-                    app.private_egress,
-                )
-                .await
+                let outcome = security::fetch(&url, Some(&endpoint), app.private_egress).await;
+                if let Err(error) = &outcome
+                    && rejected(error)
+                {
+                    // A disabled or rotated panel link must be re-resolved, not retried as-is.
+                    panel = None;
+                }
+                outcome.map(|fetched| (url, fetched))
             };
             let result = match tokio::time::timeout(retry::ATTEMPT_TIMEOUT, attempt).await {
                 Ok(result) => result,
@@ -213,7 +308,15 @@ pub async fn once(app: &App) -> Result<bool, Error> {
         .remove("last_proxy_at");
     let old_content = current.data["content"].clone();
     let failure = match result {
-        Ok(fetched) => {
+        Ok((url, fetched)) => {
+            // The panel decides this address; persist what was actually fetched.
+            current.data["url"] = json!(url);
+            if let Some((resolved, _)) = &panel
+                && let Some(entry) = current.data["westdata"].as_object_mut()
+            {
+                entry.insert("subscription_url".into(), json!(resolved.base.as_str()));
+                entry.insert("last_activate".into(), json!(crate::now()));
+            }
             let fingerprint = usage::fingerprint(app, user, &current);
             usage::store_snapshot(&mut current.data, fetched.usage, fingerprint.clone());
             if camofy::engine::parse(&fetched.content).is_ok() {

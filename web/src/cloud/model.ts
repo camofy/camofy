@@ -14,6 +14,15 @@ export type Data = {
   whitelist_at?: number;
   protocol?: "http" | "socks5";
   egress_preview?: unknown;
+  // Panel-managed source: the refresh worker logs in, rewrites `url` and activates the link.
+  // `password` is write-only and never returned by the API.
+  westdata?: {
+    username?: string;
+    password?: string;
+    product_id?: string;
+    subscription_url?: string;
+    last_activate?: number;
+  };
   last_proxy?: string;
   last_proxy_at?: number;
   content?: string;
@@ -53,6 +62,13 @@ export type Resource = {
   kind: string;
   version: number;
   data: Data;
+};
+/// One service discovered on a panel account, for the source editor's picker.
+export type PanelService = {
+  id: string;
+  name: string;
+  status: string;
+  next_due: string;
 };
 export type UsagePool = {
   profile_ids: string[];

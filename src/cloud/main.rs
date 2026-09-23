@@ -1,6 +1,7 @@
 mod admin;
 mod api;
 mod auth;
+mod captcha;
 mod catalog;
 mod control;
 mod downloads;
@@ -14,6 +15,7 @@ mod security;
 mod store;
 mod sync;
 mod usage;
+mod westdata;
 mod worker;
 
 use axum::{
@@ -39,6 +41,8 @@ pub struct App {
     pub registration: bool,
     pub private_egress: bool,
     pub workers: usize,
+    /// Captcha reading for panel logins that have no API. None disables those sources.
+    pub captcha: Option<captcha::Vision>,
     pub topics: Arc<Mutex<HashMap<Uuid, broadcast::Sender<()>>>>,
     pub hash_slots: Arc<Semaphore>,
 }
@@ -163,6 +167,10 @@ pub fn router(app: App) -> Router {
             axum::routing::put(api::update).delete(api::delete),
         )
         .route("/api/profiles/:id/refresh", post(api::refresh))
+        .route(
+            "/api/profiles/westdata-services",
+            post(api::westdata_services),
+        )
         .route("/api/profiles/:id/content", get(api::profile_content))
         .route("/api/profiles/:id/history", get(history::list))
         .route("/api/bundles/:id/usage", get(api::bundle_usage))
@@ -269,6 +277,7 @@ async fn main() -> anyhow::Result<()> {
             .and_then(|s| s.parse().ok())
             .unwrap_or(8)
             .clamp(1, 64),
+        captcha: captcha::Vision::from_env()?,
         topics: Default::default(),
         hash_slots: Arc::new(Semaphore::new(4)),
     };

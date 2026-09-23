@@ -17,7 +17,7 @@ required-features = ["agent"]
 
 [features]
 default = ["cloud"]
-cloud = ["dep:axum", "dep:sqlx", "dep:argon2", "dep:rand_core", "dep:tower-http", "dep:aes-gcm", "dep:tokio-rustls", "dep:webpki-roots", "dep:futures-util", "dep:hmac"]
+cloud = ["dep:axum", "dep:sqlx", "dep:argon2", "dep:rand_core", "dep:tower-http", "dep:aes-gcm", "dep:tokio-rustls", "dep:webpki-roots", "dep:futures-util", "dep:hmac", "dep:flate2"]
 agent = ["dep:tokio-tungstenite", "dep:futures-util", "dep:axum"]
 
 [dependencies]
@@ -38,6 +38,7 @@ tower-http = { version = "0.6", features = ["fs", "set-header"], optional = true
 aes-gcm = { version = "0.10", optional = true }
 sha2 = "0.10"
 hmac = { version = "0.12", optional = true }
+flate2 = { version = "1", optional = true }
 base64 = "0.22"
 url = "2"
 anyhow = "1"
