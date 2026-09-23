@@ -4,6 +4,14 @@ use std::time::Duration;
 pub const ATTEMPTS: usize = 3;
 pub const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(30);
 pub const TOTAL_TIMEOUT: Duration = Duration::from_secs(100);
+/// A panel-managed refresh pays for a captcha and several browser round trips, so one attempt is
+/// longer and there is only room for a single one. The conversation repeats a misread captcha
+/// internally instead.
+pub const PANEL_ATTEMPTS: usize = 1;
+pub const PANEL_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(120);
+/// The whole refresh for a panel-managed source: the panel conversation plus the subscription
+/// fetch that has to happen inside the ten-minute activation window.
+pub const PANEL_TOTAL_TIMEOUT: Duration = Duration::from_secs(150);
 /// A resolved panel subscription stays fetchable for ten minutes after activation; retries
 /// inside one refresh reuse it instead of paying for another login and captcha.
 pub const PANEL_REUSE: Duration = Duration::from_secs(480);
@@ -115,6 +123,9 @@ mod tests {
             Duration::from_secs(90)
         );
         assert!(ATTEMPT_TIMEOUT * ATTEMPTS as u32 + Duration::from_secs(8) < TOTAL_TIMEOUT);
+        assert!(PANEL_ATTEMPT_TIMEOUT < PANEL_TOTAL_TIMEOUT);
+        assert!(TOTAL_TIMEOUT < PANEL_TOTAL_TIMEOUT);
+        assert!(PANEL_ATTEMPTS <= ATTEMPTS);
         let safe = anyhow::Error::new(SafeFailure {
             delay: Some(Duration::ZERO),
         });

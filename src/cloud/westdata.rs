@@ -88,16 +88,16 @@ impl Hosts {
             convert: convert.trim_end_matches('/').to_string(),
         }
     }
-    fn client_area(&self) -> String {
+    pub(crate) fn client_area(&self) -> String {
         format!("{}/clientarea.php", self.site)
     }
-    fn product_page(&self, product: &str) -> String {
+    pub(crate) fn product_page(&self, product: &str) -> String {
         format!(
             "{}/clientarea.php?action=productdetails&id={product}",
             self.site
         )
     }
-    fn activate(&self, product: &str) -> String {
+    pub(crate) fn activate(&self, product: &str) -> String {
         format!(
             "{}/clientarea.php?action=productdetails&id={product}\
              &fuqingsocksAction=ActivateSublink&Serviceid={product}",
@@ -222,6 +222,11 @@ pub async fn resolve(
     private: bool,
     cfg: &Config,
 ) -> Result<Resolved> {
+    // A configured Zyte key runs the panel conversation inside their browser instead: Cloudflare
+    // answers the shared egress pool with a challenge no plain HTTP client can clear.
+    if crate::zyte::Zyte::configured() {
+        return crate::zyte::resolve(vision, private, cfg).await;
+    }
     let mut session = open(egress, private).await?;
     let conversation = async {
         session.login(vision, cfg).await?;
@@ -264,6 +269,9 @@ pub async fn discover(
     private: bool,
     cfg: &Config,
 ) -> Result<Vec<Service>> {
+    if crate::zyte::Zyte::configured() {
+        return crate::zyte::discover(vision, private, cfg).await;
+    }
     let mut session = open(egress, private).await?;
     let conversation = async {
         session.login(vision, cfg).await?;

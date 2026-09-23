@@ -22,8 +22,12 @@ it does not contact a central Camofy account server.
   A source may instead be bound to a WestData panel account: every refresh then
   logs in, rewrites the stored URL with the address the panel currently serves,
   opens the panel's ten-minute update switch and fetches immediately. Credentials
-  are encrypted with the resource, write-only over the API, and the fetcher is
-  unchanged otherwise. See [WestData 账号订阅](westdata-source.md).
+  are encrypted with the resource and write-only over the API. With
+  `CAMOFY_ZYTE_API_KEY` set, that panel login runs inside Zyte's browser instead of
+  the platform egress, because Cloudflare challenges the shared egress pool with an
+  interactive challenge no plain HTTP client can clear; subscription delivery is
+  unchanged and stays on the platform egress. See
+  [WestData 账号订阅](westdata-source.md).
 * Independent profile (`type: overlay`): arbitrary partial YAML such as nodes,
   groups, rules or runtime settings. Neither profile type has global activation.
 * Identity (`kind: bundle` in the API): an ordered `profiles` array of

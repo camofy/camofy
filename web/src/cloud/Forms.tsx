@@ -532,6 +532,10 @@ export function Editor({
                   再打开「订阅更新开关」（仅十分钟有效）后立即拉取。账号密码按现有资源模型
                   加密入库，接口不回显密码，编辑留空即保留原值。
                 </p>
+                <p className="muted">
+                  配置了 Zyte API key 时，面板登录在 Zyte 的远端浏览器里完成（面板按出口 IP
+                  信誉下发 Cloudflare 挑战，共享代理池会被挡下）；订阅内容始终走平台出口。
+                </p>
                 {data.westdata.subscription_url && (
                   <p className="muted">
                     当前离线地址（仅显示前 34 位）：

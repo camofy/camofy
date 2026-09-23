@@ -60,6 +60,8 @@ WestData 面板（`wd-gold.com` / `wd-gold.net`）默认**关闭订阅更新**�
 | `CAMOFY_VISION_API_KEY` | 空 | 未设置时**不启用**本功能，保存 WestData 订阅源会被拒绝 |
 | `CAMOFY_VISION_API_URL` | `https://api.deepseek.com/chat/completions` | OpenAI 兼容的对话补全地址 |
 | `CAMOFY_VISION_MODEL` | `deepseek-flash` | 支持图片输入的模型名 |
+| `CAMOFY_ZYTE_API_KEY` | 空 | 设置后面板会话交给 Zyte 的浏览器执行（见下节）；未设置则仍走平台订阅出口 |
+| `CAMOFY_ZYTE_API_URL` | `https://api.zyte.com/v1/extract` | 仅供测试替身或网关改址 |
 
 该接口由云端**直连**（不走平台订阅出口、不跟随重定向、校验公网 IPv4），
 只发送处理后的验证码图片，不包含账号、密码或订阅地址。
@@ -69,10 +71,47 @@ WestData 面板（`wd-gold.com` / `wd-gold.net`）默认**关闭订阅更新**�
 `CAMOFY_WESTDATA_SITE` 与 `CAMOFY_WESTDATA_CONVERT` 可改写面板与转换站点，
 只为本地联调与自建镜像保留，默认为官方域名。
 
-面板登录、读取订阅、打开开关**共用平台订阅出口**，出口不可用即失败，不直连降级。
-出口 IP 被 Cloudflare 拦截时，历史里会给出 `westdata_egress` 步骤提示更换出口。
+订阅地址的抓取**始终**走平台订阅出口，出口不可用即失败，不直连降级。
+面板会话则有两种执行方式：
 
-### 出口必须是一个不被 Cloudflare 挑战的地址
+- 设置了 `CAMOFY_ZYTE_API_KEY`：面板会话在 **Zyte 的浏览器**里执行（下节）。平台出口不再参与
+  面板登录，扫描产品也不再消耗一个出口地址。
+- 未设置：面板登录、读取订阅、打开开关共用平台订阅出口；出口 IP 被 Cloudflare 拦截时，
+  历史里会给出 `westdata_egress` 步骤，提示更换出口。
+
+### 面板会话通过 Zyte 执行（推荐）
+
+面板域名（`wd-gold.net` / `wd-gold.com`）按**出口 IP 信誉**下发 Cloudflare 托管挑战
+（`cf-mitigated: challenge`、`_cf_chl_opt`）：共享短效代理池的地址会被挑战，而被挑战的地址
+收到的是**交互式**挑战 —— 纯 HTTP 客户端过不去，把真实浏览器放在这些出口上同样过不去
+（详见下方实测表）。Zyte 在自己的地址上用**它自己的浏览器**渲染页面，挑战因此不出现。
+
+一次刷新里的面板会话（`zyte::resolve`）按顺序是：
+
+1. **浏览器请求** `clientarea.php`，并注入一个 `evaluate` 动作：页面自己用同步 `XMLHttpRequest`
+   取一次验证码图，把 `token` 与图片 base64 写进隐藏 `<div>`；
+2. 图片交给上面的视觉接口识别（图片只发给视觉接口，从不发给面板）；
+3. **浏览器请求** `cart.php`，注入 `evaluate` 动作：页面自己 `POST dologin.php`（携带 `token`
+   与验证码），把登录结果写进隐藏 `<div>`；
+4. 产品页与 `ActivateSublink` 用同一会话的 **HTTP 模式**读取（更便宜也更快，GET 不被挑战；
+   若返回被挑战或为空则自动退回浏览器请求）。
+
+三条实测出来的硬约束，改动前请先读：
+
+- **验证码必须在浏览器会话内取**。用 Zyte 的 HTTP 模式取图会把它绑到另一条请求链上，
+  之后每一次登录都会被面板判为验证码错误。
+- **登录 POST 必须是浏览器请求**。Zyte 的 HTTP 模式把该面板的 POST 判为 ban 响应
+  （`520 could not get a ban-free response`），而同一个会话的 GET 一律正常。
+- **一个会话只做一轮登录**。在同一个会话里发第二轮「取图 + 登录」会被 Zyte 以
+  `422 Session has expired` 拒绝，所以验证码识别失败时**换一个全新会话重来**（最多 3 轮），
+  而不是在原会话里重试。
+
+请求字段名容易踩错：方法用 `httpRequestMethod`，文本 body 用 `httpRequestText`
+（二进制用 `httpRequestBody`，base64），自定义头是 `customHttpRequestHeaders: [{"name":…,"value":…}]`，
+浏览器动作用 `actions: [{"action":"evaluate","source":"…"}]`，会话是 `session: {"id": "<uuid v4>"}`。
+Zyte 的 CDP 端点需要订阅或 PAYG 消费上限**外加企业验证**，只有 PAYG 时仍是 `401`。
+
+### 出口必须是一个不被 Cloudflare 挑战的地址（未配置 Zyte 时）
 
 面板域名（`wd-gold.net` / `wd-gold.com`）对部分来源下发 **Cloudflare 托管挑战**
 （`cf-mitigated: challenge`、`Just a moment...`、`_cf_chl_opt`）：挑战页要求执行
@@ -173,10 +212,40 @@ JA3/JA4 与 UA 一致、PoW），且 token 一次性、服务端 `siteverify` �
 （`500 proxy_error`）；`our_proxy` 模式要求先购买他们的住宅代理（`ERROR_PROXY_ACCOUNT_ID`）。
 
 ## 刷新与重试
-面板会话处在 30 秒的单次尝试预算内：登录（含识别）通常 3–5 秒。
-一次刷新最多三次尝试，第一次解析出的订阅地址在 8 分钟内（`retry::PANEL_REUSE`，
+
+**Zyte 面板路径**（设置了 `CAMOFY_ZYTE_API_KEY`）：一次面板会话约 30–40 秒（冷会话的首次浏览器
+请求可能占 16–18 秒），一次刷新只跑一次面板会话，因此使用更长的预算
+（`retry::PANEL_ATTEMPT_TIMEOUT` 120 秒、`retry::PANEL_TOTAL_TIMEOUT` 150 秒，而普通订阅源仍是
+30 秒 × 3 次、总计 100 秒），并把该次 `fetch_jobs` 租约延长到 240 秒，避免另一个 worker 在验证码
+与浏览器往返进行中把任务抢走。验证码识别失败的内部重试上限 3 轮（每轮一个新会话），
+单次会话内部超时 70 秒。第一次解析出的订阅地址在 8 分钟内（`retry::PANEL_REUSE`，
 小于开关的十分钟有效期）会被后续尝试复用，避免重复登录与重复识别；
 若拉取返回 401/403/404（开关过期或链接被面板更换），缓存立即失效并在下次尝试重新登录激活。
+
+**未配置 Zyte 时**：面板会话处在 30 秒的单次尝试预算内，登录（含识别）通常 3–5 秒；
+一次刷新最多三次尝试，缓存与失效规则同上。
+
+## 验证记录（2026-09-24，Zyte 路径）
+
+- 单元测试新增 6 项：隐藏 `<div>` 载荷的提取与转义、凭据在页面源码里的引号处理、
+  中性执行页的选择、未配置 key 时禁用、激活结果文本、会话过期识别。
+  `cargo test --all-features --bin camofy-cloud` 全部通过。
+- 真实面板联调（同一 `live_panel` 测试，设置 `CAMOFY_ZYTE_API_KEY` 即走 Zyte 路径）：
+
+  ```
+  面板会话 1（resolve）：浏览器取图 16.0s + 浏览器登录 8.7s → 会话共 32s
+    → 订阅地址 https://wd-turbo.com/subscribe/…（55 字节）
+    → Clash 转换 21 个节点、用量状态 ok
+  面板会话 2（扫描产品）：浏览器取图 17.3s + 浏览器登录 8.3s
+    → 4 项服务（1 项「有效的」、3 项「已终止」，含到期日）
+  整条 live 测试 95.2s（含两次面板会话 + 订阅抓取）
+  ```
+
+  联调时视觉接口指向一个本地 stub（把图片转给 2captcha 图片识别），
+  因此上面的识别耗时为 ~4–6 秒；生产直连视觉模型时相当或更快。
+- 期间排除的失败模式（都写进了上面的硬约束）：HTTP 模式 POST → Zyte 判 ban；
+  HTTP 模式取图 → 面板判验证码错误；从 `/` 或 `/index.php` 提交 POST → 跳转到客户中心并
+  **重新生成验证码**，刚识别的码必然失效；同一会话第二轮登录 → `422 Session has expired`。
 
 ## 验证记录（2026-09-23）
 

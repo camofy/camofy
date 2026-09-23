@@ -201,6 +201,39 @@ pub async fn post_json(
     limit: usize,
     private: bool,
 ) -> Result<Value> {
+    let auth = match bearer {
+        Some(key) => Auth::Bearer(key),
+        None => Auth::None,
+    };
+    post_json_with(target, auth, body, limit, private).await
+}
+
+/// Same guarantees as [`post_json`], for services that authenticate with HTTP Basic
+/// (Zyte API uses the API key as the user name with an empty password).
+pub async fn post_json_basic(
+    target: &url::Url,
+    user: &str,
+    password: &str,
+    body: &Value,
+    limit: usize,
+    private: bool,
+) -> Result<Value> {
+    post_json_with(target, Auth::Basic(user, password), body, limit, private).await
+}
+
+enum Auth<'a> {
+    None,
+    Bearer(&'a str),
+    Basic(&'a str, &'a str),
+}
+
+async fn post_json_with(
+    target: &url::Url,
+    auth: Auth<'_>,
+    body: &Value,
+    limit: usize,
+    private: bool,
+) -> Result<Value> {
     let request = async {
         ensure!(
             ["http", "https"].contains(&target.scheme())
@@ -221,9 +254,11 @@ pub async fn post_json(
             .timeout(std::time::Duration::from_secs(45));
         builder = builder.resolve_to_addrs(target.host_str().unwrap(), &addrs);
         let mut request = builder.build()?.post(target.clone()).json(body);
-        if let Some(key) = bearer {
-            request = request.bearer_auth(key);
-        }
+        request = match auth {
+            Auth::None => request,
+            Auth::Bearer(key) => request.bearer_auth(key),
+            Auth::Basic(user, password) => request.basic_auth(user, Some(password)),
+        };
         let mut response = request.send().await?;
         crate::retry::check_http(&response)?;
         ensure!(response.status().is_success(), "service HTTP failure");

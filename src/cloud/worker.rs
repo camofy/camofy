@@ -118,10 +118,37 @@ pub async fn once(app: &App) -> Result<bool, Error> {
     let mut stage = "proxy";
     let mut attempts = 0;
     let mut failures = Vec::new();
+    // A Zyte-driven panel refresh spends most of its budget on one captcha and a handful of browser
+    // round trips, so it gets a longer single attempt instead of the usual three short ones.
+    let slow_panel = westdata::config(&profile.data).is_some() && crate::zyte::Zyte::configured();
+    let max_attempts = if slow_panel {
+        retry::PANEL_ATTEMPTS
+    } else {
+        retry::ATTEMPTS
+    };
+    let attempt_timeout = if slow_panel {
+        retry::PANEL_ATTEMPT_TIMEOUT
+    } else {
+        retry::ATTEMPT_TIMEOUT
+    };
+    let total_timeout = if slow_panel {
+        retry::PANEL_TOTAL_TIMEOUT
+    } else {
+        retry::TOTAL_TIMEOUT
+    };
     // A panel login costs a captcha and its activation window lasts ten minutes, so one
     // resolution serves every retry inside this refresh.
     let mut panel: Option<(westdata::Resolved, tokio::time::Instant)> = None;
-    let deadline = tokio::time::Instant::now() + retry::TOTAL_TIMEOUT;
+    if slow_panel {
+        // The claim was taken for a plain fetch; a panel refresh needs the job for longer, and a
+        // second worker must not pick it up while the captcha and browser round trips are running.
+        sqlx::query("UPDATE fetch_jobs SET leased_until=now()+interval '240 seconds' WHERE profile_id=$1 AND claim=$2")
+            .bind(id)
+            .bind(claim)
+            .execute(&app.db)
+            .await?;
+    }
+    let deadline = tokio::time::Instant::now() + total_timeout;
     let fetch = async {
         loop {
             attempts += 1;
@@ -177,7 +204,7 @@ pub async fn once(app: &App) -> Result<bool, Error> {
                 }
                 outcome.map(|fetched| (url, fetched))
             };
-            let result = match tokio::time::timeout(retry::ATTEMPT_TIMEOUT, attempt).await {
+            let result = match tokio::time::timeout(attempt_timeout, attempt).await {
                 Ok(result) => result,
                 Err(e) => {
                     stage = "attempt_timeout";
@@ -192,7 +219,7 @@ pub async fn once(app: &App) -> Result<bool, Error> {
             let Some(server_delay) = retry::delay(error) else {
                 break result;
             };
-            if attempts >= retry::ATTEMPTS {
+            if attempts >= max_attempts {
                 break result;
             }
             let jitter = (Uuid::new_v4().as_u128() % 1000) as u64;
@@ -206,8 +233,7 @@ pub async fn once(app: &App) -> Result<bool, Error> {
             )
             .bind(claim)
             .bind(format!(
-                "已尝试 {attempts}/{} 次（{code}），约 {} 秒后自动重试。",
-                retry::ATTEMPTS,
+                "已尝试 {attempts}/{max_attempts} 次（{code}），约 {} 秒后自动重试。",
                 wait.as_secs() + 1
             ))
             .execute(&app.db)
