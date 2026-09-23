@@ -76,14 +76,19 @@ pub fn failure(error: &anyhow::Error, stage: &str) -> (&'static str, String) {
             );
         }
         if e.is_timeout() {
-            return ("timeout", "订阅或代理请求超时，已保留上次成功配置。".into());
+            return (
+                "timeout",
+                match stage {
+                    "proxy" => "平台订阅出口请求超时，已保留上次成功配置。",
+                    "westdata" => "WestData 面板请求超时，已保留上次成功配置。",
+                    _ => "上游订阅地址请求超时，已保留上次成功配置。",
+                }
+                .into(),
+            );
         }
     }
     match stage {
-        "attempt_timeout" => (
-            "timeout",
-            "单次刷新超过 30 秒时限，已保留上次成功配置。".into(),
-        ),
+        "attempt_timeout" => ("timeout", "单次刷新超过时限，已保留上次成功配置。".into()),
         "proxy" => (
             "proxy_failure",
             "平台订阅出口暂不可用，已保留上次成功配置，请稍后重试。".into(),
@@ -92,10 +97,7 @@ pub fn failure(error: &anyhow::Error, stage: &str) -> (&'static str, String) {
             "westdata_failure",
             "WestData 面板登录或订阅地址读取失败，已保留上次成功配置。".into(),
         ),
-        "timeout" => (
-            "timeout",
-            "刷新超过 100 秒时限，已保留上次成功配置。".into(),
-        ),
+        "timeout" => ("timeout", "刷新超过总时限，已保留上次成功配置。".into()),
         _ => (
             "fetch_failure",
             "拉取失败，请检查订阅/代理网络、TLS、目标地址或响应是否超过 4 MiB。".into(),

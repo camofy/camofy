@@ -179,7 +179,7 @@ export function Editor({
     void api<{ services: PanelService[] }>("/profiles/westdata-services", "POST", {
       username: data.westdata?.username ?? "",
       password: data.westdata?.password ?? "",
-      profile_id: resource.id,
+      ...(resource.id ? { profile_id: resource.id } : {}),
     })
       .then((r) => {
         setServices(r.services);

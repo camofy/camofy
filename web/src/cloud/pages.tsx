@@ -379,19 +379,20 @@ function GlobalEgress() {
   const { resources, busy, run } = useWorkspace();
   const [policy, setPolicy] = useState<{
     proxy_id: string | null;
+    direct: boolean;
     version: number;
   }>();
-  const [selected, setSelected] = useState("");
+  const [selected, setSelected] = useState("pause");
   const [error, setError] = useState("");
   const [confirm, setConfirm] = useState(false);
   const reload = () => {
-    void api<{ proxy_id: string | null; version: number }>(
+    void api<{ proxy_id: string | null; direct: boolean; version: number }>(
       "/admin/subscription-egress",
     )
       .then((p) => {
         setError("");
         setPolicy(p);
-        setSelected(p.proxy_id ?? "");
+        setSelected(p.direct ? "direct" : p.proxy_id ?? "pause");
       })
       .catch((e: Error) => setError(e.message));
   };
@@ -403,7 +404,13 @@ function GlobalEgress() {
       description="所有用户的首次拉取、手动和定时刷新均使用此出口。"
       actions={
         <span className="chip">
-          {policy ? (policy.proxy_id ? "统一代理" : "刷新已暂停") : "读取中"}
+          {policy
+            ? policy.direct
+              ? "服务器直连"
+              : policy.proxy_id
+                ? "统一代理"
+                : "刷新已暂停"
+            : "读取中"}
         </span>
       }
     >
@@ -415,13 +422,14 @@ function GlobalEgress() {
         )}
         <FieldActionRow>
           <label>
-            生效代理
+            生效出口
             <select
               value={selected}
               disabled={!policy || busy}
               onChange={(e) => setSelected(e.target.value)}
             >
-              <option value="">暂停订阅拉取（不直连）</option>
+              <option value="pause">暂停订阅拉取</option>
+              <option value="direct">服务器直连</option>
               {proxies.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.data.name}
@@ -431,34 +439,52 @@ function GlobalEgress() {
           </label>
           <button
             className="primary"
-            disabled={!policy || busy || selected === (policy.proxy_id ?? "")}
+            disabled={
+              !policy ||
+              busy ||
+              selected ===
+                (policy.direct ? "direct" : policy.proxy_id ?? "pause")
+            }
             onClick={() => setConfirm(true)}
           >
             应用出口
           </button>
         </FieldActionRow>
         <p className="muted">
-          代理故障时保留上次成功配置，不会回退直连。切换不改变设备流量，也不会立即刷新全部订阅。
+          代理故障不会自动回退直连；只有明确选择“服务器直连”才直接访问上游。切换不改变设备流量，也不会立即刷新全部订阅。
         </p>
       </PanelBody>
       {confirm && policy && (
         <Confirm
-          title={selected ? "切换全局订阅出口？" : "暂停全平台订阅拉取？"}
+          title={
+            selected === "pause"
+              ? "暂停全平台订阅拉取？"
+              : selected === "direct"
+                ? "改为服务器直连拉取？"
+                : "切换全局订阅出口？"
+          }
           text="此操作影响所有用户的后续订阅刷新；已下发配置继续有效。在途任务将取消并重新排队。"
           close={() => setConfirm(false)}
           action={async () => {
             const next = await run(
               () =>
-                api<{ proxy_id: string | null; version: number }>(
+                api<{ proxy_id: string | null; direct: boolean; version: number }>(
                   "/admin/subscription-egress",
                   "PUT",
-                  { version: policy.version, proxy_id: selected || null },
+                  {
+                    version: policy.version,
+                    proxy_id:
+                      selected === "pause" || selected === "direct"
+                        ? null
+                        : selected,
+                    direct: selected === "direct",
+                  },
                 ),
               "全局订阅出口已更新。",
             );
             if (next) {
               setPolicy(next);
-              setSelected(next.proxy_id ?? "");
+              setSelected(next.direct ? "direct" : next.proxy_id ?? "pause");
             } else {
               reload();
             }
@@ -1139,7 +1165,7 @@ export function DetailPage({ section }: { section: Section }) {
                       ]}
                     />
                     {r.data.westdata && (
-                      <p className="muted">
+                      <p className="muted source-activation-note">
                         刷新时自动登录面板获取并激活该地址，链接由面板决定，无需手工维护。
                       </p>
                     )}
@@ -1298,7 +1324,7 @@ export function DetailPage({ section }: { section: Section }) {
             </h2>
             <p>
               {isSource
-                ? "定时刷新与手动刷新使用相同的拉取代理。刷新成功后，引用此订阅的身份会自动重新生成。"
+                ? "定时刷新与手动刷新使用相同的全局拉取出口。刷新成功后，引用此订阅的身份会自动重新生成。"
                 : section === "profiles"
                   ? "为节点、代理组、域名规则或运行参数分别建立 Profile，然后按用途自由组合。"
                   : section === "proxies"

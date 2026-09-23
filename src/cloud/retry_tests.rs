@@ -248,6 +248,32 @@ async fn subscription_retry_end_to_end() {
         assert!(!m.contains("private-subscription"));
         assert!(!m.contains("http://"));
     }
+    // Direct mode is an explicit administrator choice; it fetches without the former proxy.
+    let mut conn = db.acquire().await.unwrap();
+    let mut direct_source = store::get(&app, &mut conn, user, source.id).await.unwrap();
+    direct_source.data["url"] = json!(format!("http://{addr}/direct"));
+    store::put(&app, &mut conn, user, &direct_source)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE subscription_egress_policy SET proxy_id=NULL,direct=true,version=version+1 WHERE singleton",
+    )
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    drop(conn);
+    fail_until.store(0, Ordering::SeqCst);
+    queue(&db, user, source.id).await;
+    assert!(worker::once(&app).await.unwrap());
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+    let direct_status: String = sqlx::query_scalar(
+        "SELECT status FROM refresh_history WHERE profile_id=$1 ORDER BY id DESC LIMIT 1",
+    )
+    .bind(source.id)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(direct_status, "ok");
     sqlx::query("DELETE FROM users WHERE id=$1")
         .bind(user)
         .execute(&db)
