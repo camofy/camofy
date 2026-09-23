@@ -112,8 +112,33 @@ JavaScript，纯 HTTP 客户端直接以 403 结束；而在被标记的出口�
 与"镜像内无浏览器、最小体积"的既有约束冲突。定位这类问题时，服务日志只应记录
 "收到挑战/拦截页"这一事实与状态码，不记录页面正文，也不记录 Cookie。
 
-## 刷新与重试
+### 为什么不能"不加载浏览器直接解算"
 
+2026-09-23 穷尽搜索了这条路（只审计源码，不运行第三方预编译产物）：
+
+| 类别 | 项目 | 结论 |
+| --- | --- | --- |
+| 纯 JS 引擎 + 模拟 DOM（**真正的无浏览器**） | `Advik-B/cloudscraper`（Go/otto）、`sriharsha-y/go-cfscraper`（Go/goja + JA3）、`sayem314/hooman`（Node/jsdom）、`Anorov/cloudflare-scrape` 与 `VeNoMouS/cloudscraper`（Python） | **只覆盖 v1（`jschl_vc` 数学题）与老式 v2/v3（`window._cf_chl_opt`）**。对现代托管挑战实测失败（见下） |
+| 号称"无需浏览器"的封装 | `CircuitSavage/turnstile-curl`、`Maas6696/cloudflare-challenge-clearance`、`biusberline/cloudflare-turnstile-solver`（均转 Peak 付费 API）、npm `cfsolver`/`cloudbypass-skill`（转穿云/CloudFlyer），Go 库的 Turnstile 分支（源码里 `if s.CaptchaSolver == nil { return ErrNoCaptchaSolver }` → 2captcha） | "无浏览器"只是**浏览器不在你这里**：还要把目标 URL（以及部分实现的代理凭据）交给第三方 |
+| 真浏览器方案 | FlareSolverr、`Xewdy444/CF-Clearance-Scraper`、camoufox/patchright/nodriver 系 | 需要浏览器，且实测携趣出口撑不住挑战自身的子请求 |
+
+纯 Go 解算器在本面板上的实测（`cfscraper`，经携趣出口）：
+
+```text
+[cf] Modern (v2/v3) JavaScript challenge detected. Solving with 'goja'...
+[cf] goja: warning, a script block failed to run: ReferenceError: location is not defined
+Get failed: v2 challenge solver failed: goja: answer value is empty or undefined
+```
+
+同一程序换到不被挑战的出口：`HTTP 200, 8038 bytes, loginform=true`。
+
+原因是现代挑战要求的信号无法在纯 JS 引擎里凑齐：canvas/WebGL/`OfflineAudioContext` 真机渲染指纹、
+`Event.isTrusted` 交互门、`Function.prototype.toString` 原生代码校验、JA3/JA4 与 UA 一致性、
+IP 信誉与 proof-of-work；token 一次性且由服务端 `siteverify` 校验。
+所以**不存在可用的开源"无浏览器解算"实现**：要么换出口（推荐，且该出口根本不再被挑战），
+要么接受付费第三方（并把面板地址/代理凭据交给它，不建议）。
+
+## 刷新与重试
 面板会话处在 30 秒的单次尝试预算内：登录（含识别）通常 3–5 秒。
 一次刷新最多三次尝试，第一次解析出的订阅地址在 8 分钟内（`retry::PANEL_REUSE`，
 小于开关的十分钟有效期）会被后续尝试复用，避免重复登录与重复识别；
