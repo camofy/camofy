@@ -162,6 +162,16 @@ JA3/JA4 与 UA 一致、PoW），且 token 一次性、服务端 `siteverify` �
 `AntiCloudflareTask` 已不是有效类型，会返回 `ERROR_TASK_ABSENT`），但每个携趣出口都在
 流程中途中失效，无法端到端完成一次挑战页解算。
 
+**免费与付费的其它路都试过了，结论如下**：自建 CF Worker 让请求从 Cloudflare 自己的网络发出，
+并不能免挑战（实测 `www.cloudflare.com` 200，而 `linux.do`、`wd-gold.net`、`wd-gold.com`
+一律 403 `cf-mitigated: challenge`）；2captcha 的 Scraper API 能取到面板登录页
+（`x-debug.price=0.0005`，$0.5/1000 次，说明干净出口确实能过），但它的 `scrape` 方法只有
+`url`/`data_format`/`format`/`waitFor`/`fullPage`/`cdpurl`，**没有 `method`/`post_data`/`cookies`，
+只能 GET**，做不了登录 POST 与会话；2captcha 的 Browser API（云浏览器 + CDP）三种配置实测均失败：
+`proxyMode:none` 时云浏览器同样被挑战、`Captcha.setAutoSolve` 无事件、显式 `Captcha.solve`
+（`*` 与 `turnstile` 两种）都返回 `solveFailed`；传我们自己的代理时 CDP 连接直接被拒
+（`500 proxy_error`）；`our_proxy` 模式要求先购买他们的住宅代理（`ERROR_PROXY_ACCOUNT_ID`）。
+
 ## 刷新与重试
 面板会话处在 30 秒的单次尝试预算内：登录（含识别）通常 3–5 秒。
 一次刷新最多三次尝试，第一次解析出的订阅地址在 8 分钟内（`retry::PANEL_REUSE`，
