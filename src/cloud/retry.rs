@@ -4,10 +4,8 @@ use std::time::Duration;
 pub const ATTEMPTS: usize = 3;
 pub const ATTEMPT_TIMEOUT: Duration = Duration::from_secs(30);
 pub const TOTAL_TIMEOUT: Duration = Duration::from_secs(100);
-/// A panel-managed refresh pays for a captcha and several browser round trips, so one attempt is
-/// longer and there is only room for a single one. The conversation repeats a misread captcha
-/// internally instead.
-pub const PANEL_ATTEMPTS: usize = 1;
+/// A Zyte-driven panel refresh may retry proxy preparation up to ATTEMPTS, but enters the
+/// expensive panel conversation at most once. It handles misread captchas internally.
 pub const PANEL_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(120);
 /// The whole refresh for a panel-managed source: the panel conversation plus the subscription
 /// fetch that has to happen inside the ten-minute activation window.
@@ -34,6 +32,9 @@ pub fn transient_status(status: u16) -> bool {
 /// None means a permanent/unknown failure. Do not retry unsafe destinations,
 /// invalid credentials, malformed provider responses or invalid YAML by guessing.
 pub fn delay(error: &anyhow::Error) -> Option<Duration> {
+    if let Some(e) = error.downcast_ref::<crate::provider_net::Failure>() {
+        return e.delay;
+    }
     if let Some(e) = error.downcast_ref::<SafeFailure>() {
         return e.delay;
     }
@@ -98,6 +99,10 @@ pub fn backoff(attempt: usize, jitter_ms: u64, server: Duration) -> Duration {
     base.max(server)
 }
 
+pub fn may_repeat(panel: bool, stage: &str) -> bool {
+    !panel || stage == "proxy"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -125,7 +130,11 @@ mod tests {
         assert!(ATTEMPT_TIMEOUT * ATTEMPTS as u32 + Duration::from_secs(8) < TOTAL_TIMEOUT);
         assert!(PANEL_ATTEMPT_TIMEOUT < PANEL_TOTAL_TIMEOUT);
         assert!(TOTAL_TIMEOUT < PANEL_TOTAL_TIMEOUT);
-        assert!(PANEL_ATTEMPTS <= ATTEMPTS);
+        assert!(may_repeat(true, "proxy"));
+        for stage in ["westdata", "fetch", "attempt_timeout", "timeout"] {
+            assert!(!may_repeat(true, stage));
+            assert!(may_repeat(false, stage));
+        }
         let safe = anyhow::Error::new(SafeFailure {
             delay: Some(Duration::ZERO),
         });

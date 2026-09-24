@@ -61,6 +61,9 @@ pub async fn prune(conn: &mut sqlx::PgConnection, user: Uuid, profile: Uuid) -> 
 
 /// Never store upstream bodies, URLs, parser snippets or provider error Display.
 pub fn failure(error: &anyhow::Error, stage: &str) -> (&'static str, String) {
+    if let Some(provider) = error.downcast_ref::<crate::provider_net::Failure>() {
+        return provider.diagnostic();
+    }
     // Panel conversations carry their own fixed, secret-free wording and a precise step.
     if let Some(panel) = error.downcast_ref::<crate::westdata::Failure>() {
         return (panel.step, panel.message.to_string());

@@ -188,7 +188,7 @@ fn dns_result(body: &str, host: &str, kind: u16, port: u16) -> Result<Vec<Socket
 /// Small provider/egress responses, never redirects, environment proxies or unpinned DNS.
 /// Intentionally sanitizes transport errors: API URLs contain credentials.
 pub async fn fetch_text(target: &url::Url, private: bool) -> Result<String> {
-    fetch_text_inner(target, private, None).await
+    fetch_text_inner(target, private).await
 }
 
 /// Direct JSON POST to a fixed platform service endpoint (captcha vision). Never uses the
@@ -282,15 +282,7 @@ async fn post_json_with(
         .and_then(|r| r)
 }
 
-pub async fn fetch_text_at(target: &url::Url, pinned: Vec<SocketAddr>) -> Result<String> {
-    fetch_text_inner(target, false, Some(pinned)).await
-}
-
-async fn fetch_text_inner(
-    target: &url::Url,
-    private: bool,
-    pinned: Option<Vec<SocketAddr>>,
-) -> Result<String> {
+async fn fetch_text_inner(target: &url::Url, private: bool) -> Result<String> {
     let request = async {
         ensure!(
             ["http", "https"].contains(&target.scheme())
@@ -299,18 +291,7 @@ async fn fetch_text_inner(
             "invalid provider URL"
         );
         // Whitelist authorization is IPv4; API requests and egress checks use that family.
-        let resolved = match pinned {
-            Some(addrs) => {
-                ensure!(
-                    !addrs.is_empty()
-                        && addrs.iter().all(|a| public_ip(a.ip())
-                            && Some(a.port()) == target.port_or_known_default()),
-                    "invalid pinned public addresses"
-                );
-                addrs
-            }
-            None => addresses(target, private).await?,
-        };
+        let resolved = addresses(target, private).await?;
         let addrs = resolved
             .into_iter()
             .filter(SocketAddr::is_ipv4)
