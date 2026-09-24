@@ -118,14 +118,10 @@ pub async fn once(app: &App) -> Result<bool, Error> {
     let mut stage = "proxy";
     let mut attempts = 0;
     let mut failures = Vec::new();
-    // A Zyte-driven panel refresh spends most of its budget on one captcha and a handful of browser
-    // round trips, so it gets a longer single attempt instead of the usual three short ones.
+    // A Zyte-driven panel refresh gets a longer attempt. Cheap proxy preparation can retry before
+    // any login starts, but network retries must not repeat the expensive panel conversation.
     let slow_panel = westdata::config(&profile.data).is_some() && crate::zyte::Zyte::configured();
-    let max_attempts = if slow_panel {
-        retry::PANEL_ATTEMPTS
-    } else {
-        retry::ATTEMPTS
-    };
+    let max_attempts = retry::ATTEMPTS;
     let attempt_timeout = if slow_panel {
         retry::PANEL_ATTEMPT_TIMEOUT
     } else {
@@ -217,11 +213,12 @@ pub async fn once(app: &App) -> Result<bool, Error> {
                 break result;
             };
             let (code, _) = history::failure(error, stage);
+            tracing::warn!(%claim, stage, attempt = attempts, code, "subscription refresh attempt failed");
             failures.push(format!("第 {attempts} 次：{code}"));
             let Some(server_delay) = retry::delay(error) else {
                 break result;
             };
-            if attempts >= max_attempts {
+            if attempts >= max_attempts || !retry::may_repeat(slow_panel, stage) {
                 break result;
             }
             let jitter = (Uuid::new_v4().as_u128() % 1000) as u64;
@@ -371,9 +368,14 @@ pub async fn once(app: &App) -> Result<bool, Error> {
         .as_ref()
         .map(|(_, message)| json!(message))
         .unwrap_or(Value::Null);
+    let retry_scope = if slow_panel {
+        "（仅获取代理阶段自动重试）"
+    } else {
+        ""
+    };
     let message = if attempts > 1 || !failures.is_empty() {
         Some(format!(
-            "{} 已尝试 {attempts}/{} 次。{}",
+            "{} 已尝试 {attempts}/{} 次{retry_scope}。{}",
             failure
                 .as_ref()
                 .map(|(_, m)| m.as_str())

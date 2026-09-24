@@ -1,5 +1,5 @@
 //! Supplier credentials live only inside encrypted resource data. No provider response is logged.
-use crate::{App, Error, auth, security};
+use crate::{App, Error, auth, provider_net, security};
 use anyhow::{Result, ensure};
 use axum::{Json, extract::State, http::HeaderMap};
 use serde_json::{Value, json};
@@ -7,6 +7,10 @@ use std::net::{IpAddr, SocketAddr};
 use uuid::Uuid;
 
 const SECRETS: &[&str] = &["url", "extract_url", "whitelist_key"];
+// Regional DNS is an adapter policy, not a global rule for every future supplier.
+const XIEQU_DNS: provider_net::DnsPolicy = provider_net::DnsPolicy {
+    subnet: Some((std::net::Ipv4Addr::new(223, 5, 5, 0), 24)),
+};
 
 pub fn redact(data: &mut Value) {
     for key in SECRETS {
@@ -314,90 +318,15 @@ pub async fn extraction_slot(app: &App, data: &Value) -> Result<()> {
 }
 
 async fn extract(u: &url::Url, protocol: &str, private: bool) -> Result<String> {
-    let body = if u.host_str() == Some("api.xiequ.cn") {
-        let addrs = match security::addresses(u, false).await {
-            Ok(addrs) if addrs.iter().any(SocketAddr::is_ipv4) => addrs,
-            _ => {
-                // Vendor geo-DNS returns loopback to overseas resolvers. Obtain its CN CDN
-                // view over authenticated HTTPS; never hardcode CDN IPs or modify global DNS.
-                // This query contains only the fixed public hostname, never API credentials.
-                let dns = url::Url::parse(
-                    "https://dns.google/resolve?name=api.xiequ.cn&type=A&edns_client_subnet=223.5.5.0/24",
-                )?;
-                let response = security::fetch_text(&dns, false).await?;
-                dns_addresses(&response, u.port_or_known_default().unwrap_or(80))?
-            }
-        };
-        security::fetch_text_at(u, addrs).await?
-    } else {
-        security::fetch_text(u, private).await?
-    };
+    let policy = (u.host_str() == Some("api.xiequ.cn")).then_some(XIEQU_DNS);
+    let body = provider_net::get_text(u, policy, private).await?;
     parse_proxy(&body, protocol, private)
-}
-
-fn dns_addresses(body: &str, port: u16) -> Result<Vec<SocketAddr>> {
-    let v: Value =
-        serde_json::from_str(body).map_err(|_| anyhow::anyhow!("携趣域名解析响应无效"))?;
-    ensure!(
-        v["Status"] == 0
-            && v["Question"][0]["name"]
-                .as_str()
-                .is_some_and(|s| s.trim_end_matches('.') == "api.xiequ.cn")
-            && v["Question"][0]["type"] == 1,
-        "携趣域名解析失败"
-    );
-    let answers = v["Answer"]
-        .as_array()
-        .ok_or_else(|| anyhow::anyhow!("携趣域名缺少公网解析"))?;
-    // Accept A records only on the returned CNAME chain, not unrelated additional records.
-    let mut names = std::collections::HashSet::from(["api.xiequ.cn".to_string()]);
-    for _ in 0..8 {
-        for entry in answers {
-            if entry["type"] == 5
-                && entry["name"]
-                    .as_str()
-                    .is_some_and(|s| names.contains(s.trim_end_matches('.')))
-                && let Some(name) = entry["data"].as_str()
-            {
-                names.insert(name.trim_end_matches('.').to_string());
-            }
-        }
-    }
-    let mut ips = Vec::new();
-    for entry in answers {
-        if entry["type"] == 1
-            && entry["name"]
-                .as_str()
-                .is_some_and(|s| names.contains(s.trim_end_matches('.')))
-        {
-            ips.push(SocketAddr::new(
-                ipv4(entry["data"].as_str().unwrap_or(""))?,
-                port,
-            ));
-        }
-    }
-    ensure!(!ips.is_empty(), "携趣域名缺少公网 IPv4 解析");
-    Ok(ips)
+        .map_err(|_| provider_net::Failure::permanent(provider_net::FailureKind::Response).into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn regional_dns_only_accepts_public_addresses_on_the_cname_chain() {
-        let mut d = json!({"Status":0,"Question":[{"name":"api.xiequ.cn.","type":1}],"Answer":[
-            {"name":"api.xiequ.cn.","type":5,"data":"cdn.example."},
-            {"name":"cdn.example.","type":1,"data":"8.8.8.8"},
-            {"name":"unrelated.example.","type":1,"data":"127.0.0.1"}]});
-        assert_eq!(
-            dns_addresses(&d.to_string(), 80).unwrap(),
-            vec!["8.8.8.8:80".parse::<SocketAddr>().unwrap()]
-        );
-        d["Answer"][1]["data"] = json!("127.0.0.1");
-        assert!(dns_addresses(&d.to_string(), 80).is_err());
-        d["Question"][0]["name"] = json!("other.example.");
-        assert!(dns_addresses(&d.to_string(), 80).is_err());
-    }
     #[test]
     fn preview_is_tenant_bound_authenticated_expiring_and_public() {
         use base64::{Engine, engine::general_purpose::STANDARD};

@@ -8,6 +8,7 @@ mod downloads;
 mod history;
 mod oauth;
 mod provider;
+mod provider_net;
 mod retry;
 #[cfg(test)]
 mod retry_tests;
