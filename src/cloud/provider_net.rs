@@ -5,7 +5,10 @@ mod dns;
 pub use dns::DnsPolicy;
 
 use crate::{retry, security};
-use std::{net::SocketAddr, time::Duration};
+use std::{
+    net::SocketAddr,
+    time::{Duration, Instant},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FailureKind {
@@ -19,12 +22,33 @@ pub enum FailureKind {
     Configuration,
 }
 
-/// Deliberately has no source error: reqwest errors and supplier bodies can contain API keys.
-/// Preserve only the category, numeric HTTP status and safe Retry-After delay.
+/// API errors may contain the credential-bearing URL. Keep the public failure small; emit
+/// connection diagnostics separately, with only host, resolved addresses and OS error fields.
 #[derive(Clone, Copy, Debug)]
 pub struct Failure {
     pub kind: FailureKind,
     pub delay: Option<Duration>,
+}
+
+#[derive(Debug)]
+struct TransportContext<'a> {
+    host: &'a str,
+    port: u16,
+    addresses: &'a [SocketAddr],
+    phase: &'static str,
+}
+
+fn transport_context<'a>(
+    target: &'a url::Url,
+    addrs: &'a [SocketAddr],
+    phase: &'static str,
+) -> TransportContext<'a> {
+    TransportContext {
+        host: target.host_str().unwrap_or(""),
+        port: target.port_or_known_default().unwrap_or(0),
+        addresses: addrs,
+        phase,
+    }
 }
 
 impl Failure {
@@ -39,17 +63,44 @@ impl Failure {
         }
     }
 
-    fn transport(error: anyhow::Error) -> Self {
+    fn transport(
+        error: anyhow::Error,
+        target: &url::Url,
+        addrs: &[SocketAddr],
+        phase: &'static str,
+        started: Instant,
+    ) -> Self {
         let kind = match error.downcast_ref::<reqwest::Error>() {
             Some(e) if e.status().is_some() => FailureKind::Http(e.status().unwrap().as_u16()),
             Some(e) if e.is_connect() => FailureKind::Connect,
             Some(e) if e.is_timeout() => FailureKind::Timeout,
             _ => FailureKind::Response,
         };
-        Self {
+        let failure = Self {
             kind,
             delay: retry::delay(&error),
-        }
+        };
+        let request = error.downcast_ref::<reqwest::Error>();
+        let io = error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<std::io::Error>());
+        let context = transport_context(target, addrs, phase);
+        tracing::warn!(
+            host = context.host,
+            port = context.port,
+            addresses = ?context.addresses,
+            phase = context.phase,
+            elapsed_ms = started.elapsed().as_millis(),
+            code = failure.diagnostic().0,
+            http_status = ?request.and_then(reqwest::Error::status).map(|s| s.as_u16()),
+            is_connect = request.is_some_and(reqwest::Error::is_connect),
+            is_timeout = request.is_some_and(reqwest::Error::is_timeout),
+            is_body = request.is_some_and(reqwest::Error::is_body),
+            io_kind = ?io.map(std::io::Error::kind),
+            os_code = ?io.and_then(std::io::Error::raw_os_error),
+            "provider API transport failed"
+        );
+        failure
     }
 
     pub fn diagnostic(&self) -> (&'static str, String) {
@@ -113,12 +164,22 @@ pub async fn get_text(
                 }
             })?,
     };
+    tracing::info!(
+        host = target.host_str().unwrap_or(""),
+        addresses = ?addrs,
+        "provider API DNS resolution completed"
+    );
     let result = get_at(target, addrs, private, Duration::from_secs(12)).await;
     // A failed connection must not pin future attempts to a possibly obsolete CDN address.
     if let (Some(policy), Err(error)) = (policy, &result)
         && matches!(error.kind, FailureKind::Connect | FailureKind::Timeout)
     {
         dns::invalidate(target, policy).await;
+        tracing::info!(
+            host = target.host_str().unwrap_or(""),
+            code = error.diagnostic().0,
+            "provider DNS cache invalidated after transport failure"
+        );
     }
     result
 }
@@ -138,6 +199,7 @@ async fn get_at(
     {
         return Err(Failure::permanent(FailureKind::DnsInvalid));
     }
+    let started = Instant::now();
     let request = async {
         let client = reqwest::Client::builder()
             .no_proxy()
@@ -146,37 +208,46 @@ async fn get_at(
             .connect_timeout(timeout.min(Duration::from_secs(4)))
             .resolve_to_addrs(target.host_str().unwrap(), &addrs)
             .build()
-            .map_err(|e| Failure::transport(e.into()))?;
-        let mut response = client
-            .get(target.clone())
-            .send()
-            .await
-            .map_err(|e| Failure::transport(e.into()))?;
-        retry::check_http(&response).map_err(Failure::transport)?;
+            .map_err(|e| Failure::transport(e.into(), target, &addrs, "client_build", started))?;
+        let mut response = client.get(target.clone()).send().await.map_err(|e| {
+            Failure::transport(e.into(), target, &addrs, "connect_or_headers", started)
+        })?;
+        retry::check_http(&response)
+            .map_err(|e| Failure::transport(e, target, &addrs, "http_status", started))?;
         if !response.status().is_success() {
             return Err(Failure::permanent(FailureKind::Http(
                 response.status().as_u16(),
             )));
         }
         if response.content_length().is_some_and(|n| n > 65536) {
+            tracing::warn!(host = target.host_str().unwrap_or(""), addresses = ?addrs,
+                content_length = ?response.content_length(), "provider API response too large");
             return Err(Failure::permanent(FailureKind::Response));
         }
         let mut bytes = Vec::new();
         while let Some(chunk) = response
             .chunk()
             .await
-            .map_err(|e| Failure::transport(e.into()))?
+            .map_err(|e| Failure::transport(e.into(), target, &addrs, "response_body", started))?
         {
             if bytes.len() + chunk.len() > 65536 {
+                tracing::warn!(host = target.host_str().unwrap_or(""), addresses = ?addrs,
+                    bytes = bytes.len() + chunk.len(), "provider API response exceeded limit");
                 return Err(Failure::permanent(FailureKind::Response));
             }
             bytes.extend(chunk);
         }
+        tracing::info!(host = target.host_str().unwrap_or(""), addresses = ?addrs,
+            elapsed_ms = started.elapsed().as_millis(), bytes = bytes.len(),
+            "provider API request completed");
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     };
-    tokio::time::timeout(timeout, request)
-        .await
-        .map_err(|_| Failure::transient(FailureKind::Timeout))?
+    tokio::time::timeout(timeout, request).await.map_err(|_| {
+        tracing::warn!(host = target.host_str().unwrap_or(""), addresses = ?addrs,
+                elapsed_ms = started.elapsed().as_millis(), phase = "request_deadline",
+                "provider API request timed out");
+        Failure::transient(FailureKind::Timeout)
+    })?
 }
 
 #[cfg(test)]
