@@ -1,4 +1,5 @@
 //! Supplier credentials live only inside encrypted resource data. No provider response is logged.
+mod fanproxy;
 use crate::{App, Error, auth, provider_net, security};
 use anyhow::{Result, ensure};
 use axum::{Json, extract::State, http::HeaderMap};
@@ -6,7 +7,14 @@ use serde_json::{Value, json};
 use std::net::{IpAddr, SocketAddr};
 use uuid::Uuid;
 
-const SECRETS: &[&str] = &["url", "extract_url", "whitelist_key"];
+const SECRETS: &[&str] = &[
+    "url",
+    "extract_url",
+    "whitelist_key",
+    "extract_key",
+    "whitelist_account",
+    "whitelist_signature",
+];
 // Regional DNS is an adapter policy, not a global rule for every future supplier.
 const XIEQU_DNS: provider_net::DnsPolicy = provider_net::DnsPolicy {
     subnet: Some((std::net::Ipv4Addr::new(223, 5, 5, 0), 24)),
@@ -53,7 +61,7 @@ pub async fn preview(State(app): State<App>, h: HeaderMap) -> Result<Json<Value>
     let expires = crate::now() + 300;
     let proof = app
         .vault
-        .seal(&json!({"purpose":"xiequ-egress", "user":user, "ip":ip, "expires":expires}))?;
+        .seal(&json!({"purpose":"proxy-egress", "user":user, "ip":ip, "expires":expires}))?;
     Ok(Json(json!({"ip":ip, "expires_at":expires, "proof":proof,
         "sources":["api.ipify.org", "ipv4.icanhazip.com"]})))
 }
@@ -63,7 +71,7 @@ fn verified_preview(vault: &security::Vault, user: Uuid, proof: Value) -> Result
         .open(proof)
         .map_err(|_| anyhow::anyhow!("preview invalid; preview the server IP again"))?;
     ensure!(
-        p["purpose"] == "xiequ-egress"
+        (p["purpose"] == "proxy-egress" || p["purpose"] == "xiequ-egress")
             && p["user"] == user.to_string()
             && p["expires"].as_u64().is_some_and(|t| t > crate::now()),
         "preview expired or belongs to another account; preview again"
@@ -107,7 +115,7 @@ fn extraction_url(data: &Value) -> Result<url::Url> {
 pub fn normalize(data: &mut Value, old: Option<&Value>) -> Result<()> {
     let supplier = data["provider"].as_str().unwrap_or("static").to_string();
     ensure!(
-        ["static", "xiequ"].contains(&supplier.as_str()),
+        ["static", "xiequ", "fanproxy"].contains(&supplier.as_str()),
         "unknown proxy provider"
     );
     data["provider"] = json!(supplier);
@@ -142,10 +150,16 @@ pub fn normalize(data: &mut Value, old: Option<&Value>) -> Result<()> {
             "whitelist_at",
             "egress_preview",
             "protocol",
+            "extract_key",
+            "whitelist_account",
+            "whitelist_signature",
+            "area",
+            "isp",
+            "deduplicate",
         ] {
             data.as_object_mut().unwrap().remove(key);
         }
-    } else {
+    } else if supplier == "xiequ" {
         ensure!(
             data["whitelist_uid"].as_str().is_some_and(|s| !s.is_empty()
                 && s.len() <= 30
@@ -163,7 +177,32 @@ pub fn normalize(data: &mut Value, old: Option<&Value>) -> Result<()> {
         );
         data["protocol"] = json!(protocol);
         data["endpoint"] = json!("携趣 · 短效代理 · 每次刷新提取 1 IP");
-        data.as_object_mut().unwrap().remove("url");
+        for key in [
+            "url",
+            "extract_key",
+            "whitelist_account",
+            "whitelist_signature",
+            "area",
+            "isp",
+            "deduplicate",
+        ] {
+            data.as_object_mut().unwrap().remove(key);
+        }
+        // Never trust client-supplied provisioning status.
+        for key in ["whitelist_ip", "whitelist_at"] {
+            data[key] = if same {
+                old.unwrap()[key].clone()
+            } else {
+                Value::Null
+            };
+        }
+    } else {
+        fanproxy::validate(data)?;
+        data["protocol"] = json!("http");
+        data["endpoint"] = json!("网帆 · 国内短效代理 · 每次刷新提取 1 IP");
+        for key in ["url", "extract_url", "whitelist_uid", "whitelist_key"] {
+            data.as_object_mut().unwrap().remove(key);
+        }
         // Never trust client-supplied provisioning status.
         for key in ["whitelist_ip", "whitelist_at"] {
             data[key] = if same {
@@ -214,20 +253,26 @@ async fn whitelist(data: &Value, ip: &str) -> Result<()> {
 /// Runs before opening the edit transaction; a second version check fences concurrent saves.
 pub async fn provision(app: &App, user: Uuid, data: &mut Value, old: Option<&Value>) -> Result<()> {
     normalize(data, old)?;
-    if data["provider"] != "xiequ" {
+    if data["provider"] == "static" {
         return Ok(());
     }
-    let changed = old.is_none_or(|o| {
-        [
+    let credentials: &[&str] = if data["provider"] == "xiequ" {
+        &[
             "provider",
             "extract_url",
             "whitelist_uid",
             "whitelist_key",
             "protocol",
         ]
-        .iter()
-        .any(|k| o[*k] != data[*k])
-    });
+    } else {
+        &[
+            "provider",
+            "extract_key",
+            "whitelist_account",
+            "whitelist_signature",
+        ]
+    };
+    let changed = old.is_none_or(|o| credentials.iter().any(|k| o[*k] != data[*k]));
     if changed || data["whitelist_ip"].is_null() || data.get("egress_preview").is_some() {
         let proof = data.get("egress_preview").cloned().unwrap_or(Value::Null);
         let ip = verified_preview(&app.vault, user, proof)?;
@@ -235,7 +280,11 @@ pub async fn provision(app: &App, user: Uuid, data: &mut Value, old: Option<&Val
             ip == egress().await?,
             "服务器出口 IP 已变化，请重新预览并确认"
         );
-        whitelist(data, &ip).await?;
+        if data["provider"] == "xiequ" {
+            whitelist(data, &ip).await?;
+        } else {
+            fanproxy::whitelist(data, &ip).await?;
+        }
         data["whitelist_ip"] = json!(ip);
         data["whitelist_at"] = json!(crate::now());
     }
@@ -288,33 +337,59 @@ pub async fn resolve(data: &Value, private: bool) -> Result<String> {
             .ok_or_else(|| anyhow::anyhow!("proxy URL missing"));
     }
     ensure!(
-        data["provider"] == "xiequ" && data["whitelist_ip"].as_str().is_some(),
-        "携趣代理尚未确认服务器白名单"
+        data["whitelist_ip"].as_str().is_some(),
+        "代理尚未确认服务器白名单"
     );
-    let u = extraction_url(data)?;
-    extract(&u, data["protocol"].as_str().unwrap_or("http"), private).await
+    match data["provider"].as_str() {
+        Some("xiequ") => {
+            let u = extraction_url(data)?;
+            extract(&u, data["protocol"].as_str().unwrap_or("http"), private).await
+        }
+        Some("fanproxy") => fanproxy::extract(data, private).await,
+        _ => anyhow::bail!("unknown proxy provider"),
+    }
 }
 
 /// Shared across replicas and profiles; at most five admissions per one-second window.
 /// Two adjacent windows still fit the supplier's recommended ten requests/second.
 pub async fn extraction_slot(app: &App, data: &Value) -> Result<()> {
-    if data["provider"] != "xiequ" {
+    if data["provider"] == "static" {
         return Ok(());
     }
-    let key = format!(
-        "xiequ-extract:{}",
-        camofy::digest(data["whitelist_uid"].as_str().unwrap_or(""))
-    );
+    let fan = data["provider"] == "fanproxy";
+    let key = if fan {
+        format!(
+            "fanproxy-extract:{}",
+            camofy::digest(data["extract_key"].as_str().unwrap_or(""))
+        )
+    } else {
+        format!(
+            "xiequ-extract:{}",
+            camofy::digest(data["whitelist_uid"].as_str().unwrap_or(""))
+        )
+    };
     for _ in 0..4 {
-        match auth::rate(app, key.clone(), 5, 1).await {
+        match auth::rate(
+            app,
+            key.clone(),
+            if fan { 1 } else { 5 },
+            if fan { 5 } else { 1 },
+        )
+        .await
+        {
             Ok(()) => return Ok(()),
             Err(e) if e.status == axum::http::StatusCode::TOO_MANY_REQUESTS => {
-                tokio::time::sleep(std::time::Duration::from_millis(1100)).await
+                tokio::time::sleep(std::time::Duration::from_millis(if fan {
+                    5100
+                } else {
+                    1100
+                }))
+                .await
             }
             Err(_) => anyhow::bail!("proxy extraction admission unavailable"),
         }
     }
-    anyhow::bail!("携趣提取排队超时，请稍后刷新")
+    anyhow::bail!("代理提取排队超时，请稍后刷新")
 }
 
 async fn extract(u: &url::Url, protocol: &str, private: bool) -> Result<String> {
@@ -490,5 +565,35 @@ mod tests {
         d["extract_url"] =
             json!("http://127.0.0.1/VAD/GetIp.aspx?act=get&num=1&uid=123&vkey=secret");
         assert!(normalize(&mut d, Some(&old)).is_err());
+    }
+
+    #[test]
+    fn fanproxy_secrets_are_write_only_and_switching_suppliers_clears_them() {
+        let mut data = json!({"provider":"fanproxy", "name":"domestic", "extract_key":"secret123",
+            "whitelist_account":"00000000000", "whitelist_signature":"aabbccdd",
+            "area":"110100", "isp":"电信", "deduplicate":true,
+            "protocol":"socks5", "whitelist_ip":"8.8.8.8", "whitelist_at":1,
+            "extract_url":"https://api.xiequ.cn/VAD/GetIp.aspx?uid=SECRET"});
+        normalize(&mut data, None).unwrap();
+        assert!(data["whitelist_ip"].is_null() && data["whitelist_at"].is_null());
+        assert_eq!(data["protocol"], "http");
+        assert!(data.get("extract_url").is_none());
+        let old = data.clone();
+        redact(&mut data);
+        for key in ["extract_key", "whitelist_account", "whitelist_signature"] {
+            assert!(data.get(key).is_none());
+        }
+        assert_eq!(data["area"], "110100");
+        data["isp"] = json!("移动");
+        normalize(&mut data, Some(&old)).unwrap();
+        assert_eq!(data["extract_key"], old["extract_key"]);
+        assert_eq!(data["whitelist_account"], old["whitelist_account"]);
+        assert_eq!(data["whitelist_signature"], old["whitelist_signature"]);
+        let mut switched = json!({"provider":"static", "url":"http://8.8.8.8:8080",
+            "extract_key":"secret123", "whitelist_signature":"aabbccdd"});
+        normalize(&mut switched, Some(&old)).unwrap();
+        assert!(
+            switched.get("extract_key").is_none() && switched.get("whitelist_signature").is_none()
+        );
     }
 }
