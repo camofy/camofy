@@ -1,6 +1,7 @@
 use crate::{App, Error, history, retry, security, store, usage, westdata};
 use serde_json::{Value, json};
 use sqlx::Row;
+use tracing::Instrument;
 use uuid::Uuid;
 
 pub async fn start(app: App) {
@@ -201,7 +202,10 @@ pub async fn once(app: &App) -> Result<bool, Error> {
                     panel = None;
                 }
                 outcome.map(|fetched| (url, fetched))
-            };
+            }
+            .instrument(
+                tracing::info_span!("subscription_refresh_attempt", %claim, attempt = attempts),
+            );
             let result = match tokio::time::timeout(attempt_timeout, attempt).await {
                 Ok(result) => result,
                 Err(e) => {

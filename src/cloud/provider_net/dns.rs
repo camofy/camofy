@@ -109,6 +109,7 @@ impl Resolver {
         policy: DnsPolicy,
     ) -> Result<Vec<SocketAddr>, Failure> {
         let key = Self::key(target, policy);
+        let host = key.host.clone();
         let port = target
             .port_or_known_default()
             .ok_or_else(|| Failure::permanent(FailureKind::Configuration))?;
@@ -131,6 +132,9 @@ impl Resolver {
         };
         let mut cached = slot.lock().await;
         if let Some(answer) = cached.as_ref().filter(|a| a.expires > Instant::now()) {
+            tracing::info!(host, subnet = ?policy.subnet, addresses = ?answer.ips,
+                remaining_ttl_ms = answer.expires.saturating_duration_since(Instant::now()).as_millis(),
+                "provider DNS cache hit");
             return Ok(answer
                 .ips
                 .iter()
@@ -138,30 +142,36 @@ impl Resolver {
                 .collect());
         }
         *cached = None;
+        tracing::info!(host, subnet = ?policy.subnet,
+            "provider DNS cache miss; querying resolvers");
         let mut pending = self
             .endpoints
             .iter()
             .map(|(label, endpoint)| {
                 let query = &query;
+                let host = host.as_str();
                 async move {
                     let started = Instant::now();
-                    let result = self.ask(endpoint, query).await;
-                    tracing::debug!(
+                    let result = self.ask(label, endpoint, query).await;
+                    tracing::info!(
                         resolver = label,
+                        host,
                         elapsed_ms = started.elapsed().as_millis(),
                         outcome = result
                             .as_ref()
                             .err()
                             .map(|e| e.diagnostic().0)
                             .unwrap_or("ok"),
+                        addresses = ?result.as_ref().ok().map(|a| &a.ips),
+                        ttl_ms = ?result.as_ref().ok().map(|a| a.expires.saturating_duration_since(Instant::now()).as_millis()),
                         "provider DNS query finished"
                     );
-                    result
+                    (*label, result)
                 }
             })
             .collect::<FuturesUnordered<_>>();
         let mut last = Failure::permanent(FailureKind::DnsInvalid);
-        while let Some(result) = pending.next().await {
+        while let Some((resolver, result)) = pending.next().await {
             match result {
                 Ok(answer) => {
                     let addresses = answer
@@ -170,6 +180,8 @@ impl Resolver {
                         .map(|ip| SocketAddr::new(*ip, port))
                         .collect();
                     *cached = Some(answer);
+                    tracing::info!(host, subnet = ?policy.subnet, resolver,
+                        addresses = ?addresses, "provider DNS answer selected");
                     // Dropping the remaining futures cancels unused DNS requests. No extraction
                     // request has been issued at this point.
                     return Ok(addresses);
@@ -181,7 +193,12 @@ impl Resolver {
         Err(last)
     }
 
-    async fn ask(&self, endpoint: &url::Url, query: &Message) -> Result<Answer, Failure> {
+    async fn ask(
+        &self,
+        label: &'static str,
+        endpoint: &url::Url,
+        query: &Message,
+    ) -> Result<Answer, Failure> {
         let addrs: Vec<_> = security::addresses(endpoint, self.private)
             .await
             .map_err(|_| Failure::transient(FailureKind::DnsUnavailable))?
@@ -191,6 +208,7 @@ impl Resolver {
         if addrs.is_empty() {
             return Err(Failure::transient(FailureKind::DnsUnavailable));
         }
+        tracing::info!(resolver = label, addresses = ?addrs, "provider DoH endpoint resolved");
         let bytes = query
             .to_vec()
             .map_err(|_| Failure::permanent(FailureKind::DnsInvalid))?;
@@ -209,8 +227,10 @@ impl Resolver {
             .body(bytes)
             .send()
             .await
-            .map_err(dns_transport)?;
+            .map_err(|e| dns_transport(e, label, &addrs, "request"))?;
         if !response.status().is_success() {
+            tracing::warn!(resolver = label, addresses = ?addrs,
+                status = response.status().as_u16(), "provider DoH HTTP error");
             return Err(Failure::transient(FailureKind::DnsUnavailable));
         }
         if !response
@@ -229,17 +249,38 @@ impl Resolver {
             return Err(Failure::permanent(FailureKind::DnsInvalid));
         }
         let mut body = Vec::new();
-        while let Some(chunk) = response.chunk().await.map_err(dns_transport)? {
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|e| dns_transport(e, label, &addrs, "body"))?
+        {
             if body.len() + chunk.len() > 65536 {
                 return Err(Failure::permanent(FailureKind::DnsInvalid));
             }
             body.extend(chunk);
         }
-        parse(&body, query)
+        parse(&body, query).inspect_err(|error| {
+            tracing::warn!(resolver = label, addresses = ?addrs,
+                code = error.diagnostic().0, "provider DoH answer rejected");
+        })
     }
 }
 
-fn dns_transport(error: reqwest::Error) -> Failure {
+fn dns_transport(
+    error: reqwest::Error,
+    resolver: &str,
+    addrs: &[SocketAddr],
+    phase: &str,
+) -> Failure {
+    let io = std::error::Error::source(&error)
+        .into_iter()
+        .flat_map(|e| std::iter::successors(Some(e), |e| e.source()))
+        .find_map(|e| e.downcast_ref::<std::io::Error>());
+    tracing::warn!(resolver, addresses = ?addrs, phase,
+        is_connect = error.is_connect(), is_timeout = error.is_timeout(),
+        io_kind = ?io.map(std::io::Error::kind),
+        os_code = ?io.and_then(std::io::Error::raw_os_error),
+        "provider DoH transport failed");
     Failure::transient(if error.is_timeout() {
         FailureKind::DnsTimeout
     } else {

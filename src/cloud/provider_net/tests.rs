@@ -1,5 +1,18 @@
 use super::*;
 use axum::{Router, http::StatusCode, response::IntoResponse, routing::get};
+#[test]
+fn transport_context_records_destination_without_query_credentials() {
+    let target: url::Url = "https://api.example.test/GetIp.aspx?uid=SECRET&vkey=SECRET"
+        .parse()
+        .unwrap();
+    let addresses = ["8.8.8.8:443".parse().unwrap()];
+    let context = transport_context(&target, &addresses, "connect_or_headers");
+    assert_eq!(context.host, "api.example.test");
+    assert_eq!(context.port, 443);
+    assert_eq!(context.addresses, &addresses);
+    assert_eq!(context.phase, "connect_or_headers");
+    assert!(!format!("{context:?}").contains("SECRET"));
+}
 
 #[tokio::test]
 async fn transport_preserves_safe_categories_and_retry_after_without_leaking_credentials() {

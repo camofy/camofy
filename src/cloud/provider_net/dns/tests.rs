@@ -334,11 +334,13 @@ async fn public_doh_with_and_without_regional_policy() {
                 let query = &query;
                 async move {
                     let start = Instant::now();
-                    let result =
-                        tokio::time::timeout(resolver.timeout, resolver.ask(endpoint, query))
-                            .await
-                            .map_err(|_| Failure::transient(FailureKind::DnsTimeout))
-                            .and_then(|r| r);
+                    let result = tokio::time::timeout(
+                        resolver.timeout,
+                        resolver.ask("smoke", endpoint, query),
+                    )
+                    .await
+                    .map_err(|_| Failure::transient(FailureKind::DnsTimeout))
+                    .and_then(|r| r);
                     println!(
                         "{label}: host={host}, elapsed_ms={}, outcome={}",
                         start.elapsed().as_millis(),
