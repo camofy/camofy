@@ -296,7 +296,7 @@ export function CollectionPage({ section }: { section: Section }) {
                             ? `商店组件 · v${r.data._package?.version ?? "—"} · 手动锁定`
                             : `独立配置 · v${r.version}`
                           : section === "proxies"
-                            ? r.data.provider === "xiequ"
+                            ? r.data.provider === "xiequ" || r.data.provider === "fanproxy"
                               ? "每次刷新即时提取"
                               : host(r.data.endpoint ?? r.data.url)
                             : `配置版本 ${r.data.reported?.revision?.slice(0, 8) ?? "未上报"}`}
@@ -307,6 +307,8 @@ export function CollectionPage({ section }: { section: Section }) {
                       <span className="chip">
                         {r.data.provider === "xiequ"
                           ? "携趣 · 短效"
+                          : r.data.provider === "fanproxy"
+                            ? "网帆 · 国内短效"
                           : "固定代理"}
                       </span>
                     ) : (
@@ -1198,12 +1200,21 @@ export function DetailPage({ section }: { section: Section }) {
                         "供应商",
                         r.data.provider === "xiequ"
                           ? "携趣 · 短效代理"
+                          : r.data.provider === "fanproxy"
+                            ? "网帆 · 国内短效代理"
                           : "固定代理",
                       ],
                       ["协议", r.data.protocol ?? "由 URL 决定"],
-                      ["固定出口", r.data.endpoint ?? "—"],
+                      [r.data.provider === "static" ? "固定出口" : "提取方式", r.data.endpoint ?? "—"],
                       ["白名单 IP", r.data.whitelist_ip ?? "—"],
                       ["白名单确认", displayTime(r.data.whitelist_at)],
+                      ...(r.data.provider === "fanproxy"
+                        ? ([
+                            ["地区", r.data.area && r.data.area !== "000000" ? r.data.area : "全部地区"],
+                            ["运营商", r.data.isp || "不限"],
+                            ["去重", r.data.deduplicate === false ? "不限制" : "严格去重"],
+                          ] as [string, ReactNode][])
+                        : []),
                     ]}
                   />
                 ) : (
@@ -1328,7 +1339,7 @@ export function DetailPage({ section }: { section: Section }) {
                 : section === "profiles"
                   ? "为节点、代理组、域名规则或运行参数分别建立 Profile，然后按用途自由组合。"
                   : section === "proxies"
-                    ? "此代理仅用于云端拉取上游订阅，不会成为设备的流量出口。携趣每次刷新即时提取一个短效 IP。"
+                    ? `此代理仅用于云端拉取上游订阅，不会成为设备的流量出口。${r.data.provider === "static" ? "固定代理按保存的地址使用。" : "每次刷新即时提取一个短效 IP。"}`
                     : "身份由云端直接分配，设备自动同步，无需配置订阅 URL。停止状态会持久保存，不会被同步或看门狗重新拉起；云端不可达时，请通过路由器本地页面启动、停止或重启 Mihomo。"}
             </p>
             <div className="guidance-rule" />

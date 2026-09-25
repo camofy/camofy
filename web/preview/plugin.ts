@@ -143,11 +143,27 @@ export function designPreview(): Plugin {
         },
       },
     },
+    {
+      id: "demo-fanproxy",
+      kind: "proxy",
+      version: 1,
+      data: {
+        name: "网帆演示出口",
+        provider: "fanproxy",
+        endpoint: "网帆 · 国内短效代理 · 每次刷新提取 1 IP",
+        protocol: "http",
+        area: "",
+        isp: "",
+        deduplicate: true,
+        whitelist_ip: "203.0.113.10",
+        whitelist_at: now - 3600,
+      },
+    },
   ];
   const user = {
     email: "demo@example.invalid",
     nickname: "我的工作区",
-    role: "user",
+    role: "admin",
   };
   const packages = [
     ["daily-direct", "日常直连", "常用国内服务，使用直连策略。", "分流规则"],
@@ -211,6 +227,11 @@ export function designPreview(): Plugin {
               : send(user);
           if (path === "/resources" && req.method === "GET")
             return send(resources);
+          if (path === "/admin/subscription-egress")
+            return send({ proxy_id: null, direct: true, version: 1 });
+          if (path === "/admin/proxies/egress-preview")
+            return send({ ip: "203.0.113.10", expires_at: now + 300,
+              proof: "local-preview-only", sources: ["local-design-fixture"] });
           if (path === "/profiles/westdata-services")
             return send({
               services: [
@@ -245,8 +266,32 @@ export function designPreview(): Plugin {
             resources.push(item);
             return send(item);
           }
+          if (path === "/admin/proxies" && req.method === "POST") {
+            const data = { ...draft.data };
+            if (data.provider === "fanproxy") {
+              data.endpoint = "网帆 · 国内短效代理 · 每次刷新提取 1 IP";
+              data.protocol = "http";
+              data.whitelist_ip = "203.0.113.10";
+              data.whitelist_at = now;
+              delete data.extract_key;
+              delete data.whitelist_account;
+              delete data.whitelist_signature;
+              delete data.egress_preview;
+            }
+            const item = { id: "local-proxy-" + Date.now(), kind: "proxy",
+              version: 1, data };
+            resources.push(item);
+            return send(item);
+          }
           const resourceId = path.split("/")[2];
           const current = resources.find((r) => r.id === resourceId);
+          if (path.startsWith("/admin/proxies/") && current) {
+            if (req.method === "PUT") {
+              current.data = draft.data;
+              current.version++;
+            }
+            return send(current);
+          }
           if (path.startsWith("/resources/") && current) {
             if (req.method === "DELETE") {
               resources = resources.filter((r) => r !== current);
