@@ -126,9 +126,14 @@ async fn save(
         .await
         .map_err(|error| {
             crate::security::log_network_failure("proxy_provision", if supplier == "fanproxy" { "openapi.fanproxy.com" } else { "op.xiequ.cn" }, "whitelist_or_validation", started, &error);
-            tracing::warn!(%actor, %id, supplier, diagnostic = ?error.downcast_ref::<crate::provider_net::Failure>().map(|e| e.diagnostic().0),
+            let allowlist_code = error.downcast_ref::<provider::AllowlistRejection>().map(|e| e.code);
+            tracing::warn!(%actor, %id, supplier, ?allowlist_code, diagnostic = ?error.downcast_ref::<crate::provider_net::Failure>().map(|e| e.diagnostic().0),
                 "platform proxy provisioning failed");
-            Error::bad("代理配置或白名单确认失败，请重新预览并检查供应商配置。")
+            Error::bad(if allowlist_code == Some(1212) {
+                "网帆拒绝将服务器出口加入白名单（地区限制，错误码 1212）。请向供应商确认开放地区或使用允许的服务器出口。"
+            } else {
+                "代理配置或白名单确认失败，请重新预览并检查供应商配置。"
+            })
         })?;
     let mut tx = app.db.begin().await?;
     lock(&mut tx).await?;
