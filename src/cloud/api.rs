@@ -9,6 +9,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tracing::Instrument;
 use uuid::Uuid;
 
 pub async fn resources(State(app): State<App>, h: HeaderMap) -> Result<Json<Value>, Error> {
@@ -453,6 +454,8 @@ async fn save(
     }
     r = store::get(&app, &mut tx, user, id).await?;
     tx.commit().await?;
+    tracing::info!(resource_id = %id, kind = %r.kind, version = r.version, created = new,
+        configuration_changed, "resource change committed");
     if r.kind == "proxy" {
         crate::provider::redact(&mut r.data);
     }
@@ -500,6 +503,7 @@ pub async fn delete(
         .await?;
     store::notify(&mut tx, user).await?;
     tx.commit().await?;
+    tracing::info!(resource_id = %id, kind = %target.kind, "resource deleted");
     Ok(StatusCode::NO_CONTENT)
 }
 /// Read the tenant's last successful profile snapshot without fetching upstream.
@@ -539,6 +543,8 @@ pub async fn westdata_services(
     h: HeaderMap,
     Json(p): Json<PanelScan>,
 ) -> Result<Json<Value>, Error> {
+    let scan = Uuid::new_v4();
+    let started = std::time::Instant::now();
     let user = auth::user(&app, &h, true).await?;
     auth::rate(&app, format!("panel-scan:{user}"), 10, 60).await?;
     let vision = app
@@ -596,10 +602,20 @@ pub async fn westdata_services(
         password,
         product_id: String::new(),
     };
+    tracing::info!(%scan, zyte = crate::zyte::Zyte::configured(),
+        proxy_enabled = endpoint.is_some(), "WestData product scan started");
     let services =
         crate::westdata::discover(vision, endpoint.as_deref(), app.private_egress, &config)
+            .instrument(tracing::info_span!("product_scan", %scan))
             .await
-            .map_err(|e| Error::bad(crate::westdata::describe(&e)))?;
+            .map_err(|e| {
+                tracing::warn!(%scan, elapsed_ms = started.elapsed().as_millis(),
+                    panel_step = ?e.downcast_ref::<crate::westdata::Failure>().map(|f| f.step),
+                    "WestData product scan failed");
+                Error::bad(crate::westdata::describe(&e))
+            })?;
+    tracing::info!(%scan, services = services.len(), elapsed_ms = started.elapsed().as_millis(),
+        "WestData product scan completed");
     Ok(Json(json!({ "services": services })))
 }
 
@@ -619,6 +635,7 @@ pub async fn refresh(
     sqlx::query("INSERT INTO fetch_jobs(profile_id,user_id,reason) VALUES($1,$2,'manual') ON CONFLICT(profile_id) DO UPDATE SET next_run=now(),reason='manual',request_id=gen_random_uuid()")
         .bind(id).bind(user).execute(&mut *tx).await?;
     tx.commit().await?;
+    tracing::info!(profile_id = %id, "manual subscription refresh queued");
     Ok(StatusCode::ACCEPTED)
 }
 

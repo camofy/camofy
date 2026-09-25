@@ -115,9 +115,20 @@ async fn save(
     if old.as_ref().is_some_and(|r| Some(r.version) != e.version) {
         return Err(conflict());
     }
+    let supplier = match e.data["provider"].as_str() {
+        Some("xiequ") => "xiequ",
+        Some("static") | None => "static",
+        _ => "invalid",
+    };
+    let started = std::time::Instant::now();
     provider::provision(&app, actor, &mut e.data, old.as_ref().map(|r| &r.data))
         .await
-        .map_err(|_| Error::bad("代理配置或白名单确认失败，请重新预览并检查供应商配置。"))?;
+        .map_err(|error| {
+            crate::security::log_network_failure("proxy_provision", "op.xiequ.cn", "whitelist_or_validation", started, &error);
+            tracing::warn!(%actor, %id, supplier, diagnostic = ?error.downcast_ref::<crate::provider_net::Failure>().map(|e| e.diagnostic().0),
+                "platform proxy provisioning failed");
+            Error::bad("代理配置或白名单确认失败，请重新预览并检查供应商配置。")
+        })?;
     let mut tx = app.db.begin().await?;
     lock(&mut tx).await?;
     auth::admin(&app, &h, true).await?;
@@ -138,6 +149,8 @@ async fn save(
     )
     .await?;
     tx.commit().await?;
+    tracing::info!(%actor, %id, version, supplier, elapsed_ms = started.elapsed().as_millis(),
+        created = new, "platform proxy configuration committed");
     provider::redact(&mut e.data);
     Ok(Json(Resource {
         id,
@@ -174,6 +187,7 @@ pub async fn delete(
         .await?;
     audit(&mut tx, actor, "proxy.delete", Some(id), old.version).await?;
     tx.commit().await?;
+    tracing::info!(%actor, %id, "platform proxy configuration deleted");
     Ok(StatusCode::NO_CONTENT)
 }
 pub async fn policy(State(app): State<App>, h: HeaderMap) -> Result<Json<Value>, Error> {
@@ -214,6 +228,8 @@ pub async fn set_policy(
     let version = version.ok_or_else(conflict)?;
     audit(&mut tx, actor, "egress.select", e.proxy_id, version).await?;
     tx.commit().await?;
+    tracing::info!(%actor, proxy_id = ?e.proxy_id, direct = e.direct, version,
+        "platform subscription egress changed");
     Ok(Json(
         json!({"proxy_id":e.proxy_id,"direct":e.direct,"version":version}),
     ))

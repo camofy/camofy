@@ -283,6 +283,14 @@ async fn main() -> anyhow::Result<()> {
         topics: Default::default(),
         hash_slots: Arc::new(Semaphore::new(4)),
     };
+    tracing::info!(
+        workers = app.workers,
+        registration = app.registration,
+        private_egress = app.private_egress,
+        captcha_enabled = app.captcha.is_some(),
+        zyte_enabled = zyte::Zyte::configured(),
+        "cloud service configuration loaded"
+    );
     sync::listen(app.clone()).await;
     worker::start(app.clone()).await;
     let addr = std::env::var("CAMOFY_LISTEN").unwrap_or_else(|_| "0.0.0.0:3000".into());

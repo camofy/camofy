@@ -283,6 +283,7 @@ pub async fn report(
     }
     if !sanitized["command_id"].is_null() {
         if sanitized["command_id"] != d.data["command"]["id"] {
+            tracing::info!(device_id = %id, "stale device command report ignored");
             return Ok(StatusCode::NO_CONTENT); // Stale measurement from a replaced command.
         }
         if d.data["command"]["type"] == "test_delays" {
@@ -312,6 +313,10 @@ pub async fn report(
     store::put(&app, &mut tx, a.user, &d).await?;
     // Reports do not notify all devices: avoid a feedback loop between sync and telemetry.
     tx.commit().await?;
+    if d.data["reported"]["status"] == "failed" {
+        tracing::warn!(device_id = %id, bundle_id = %a.bundle,
+            revision = ?d.data["reported"]["revision"].as_str(), "device reported configuration failure");
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -419,8 +424,9 @@ pub async fn listen(app: App) {
                 Ok::<(), sqlx::Error>(())
             }
             .await;
-            if result.is_err() {
-                tracing::warn!("notification listener reconnecting");
+            if let Err(error) = result {
+                tracing::warn!(database_code = ?error.as_database_error().and_then(|e| e.code()),
+                    "notification listener reconnecting");
             }
             tokio::time::sleep(Duration::from_secs(2)).await;
         }

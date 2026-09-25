@@ -502,13 +502,37 @@ impl Session {
         url: &str,
         referer: Option<&str>,
     ) -> Result<(reqwest::StatusCode, String)> {
+        let started = std::time::Instant::now();
+        let host = url::Url::parse(url)?.host_str().unwrap_or("").to_string();
         let response = self
             .request(reqwest::Method::GET, url, referer)?
             .send()
-            .await?;
+            .await
+            .map_err(|error| {
+                let error = anyhow::Error::new(error);
+                security::log_network_failure(
+                    "westdata_panel",
+                    &host,
+                    "get_headers",
+                    started,
+                    &error,
+                );
+                error
+            })?;
         self.remember(&response);
         let status = response.status();
-        let text = String::from_utf8_lossy(&body(response, PAGE_LIMIT).await?).into_owned();
+        let text = String::from_utf8_lossy(&body(response, PAGE_LIMIT).await.map_err(|error| {
+            security::log_network_failure("westdata_panel", &host, "get_body", started, &error);
+            error
+        })?)
+        .into_owned();
+        tracing::info!(
+            host,
+            status = status.as_u16(),
+            bytes = text.len(),
+            elapsed_ms = started.elapsed().as_millis(),
+            "WestData panel GET completed"
+        );
         self.note("GET", status, Some(&text));
         Ok((status, text))
     }
@@ -518,13 +542,36 @@ impl Session {
         url: &str,
         referer: Option<&str>,
     ) -> Result<(reqwest::StatusCode, Vec<u8>)> {
+        let started = std::time::Instant::now();
+        let host = url::Url::parse(url)?.host_str().unwrap_or("").to_string();
         let response = self
             .request(reqwest::Method::GET, url, referer)?
             .send()
-            .await?;
+            .await
+            .map_err(|error| {
+                let error = anyhow::Error::new(error);
+                security::log_network_failure(
+                    "westdata_panel",
+                    &host,
+                    "image_headers",
+                    started,
+                    &error,
+                );
+                error
+            })?;
         self.remember(&response);
         let status = response.status();
-        let bytes = body(response, IMAGE_LIMIT).await?;
+        let bytes = body(response, IMAGE_LIMIT).await.map_err(|error| {
+            security::log_network_failure("westdata_panel", &host, "image_body", started, &error);
+            error
+        })?;
+        tracing::info!(
+            host,
+            status = status.as_u16(),
+            bytes = bytes.len(),
+            elapsed_ms = started.elapsed().as_millis(),
+            "WestData captcha image fetched"
+        );
         self.note("GET", status, None);
         Ok((status, bytes))
     }
@@ -535,6 +582,8 @@ impl Session {
         form: &[(&str, &str)],
         referer: &str,
     ) -> Result<(reqwest::StatusCode, String)> {
+        let started = std::time::Instant::now();
+        let host = url::Url::parse(url)?.host_str().unwrap_or("").to_string();
         let response = self
             .request(reqwest::Method::POST, url, Some(referer))?
             .header(
@@ -544,10 +593,32 @@ impl Session {
             .header(reqwest::header::ORIGIN, self.hosts.site.clone())
             .body(encode_form(form))
             .send()
-            .await?;
+            .await
+            .map_err(|error| {
+                let error = anyhow::Error::new(error);
+                security::log_network_failure(
+                    "westdata_panel",
+                    &host,
+                    "post_headers",
+                    started,
+                    &error,
+                );
+                error
+            })?;
         self.remember(&response);
         let status = response.status();
-        let text = String::from_utf8_lossy(&body(response, PAGE_LIMIT).await?).into_owned();
+        let text = String::from_utf8_lossy(&body(response, PAGE_LIMIT).await.map_err(|error| {
+            security::log_network_failure("westdata_panel", &host, "post_body", started, &error);
+            error
+        })?)
+        .into_owned();
+        tracing::info!(
+            host,
+            status = status.as_u16(),
+            bytes = text.len(),
+            elapsed_ms = started.elapsed().as_millis(),
+            "WestData panel POST completed"
+        );
         self.note("POST", status, Some(&text));
         Ok((status, text))
     }

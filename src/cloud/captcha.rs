@@ -10,6 +10,7 @@ use anyhow::{Result, bail, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 use std::io::Write;
+use std::time::Instant;
 
 /// Fixed service configuration for captcha reading. Absent means the feature is off.
 #[derive(Clone)]
@@ -63,12 +64,21 @@ const THRESHOLD: u32 = 100;
 /// `private` follows CAMOFY_ALLOW_PRIVATE_EGRESS so a private/local deployment can reach a
 /// self-hosted vision gateway; the endpoint itself is operator configuration, never user input.
 pub async fn read(vision: &Vision, png: &[u8], private: bool) -> Result<String> {
+    let started = Instant::now();
     ensure!(
         !png.is_empty() && png.len() <= MAX_IMAGE,
         "验证码图片为空或过大"
     );
     // A decode failure must not lose the login attempt: send the original image instead.
-    let prepared = prepare(png).unwrap_or_else(|_| png.to_vec());
+    let prepared = prepare(png).unwrap_or_else(|_| {
+        tracing::warn!(
+            bytes = png.len(),
+            "captcha image preprocessing failed; using original image"
+        );
+        png.to_vec()
+    });
+    tracing::info!(input_bytes = png.len(), prepared_bytes = prepared.len(),
+        model = %vision.model, "captcha vision request started");
     let image = format!("data:image/png;base64,{}", STANDARD.encode(&prepared));
     let messages = json!([{
         "role": "user",
@@ -84,17 +94,33 @@ pub async fn read(vision: &Vision, png: &[u8], private: bool) -> Result<String> 
         && message.to_ascii_lowercase().contains("thinking")
     {
         // A gateway that does not know the toggle is still usable.
+        tracing::warn!("captcha vision endpoint rejected thinking toggle; retrying without it");
         value = ask(vision, &messages, false, private).await?;
     }
     let message = &value["choices"][0]["message"];
     let content = message["content"].as_str().unwrap_or("");
     if let Some(code) = extract(content) {
+        tracing::info!(
+            elapsed_ms = started.elapsed().as_millis(),
+            source = "content",
+            "captcha vision returned usable characters"
+        );
         return Ok(code);
     }
     // A deployment that ignores the toggle answers inside the reasoning text instead.
     if let Some(code) = extract(message["reasoning_content"].as_str().unwrap_or("")) {
+        tracing::info!(
+            elapsed_ms = started.elapsed().as_millis(),
+            source = "reasoning",
+            "captcha vision returned usable characters"
+        );
         return Ok(code);
     }
+    tracing::warn!(
+        elapsed_ms = started.elapsed().as_millis(),
+        has_error = value["error"]["message"].as_str().is_some(),
+        "captcha vision result contained no usable characters"
+    );
     if let Some(error) = value["error"]["message"].as_str() {
         bail!("验证码模型返回错误：{}", excerpt(error));
     }
