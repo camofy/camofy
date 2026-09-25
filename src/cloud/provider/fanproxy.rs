@@ -20,7 +20,9 @@ impl std::error::Error for AllowlistRejection {}
 
 const API: &str = "https://api.fanproxy.com/";
 const OPENAPI: &str = "https://openapi.fanproxy.com";
-const DNS: provider_net::DnsPolicy = provider_net::DnsPolicy {
+// The extraction CDN is regional. OpenAPI's allowlist uses a separate global CDN;
+// regional ECS there can select an edge that answers 401 for valid credentials.
+const EXTRACT_DNS: provider_net::DnsPolicy = provider_net::DnsPolicy {
     subnet: Some((std::net::Ipv4Addr::new(223, 5, 5, 0), 24)),
 };
 
@@ -128,7 +130,7 @@ fn parse_proxy(body: &str, private: bool) -> Result<String> {
 }
 
 pub async fn extract(data: &Value, private: bool) -> Result<String> {
-    let body = provider_net::get_text(&extraction_url(data)?, Some(DNS), private).await?;
+    let body = provider_net::get_text(&extraction_url(data)?, Some(EXTRACT_DNS), private).await?;
     parse_proxy(&body, private)
         .map_err(|_| provider_net::Failure::permanent(provider_net::FailureKind::Response).into())
 }
@@ -167,7 +169,7 @@ fn allowlist_response(body: &str) -> Result<Value> {
 
 async fn listed(data: &Value, ip: &str) -> Result<bool> {
     let url = url::Url::parse(&format!("{OPENAPI}/open-api/open/white/query"))?;
-    let body = provider_net::get_text_with_headers(&url, Some(DNS), false, headers(data)?).await?;
+    let body = provider_net::get_text_with_headers(&url, None, false, headers(data)?).await?;
     let response = allowlist_response(&body)?;
     let addresses = response["data"]
         .as_array()
@@ -188,7 +190,7 @@ pub async fn whitelist(data: &Value, ip: &str) -> Result<()> {
     }
     let mut url = url::Url::parse(&format!("{OPENAPI}/open-api/open/white/add"))?;
     url.query_pairs_mut().append_pair("ip", ip);
-    let body = provider_net::get_text_with_headers(&url, Some(DNS), false, headers(data)?).await?;
+    let body = provider_net::get_text_with_headers(&url, None, false, headers(data)?).await?;
     // A concurrent add can report 'already present'; read back rather than trusting either code.
     if let Err(error) = allowlist_response(&body) {
         let code = serde_json::from_str::<Value>(&body)
