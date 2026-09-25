@@ -152,6 +152,23 @@ fn headers(data: &Value) -> Result<HeaderMap> {
     Ok(headers)
 }
 
+async fn openapi_get(url: &url::Url, data: &Value) -> Result<String> {
+    match provider_net::get_text_with_headers(url, None, false, headers(data)?).await {
+        Ok(body) => Ok(body),
+        Err(error) if error.kind == provider_net::FailureKind::Http(401) => {
+            // The gateway rejects a replay of the same signed second. A second request
+            // must carry a fresh second; invalid credentials still fail after this one retry.
+            tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+            tracing::info!(
+                host = "openapi.fanproxy.com",
+                "FanProxy OpenAPI 401 retry with fresh timestamp"
+            );
+            Ok(provider_net::get_text_with_headers(url, None, false, headers(data)?).await?)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn allowlist_response(body: &str) -> Result<Value> {
     let v: Value =
         serde_json::from_str(body).map_err(|_| anyhow::anyhow!("网帆白名单响应 JSON 无效"))?;
@@ -169,7 +186,7 @@ fn allowlist_response(body: &str) -> Result<Value> {
 
 async fn listed(data: &Value, ip: &str) -> Result<bool> {
     let url = url::Url::parse(&format!("{OPENAPI}/open-api/open/white/query"))?;
-    let body = provider_net::get_text_with_headers(&url, None, false, headers(data)?).await?;
+    let body = openapi_get(&url, data).await?;
     let response = allowlist_response(&body)?;
     let addresses = response["data"]
         .as_array()
@@ -190,7 +207,7 @@ pub async fn whitelist(data: &Value, ip: &str) -> Result<()> {
     }
     let mut url = url::Url::parse(&format!("{OPENAPI}/open-api/open/white/add"))?;
     url.query_pairs_mut().append_pair("ip", ip);
-    let body = provider_net::get_text_with_headers(&url, None, false, headers(data)?).await?;
+    let body = openapi_get(&url, data).await?;
     // A concurrent add can report 'already present'; read back rather than trusting either code.
     if let Err(error) = allowlist_response(&body) {
         let code = serde_json::from_str::<Value>(&body)
