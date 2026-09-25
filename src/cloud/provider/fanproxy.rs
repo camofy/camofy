@@ -6,6 +6,18 @@ use reqwest::header::{HeaderMap, HeaderValue};
 use serde_json::{Value, json};
 use std::net::{IpAddr, SocketAddr};
 
+#[derive(Debug)]
+pub struct AllowlistRejection {
+    pub code: i64,
+}
+
+impl std::fmt::Display for AllowlistRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "网帆白名单操作失败（错误码 {}）", self.code)
+    }
+}
+impl std::error::Error for AllowlistRejection {}
+
 const API: &str = "https://api.fanproxy.com/";
 const OPENAPI: &str = "https://openapi.fanproxy.com";
 const DNS: provider_net::DnsPolicy = provider_net::DnsPolicy {
@@ -143,11 +155,13 @@ fn allowlist_response(body: &str) -> Result<Value> {
         serde_json::from_str(body).map_err(|_| anyhow::anyhow!("网帆白名单响应 JSON 无效"))?;
     // The domestic page says code=0, while its example and shared OpenAPI contract say 200.
     let code = v["code"].as_i64();
-    ensure!(
-        (code == Some(200) || code == Some(0)) && v["success"] != false,
-        "网帆白名单操作失败（错误码 {}）",
-        code.unwrap_or(-1)
-    );
+    if !matches!(code, Some(200 | 0)) || v["success"] == false {
+        tracing::warn!(api_code = code.unwrap_or(-1), "FanProxy allowlist rejected");
+        return Err(AllowlistRejection {
+            code: code.unwrap_or(-1),
+        }
+        .into());
+    }
     Ok(v)
 }
 
@@ -278,6 +292,14 @@ mod tests {
                     .contains("SECRET")
             );
         }
+        assert_eq!(
+            allowlist_response(r#"{"code":1212,"success":false}"#)
+                .unwrap_err()
+                .downcast_ref::<AllowlistRejection>()
+                .unwrap()
+                .code,
+            1212
+        );
     }
 
     #[test]
