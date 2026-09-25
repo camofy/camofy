@@ -3,6 +3,7 @@ mod fanproxy;
 use crate::{App, Error, auth, provider_net, security};
 use anyhow::{Result, ensure};
 use axum::{Json, extract::State, http::HeaderMap};
+pub use fanproxy::AllowlistRejection;
 use serde_json::{Value, json};
 use std::net::{IpAddr, SocketAddr};
 use uuid::Uuid;
