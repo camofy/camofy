@@ -117,6 +117,7 @@ async fn save(
     }
     let supplier = match e.data["provider"].as_str() {
         Some("xiequ") => "xiequ",
+        Some("fanproxy") => "fanproxy",
         Some("static") | None => "static",
         _ => "invalid",
     };
@@ -124,7 +125,7 @@ async fn save(
     provider::provision(&app, actor, &mut e.data, old.as_ref().map(|r| &r.data))
         .await
         .map_err(|error| {
-            crate::security::log_network_failure("proxy_provision", "op.xiequ.cn", "whitelist_or_validation", started, &error);
+            crate::security::log_network_failure("proxy_provision", if supplier == "fanproxy" { "openapi.fanproxy.com" } else { "op.xiequ.cn" }, "whitelist_or_validation", started, &error);
             tracing::warn!(%actor, %id, supplier, diagnostic = ?error.downcast_ref::<crate::provider_net::Failure>().map(|e| e.diagnostic().0),
                 "platform proxy provisioning failed");
             Error::bad("代理配置或白名单确认失败，请重新预览并检查供应商配置。")

@@ -252,10 +252,18 @@ export function Editor({
               供应商
               <select
                 value={data.provider ?? "static"}
-                onChange={(e) => set("provider", e.target.value)}
+                onChange={(e) => {
+                  setData((current) => ({
+                    ...current,
+                    provider: e.target.value as Data["provider"],
+                    egress_preview: undefined,
+                  }));
+                  setEgress(null);
+                }}
               >
                 <option value="static">固定代理</option>
                 <option value="xiequ">携趣 · 短效代理</option>
+                <option value="fanproxy">网帆 · 国内短效代理</option>
               </select>
             </label>
             {data.provider === "xiequ" ? (
@@ -308,6 +316,93 @@ export function Editor({
                   IP，不缓存、不自动重试扣费请求、不回退直连。密钥留空保留原值。HTTP
                   提取链接会明文传输密钥；白名单管理使用 HTTPS。
                 </p>
+              </>
+            ) : data.provider === "fanproxy" ? (
+              <>
+                <label>
+                  国内套餐提取 Key
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    required={!resource.id || resource.data.provider !== "fanproxy"}
+                    value={data.extract_key ?? ""}
+                    onChange={(e) => set("extract_key", e.target.value)}
+                  />
+                </label>
+                <label>
+                  白名单账号（手机号）
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="off"
+                    required={!resource.id || resource.data.provider !== "fanproxy"}
+                    value={data.whitelist_account ?? ""}
+                    onChange={(e) => set("whitelist_account", e.target.value)}
+                  />
+                </label>
+                <label>
+                  白名单签名凭证
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    required={!resource.id || resource.data.provider !== "fanproxy"}
+                    value={data.whitelist_signature ?? ""}
+                    onChange={(e) => set("whitelist_signature", e.target.value)}
+                  />
+                </label>
+                <label>
+                  地区编码（可选）
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]{6}"
+                    maxLength={6}
+                    placeholder="全部地区；如 110100 为北京市"
+                    value={data.area ?? ""}
+                    onChange={(e) => set("area", e.target.value)}
+                  />
+                </label>
+                <label>
+                  运营商
+                  <select value={data.isp ?? ""} onChange={(e) => set("isp", e.target.value)}>
+                    <option value="">不限</option>
+                    <option value="电信">电信</option>
+                    <option value="联通">联通</option>
+                    <option value="移动">移动</option>
+                  </select>
+                </label>
+                <label className="check">
+                  <input
+                    type="checkbox"
+                    checked={data.deduplicate !== false}
+                    onChange={(e) => set("deduplicate", e.target.checked)}
+                  />
+                  严格去重（无新 IP 时不分配）
+                </label>
+                <p className="muted">
+                  固定每次提取 1 个 IPv4，JSON 响应、HTTP(S) 代理；地区、运营商和去重可调整。
+                  提取 Key 与白名单凭据留空会保留原值，不回退直连。
+                </p>
+              </>
+            ) : (
+              <>
+                <label>
+                  代理 URL
+                  <input
+                    required={!resource.id}
+                    type="text"
+                    placeholder="socks5://user:password@proxy.example.com:1080"
+                    value={data.url ?? ""}
+                    onChange={(e) => set("url", e.target.value)}
+                  />
+                </label>
+                <p className="muted">
+                  支持 SOCKS5、HTTP 和 HTTPS。已有代理留空会保留原凭据。
+                </p>
+              </>
+            )}
+            {(data.provider === "xiequ" || data.provider === "fanproxy") && (
+              <>
                 <p>已确认的白名单 IP：{data.whitelist_ip ?? "尚未配置"}</p>
                 <button
                   type="button"
@@ -335,33 +430,15 @@ export function Editor({
                       type="checkbox"
                       checked={!!data.egress_preview}
                       onChange={(e) =>
-                        set(
-                          "egress_preview",
-                          e.target.checked ? egress.proof : undefined,
-                        )
+                        set("egress_preview", e.target.checked ? egress.proof : undefined)
                       }
                     />
-                    确认将服务器 {egress.ip} 加入携趣白名单（预览 5 分钟有效）
+                    确认将服务器 {egress.ip} 加入
+                    {data.provider === "fanproxy" ? "网帆" : "携趣"}白名单（预览 5 分钟有效）
                   </label>
                 )}
                 <p className="muted">
-                  新建或更改接口/凭据时需预览并确认。保存时再次核对出口，只添加这一条，不删除已有白名单。
-                </p>
-              </>
-            ) : (
-              <>
-                <label>
-                  代理 URL
-                  <input
-                    required={!resource.id}
-                    type="text"
-                    placeholder="socks5://user:password@proxy.example.com:1080"
-                    value={data.url ?? ""}
-                    onChange={(e) => set("url", e.target.value)}
-                  />
-                </label>
-                <p className="muted">
-                  支持 SOCKS5、HTTP 和 HTTPS。已有代理留空会保留原凭据。
+                  新建或更改凭据时需预览并确认。保存时再次核对出口，只添加这一条，不删除已有白名单。
                 </p>
               </>
             )}

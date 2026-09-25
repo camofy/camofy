@@ -139,6 +139,16 @@ pub async fn get_text(
     policy: Option<DnsPolicy>,
     private: bool,
 ) -> Result<String, Failure> {
+    get_text_with_headers(target, policy, private, reqwest::header::HeaderMap::new()).await
+}
+
+/// Supplier adapters may provide authentication headers, but neither headers nor URL are logged.
+pub async fn get_text_with_headers(
+    target: &url::Url,
+    policy: Option<DnsPolicy>,
+    private: bool,
+    headers: reqwest::header::HeaderMap,
+) -> Result<String, Failure> {
     if !["http", "https"].contains(&target.scheme())
         || target.host_str().is_none()
         || !target.username().is_empty()
@@ -169,7 +179,7 @@ pub async fn get_text(
         addresses = ?addrs,
         "provider API DNS resolution completed"
     );
-    let result = get_at(target, addrs, private, Duration::from_secs(12)).await;
+    let result = get_at(target, addrs, private, Duration::from_secs(12), headers).await;
     // A failed connection must not pin future attempts to a possibly obsolete CDN address.
     if let (Some(policy), Err(error)) = (policy, &result)
         && matches!(error.kind, FailureKind::Connect | FailureKind::Timeout)
@@ -189,6 +199,7 @@ async fn get_at(
     addrs: Vec<SocketAddr>,
     private: bool,
     timeout: Duration,
+    headers: reqwest::header::HeaderMap,
 ) -> Result<String, Failure> {
     let addrs: Vec<_> = addrs.into_iter().filter(SocketAddr::is_ipv4).collect();
     if addrs.is_empty()
@@ -209,9 +220,14 @@ async fn get_at(
             .resolve_to_addrs(target.host_str().unwrap(), &addrs)
             .build()
             .map_err(|e| Failure::transport(e.into(), target, &addrs, "client_build", started))?;
-        let mut response = client.get(target.clone()).send().await.map_err(|e| {
-            Failure::transport(e.into(), target, &addrs, "connect_or_headers", started)
-        })?;
+        let mut response = client
+            .get(target.clone())
+            .headers(headers)
+            .send()
+            .await
+            .map_err(|e| {
+                Failure::transport(e.into(), target, &addrs, "connect_or_headers", started)
+            })?;
         retry::check_http(&response)
             .map_err(|e| Failure::transport(e, target, &addrs, "http_status", started))?;
         if !response.status().is_success() {

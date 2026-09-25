@@ -6,13 +6,19 @@ export type Data = {
   type?: string;
   url?: string;
   endpoint?: string;
-  provider?: "static" | "xiequ";
+  provider?: "static" | "xiequ" | "fanproxy";
   extract_url?: string;
+  extract_key?: string;
+  whitelist_account?: string;
+  whitelist_signature?: string;
   whitelist_uid?: string;
   whitelist_key?: string;
   whitelist_ip?: string;
   whitelist_at?: number;
   protocol?: "http" | "socks5";
+  area?: string;
+  isp?: "" | "电信" | "联通" | "移动";
+  deduplicate?: boolean;
   egress_preview?: unknown;
   // Panel-managed source: the refresh worker logs in, rewrites `url` and activates the link.
   // `password` is write-only and never returned by the API.
