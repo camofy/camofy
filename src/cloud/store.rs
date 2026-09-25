@@ -186,6 +186,8 @@ pub async fn rebuild_selected(
                 let revision = Uuid::new_v4();
                 sqlx::query("INSERT INTO revisions(id,user_id,bundle_id,artifacts,selections,usage_sources,catalog_lock) VALUES($1,$2,$3,$4,$5,$6,$7)").bind(revision).bind(user).bind(bundle.id).bind(app.vault.seal(&artifacts)?).bind(selections).bind(usage_sources).bind(catalog_lock).execute(&mut *conn).await?;
                 changed = true;
+                tracing::info!(bundle_id = %bundle.id, %revision,
+                    "bundle configuration revision staged");
                 bundle.data["published_revision"] = json!(revision);
                 bundle.data["published_hash"] = json!(content_hash);
                 bundle.data["outputs"] = json!(
@@ -200,7 +202,12 @@ pub async fn rebuild_selected(
                 // Keep a bounded history for rollback; current revision is always newest.
                 sqlx::query("DELETE FROM revisions WHERE bundle_id=$1 AND id NOT IN (SELECT id FROM revisions WHERE bundle_id=$1 ORDER BY created_at DESC LIMIT 10)").bind(bundle.id).execute(&mut *conn).await?;
             }
-            Err(e) => bundle.data["error"] = json!(e.to_string()),
+            Err(e) => {
+                tracing::warn!(bundle_id = %bundle.id,
+                    bindings = bundle.data["profiles"].as_array().map_or(0, Vec::len),
+                    "bundle configuration render failed; previous revision retained");
+                bundle.data["error"] = json!(e.to_string());
+            }
         }
         put(app, conn, user, &bundle).await?;
     }

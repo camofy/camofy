@@ -6,6 +6,65 @@ use anyhow::{Result, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
 use std::net::{IpAddr, SocketAddr};
+use std::time::Instant;
+use tracing::Instrument;
+
+/// Network diagnostics shared by external-service calls. Never log an error's Display:
+/// reqwest includes the URL (and potentially credentials) in that representation.
+pub fn log_network_failure(
+    operation: &'static str,
+    host: &str,
+    phase: &'static str,
+    started: Instant,
+    error: &anyhow::Error,
+) {
+    let http = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<reqwest::Error>());
+    let io = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<std::io::Error>());
+    let category = if http.and_then(reqwest::Error::status).is_some() {
+        "http_status"
+    } else if http.is_some_and(reqwest::Error::is_timeout) {
+        "request_timeout"
+    } else if http.is_some_and(reqwest::Error::is_connect) {
+        "connection"
+    } else if http.is_some_and(reqwest::Error::is_body) {
+        "response_body"
+    } else if error
+        .chain()
+        .any(|cause| cause.is::<tokio::time::error::Elapsed>())
+    {
+        "deadline"
+    } else if error
+        .chain()
+        .any(|cause| cause.is::<tokio_rustls::rustls::Error>())
+    {
+        "tls"
+    } else if io.is_some() {
+        "io"
+    } else if error.chain().any(|cause| cause.is::<serde_json::Error>()) {
+        "json"
+    } else if error.chain().any(|cause| cause.is::<url::ParseError>()) {
+        "url_validation"
+    } else {
+        "validation_or_protocol"
+    };
+    tracing::warn!(
+        operation, host, phase, category,
+        elapsed_ms = started.elapsed().as_millis(),
+        http_status = ?http.and_then(reqwest::Error::status).map(|s| s.as_u16()),
+        is_connect = http.is_some_and(reqwest::Error::is_connect),
+        is_timeout = http.is_some_and(reqwest::Error::is_timeout),
+        is_body = http.is_some_and(reqwest::Error::is_body),
+        io_kind = ?io.map(std::io::Error::kind),
+        os_code = ?io.and_then(std::io::Error::raw_os_error),
+        tls_error = error.chain().any(|cause| cause.is::<tokio_rustls::rustls::Error>()),
+        deadline_elapsed = error.chain().any(|cause| cause.is::<tokio::time::error::Elapsed>()),
+        "external request failed"
+    );
+}
 
 #[derive(Clone)]
 pub struct Vault(Aes256Gcm, [u8; 32]);
@@ -125,22 +184,49 @@ async fn subscription_addresses(target: &url::Url, private: bool) -> Result<Vec<
         .ok_or_else(|| anyhow::anyhow!("missing host"))?
         .trim_matches(['[', ']']);
     if private || host.parse::<IpAddr>().is_ok() {
-        return addresses(target, private).await;
+        let started = Instant::now();
+        let result = addresses(target, private).await;
+        match &result {
+            Ok(addrs) => {
+                tracing::info!(host, addresses = ?addrs, elapsed_ms = started.elapsed().as_millis(), "subscription system DNS resolved")
+            }
+            Err(error) => {
+                log_network_failure("subscription_dns", host, "system_lookup", started, error)
+            }
+        }
+        return result;
     }
     let port = target
         .port_or_known_default()
         .ok_or_else(|| anyhow::anyhow!("missing port"))?;
     let query = async |kind: u16| -> Result<Vec<SocketAddr>> {
+        let started = Instant::now();
         let mut u = url::Url::parse("https://dns.google/resolve")?;
         u.query_pairs_mut()
             .append_pair("name", host)
             .append_pair("type", &kind.to_string())
             .append_pair("edns_client_subnet", "0.0.0.0/0");
-        dns_result(&fetch_text(&u, false).await?, host, kind, port)
+        let result = async { dns_result(&fetch_text(&u, false).await?, host, kind, port) }.await;
+        match &result {
+            Ok(addrs) => tracing::info!(host, record_type = kind, addresses = ?addrs,
+                elapsed_ms = started.elapsed().as_millis(), "subscription DNS query completed"),
+            Err(error) => log_network_failure(
+                "subscription_dns",
+                host,
+                if kind == 1 { "A_lookup" } else { "AAAA_lookup" },
+                started,
+                error,
+            ),
+        }
+        result
     };
     let (mut a, aaaa) = tokio::try_join!(query(1), query(28))?;
     a.extend(aaaa);
+    if a.is_empty() {
+        tracing::warn!(host, "subscription DNS returned no public addresses");
+    }
     ensure!(!a.is_empty(), "subscription DNS has no public addresses");
+    tracing::info!(host, addresses = ?a, "subscription destination addresses selected");
     Ok(a)
 }
 fn dns_result(body: &str, host: &str, kind: u16, port: u16) -> Result<Vec<SocketAddr>> {
@@ -234,6 +320,9 @@ async fn post_json_with(
     limit: usize,
     private: bool,
 ) -> Result<Value> {
+    let started = Instant::now();
+    let host = target.host_str().unwrap_or("");
+    let mut phase = "validate";
     let request = async {
         ensure!(
             ["http", "https"].contains(&target.scheme())
@@ -242,6 +331,7 @@ async fn post_json_with(
                 && target.password().is_none(),
             "invalid service URL"
         );
+        phase = "dns";
         let addrs = addresses(target, private)
             .await?
             .into_iter()
@@ -259,7 +349,15 @@ async fn post_json_with(
             Auth::Bearer(key) => request.bearer_auth(key),
             Auth::Basic(user, password) => request.basic_auth(user, Some(password)),
         };
+        phase = "request_headers";
         let mut response = request.send().await?;
+        tracing::info!(
+            host,
+            status = response.status().as_u16(),
+            elapsed_ms = started.elapsed().as_millis(),
+            "service JSON response headers received"
+        );
+        phase = "http_status";
         crate::retry::check_http(&response)?;
         ensure!(response.status().is_success(), "service HTTP failure");
         ensure!(
@@ -267,6 +365,7 @@ async fn post_json_with(
             "service response too large"
         );
         let mut bytes = Vec::new();
+        phase = "response_body";
         while let Some(chunk) = response.chunk().await? {
             ensure!(
                 bytes.len() + chunk.len() <= limit,
@@ -274,15 +373,30 @@ async fn post_json_with(
             );
             bytes.extend(chunk);
         }
-        Ok::<_, anyhow::Error>(serde_json::from_slice(&bytes)?)
+        phase = "json_decode";
+        let value = serde_json::from_slice(&bytes)?;
+        tracing::info!(
+            host,
+            bytes = bytes.len(),
+            elapsed_ms = started.elapsed().as_millis(),
+            "service JSON request completed"
+        );
+        Ok::<_, anyhow::Error>(value)
     };
-    tokio::time::timeout(std::time::Duration::from_secs(45), request)
+    let result = tokio::time::timeout(std::time::Duration::from_secs(45), request)
         .await
         .map_err(anyhow::Error::new)
-        .and_then(|r| r)
+        .and_then(|r| r);
+    if let Err(error) = &result {
+        log_network_failure("service_json", host, phase, started, error);
+    }
+    result
 }
 
 async fn fetch_text_inner(target: &url::Url, private: bool) -> Result<String> {
+    let started = Instant::now();
+    let host = target.host_str().unwrap_or("");
+    let mut phase = "validate";
     let request = async {
         ensure!(
             ["http", "https"].contains(&target.scheme())
@@ -291,12 +405,14 @@ async fn fetch_text_inner(target: &url::Url, private: bool) -> Result<String> {
             "invalid provider URL"
         );
         // Whitelist authorization is IPv4; API requests and egress checks use that family.
+        phase = "dns";
         let resolved = addresses(target, private).await?;
         let addrs = resolved
             .into_iter()
             .filter(SocketAddr::is_ipv4)
             .collect::<Vec<_>>();
         ensure!(!addrs.is_empty(), "provider needs an IPv4 address");
+        phase = "request_headers";
         let mut response = reqwest::Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
@@ -306,9 +422,11 @@ async fn fetch_text_inner(target: &url::Url, private: bool) -> Result<String> {
             .get(target.clone())
             .send()
             .await?;
+        phase = "http_status";
         crate::retry::check_http(&response)?;
         ensure!(response.status().is_success(), "provider HTTP failure");
         let mut bytes = Vec::new();
+        phase = "response_body";
         while let Some(chunk) = response.chunk().await? {
             ensure!(
                 bytes.len() + chunk.len() <= 65536,
@@ -317,17 +435,27 @@ async fn fetch_text_inner(target: &url::Url, private: bool) -> Result<String> {
             bytes.extend(chunk);
         }
         // Legacy messages may be GBK; required numeric IP and JSON keys are ASCII.
+        tracing::info!(
+            host,
+            status = response.status().as_u16(),
+            bytes = bytes.len(),
+            elapsed_ms = started.elapsed().as_millis(),
+            "provider text request completed"
+        );
         Ok::<_, anyhow::Error>(String::from_utf8_lossy(&bytes).into_owned())
     };
-    tokio::time::timeout(std::time::Duration::from_secs(15), request)
+    let result = tokio::time::timeout(std::time::Duration::from_secs(15), request)
         .await
         .map_err(anyhow::Error::new)
-        .and_then(|r| r)
-        .map_err(|e| {
-            anyhow::Error::new(crate::retry::SafeFailure {
-                delay: crate::retry::delay(&e),
-            })
+        .and_then(|r| r);
+    if let Err(error) = &result {
+        log_network_failure("provider_text", host, phase, started, error);
+    }
+    result.map_err(|e| {
+        anyhow::Error::new(crate::retry::SafeFailure {
+            delay: crate::retry::delay(&e),
         })
+    })
 }
 
 pub const CLIENT_UA: &str = "clash-verge/camofy-cloud";
@@ -361,6 +489,12 @@ pub async fn egress_client(
         "target URL must be HTTP(S), without userinfo"
     );
     let host = target.host_str().unwrap().to_string();
+    let started = Instant::now();
+    tracing::info!(
+        host,
+        proxy_enabled = proxy.is_some(),
+        "subscription egress setup started"
+    );
     let addrs = subscription_addresses(target, private).await?;
     let mut bridge = None;
     let mut builder = reqwest::Client::builder()
@@ -376,12 +510,27 @@ pub async fn egress_client(
             ["http", "https", "socks5"].contains(&p.scheme()),
             "proxy must use http, https or socks5 (local DNS)"
         );
-        let proxy_addrs = addresses(&p, private).await?;
+        let proxy_addrs = addresses(&p, private).await.map_err(|error| {
+            log_network_failure(
+                "subscription_fetch",
+                host.as_str(),
+                "proxy_lookup",
+                started,
+                &error,
+            );
+            error
+        })?;
+        tracing::info!(host, destination = ?addrs, proxy_addresses = ?proxy_addrs,
+            proxy_scheme = p.scheme(), elapsed_ms = started.elapsed().as_millis(),
+            "subscription proxy destination pinned");
         // Own the proxy handshake so every protocol uses the validated numeric target.
         // The HTTP client retains the original URL for Host, SNI and certificate checks.
         let (local, task) = http_proxy_bridge(p, proxy_addrs[0], target.clone(), addrs[0]).await?;
         bridge = Some(task);
         builder = builder.proxy(reqwest::Proxy::all(format!("http://{local}"))?);
+    } else {
+        tracing::info!(host, destination = ?addrs, elapsed_ms = started.elapsed().as_millis(),
+            "subscription direct destination pinned");
     }
     Ok(Egress {
         client: builder.build()?,
@@ -401,9 +550,52 @@ pub async fn fetch(url: &str, proxy: Option<&str>, private: bool) -> Result<Fetc
             && target.password().is_none(),
         "subscription URL must be HTTP(S), without userinfo"
     );
-    let egress = egress_client(&target, proxy, private, std::time::Duration::from_secs(60)).await?;
-    let mut response = egress.client().get(target.clone()).send().await?;
-    crate::retry::check_http(&response)?;
+    let host = target.host_str().unwrap_or("");
+    let started = Instant::now();
+    tracing::info!(
+        host,
+        proxy_enabled = proxy.is_some(),
+        "subscription fetch started"
+    );
+    let egress = egress_client(&target, proxy, private, std::time::Duration::from_secs(60))
+        .await
+        .map_err(|error| {
+            log_network_failure("subscription_fetch", host, "egress_setup", started, &error);
+            error
+        })?;
+    let mut response = egress
+        .client()
+        .get(target.clone())
+        .send()
+        .await
+        .map_err(|error| {
+            let error = anyhow::Error::new(error);
+            log_network_failure(
+                "subscription_fetch",
+                host,
+                "request_headers",
+                started,
+                &error,
+            );
+            error
+        })?;
+    tracing::info!(
+        host,
+        status = response.status().as_u16(),
+        elapsed_ms = started.elapsed().as_millis(),
+        "subscription response headers received"
+    );
+    crate::retry::check_http(&response).map_err(|error| {
+        log_network_failure("subscription_fetch", host, "http_status", started, &error);
+        error
+    })?;
+    if response
+        .content_length()
+        .is_some_and(|n| n > 4 * 1024 * 1024)
+    {
+        tracing::warn!(host, content_length = ?response.content_length(),
+            "subscription declared body exceeds limit");
+    }
     ensure!(
         response.status().is_success(),
         "subscription redirect is not allowed; use its final URL"
@@ -416,14 +608,38 @@ pub async fn fetch(url: &str, proxy: Option<&str>, private: bool) -> Result<Fetc
     );
     let usage = crate::usage::parse_headers(response.headers(), crate::now());
     let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        let error = anyhow::Error::new(error);
+        log_network_failure("subscription_fetch", host, "response_body", started, &error);
+        error
+    })? {
+        if bytes.len() + chunk.len() > 4 * 1024 * 1024 {
+            tracing::warn!(
+                host,
+                received_bytes = bytes.len() + chunk.len(),
+                "subscription response exceeded body limit"
+            );
+        }
         ensure!(
             bytes.len() + chunk.len() <= 4 * 1024 * 1024,
             "subscription exceeds 4 MiB"
         );
         bytes.extend(chunk);
     }
-    let text = String::from_utf8(bytes)?;
+    let text = String::from_utf8(bytes).map_err(|error| {
+        tracing::warn!(
+            host,
+            elapsed_ms = started.elapsed().as_millis(),
+            "subscription response is not UTF-8"
+        );
+        error
+    })?;
+    tracing::info!(
+        host,
+        bytes = text.len(),
+        elapsed_ms = started.elapsed().as_millis(),
+        "subscription fetch completed"
+    );
     Ok(Fetched {
         content: text,
         usage,
@@ -449,100 +665,172 @@ async fn http_proxy_bridge(
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
-    let task = tokio::spawn(async move {
-        // One bridge serves every request of its client until the client is dropped;
-        // each accepted connection still pins the same validated target address.
-        loop {
-            let (mut local, _) = match listener.accept().await {
-                Ok(v) => v,
-                Err(_) => break,
-            };
-            let proxy = proxy.clone();
-            let target = target.clone();
-            tokio::spawn(async move {
-                let exchange = async {
-                    let mut head = Vec::new();
-                    while !head.ends_with(b"\r\n\r\n") {
-                        ensure!(head.len() < 16384, "proxy request headers too large");
-                        head.push(local.read_u8().await?);
+    let span = tracing::info_span!("subscription_proxy_bridge", host = %target.host_str().unwrap_or(""),
+        %proxy_addr, %target_addr, proxy_scheme = proxy.scheme());
+    let task = tokio::spawn(
+        async move {
+            // One bridge serves every request of its client until the client is dropped;
+            // each accepted connection still pins the same validated target address.
+            loop {
+                let (mut local, peer) = match listener.accept().await {
+                    Ok(v) => v,
+                    Err(error) => {
+                        tracing::warn!(io_kind = ?error.kind(), os_code = ?error.raw_os_error(),
+                        "subscription proxy bridge stopped accepting connections");
+                        break;
                     }
-                    let text = std::str::from_utf8(&head)?;
-                    let tunnel = text.starts_with("CONNECT ");
-                    let mut stream = tokio::net::TcpStream::connect(proxy_addr).await?;
-                    let socks = proxy.scheme() == "socks5";
-                    if socks {
-                        socks_handshake(&mut stream, &proxy, target_addr).await?;
-                        if tunnel {
-                            local
-                                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-                                .await?;
-                            tokio::io::copy_bidirectional(&mut local, &mut stream).await?;
-                            return Ok(());
-                        }
-                    }
-                    let mut upstream: Box<dyn ProxyIo> = if proxy.scheme() == "https" {
-                        let roots = tokio_rustls::rustls::RootCertStore::from_iter(
-                            webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
-                        );
-                        let config = tokio_rustls::rustls::ClientConfig::builder()
-                            .with_root_certificates(roots)
-                            .with_no_client_auth();
-                        let connector =
-                            tokio_rustls::TlsConnector::from(std::sync::Arc::new(config));
-                        let name = tokio_rustls::rustls::pki_types::ServerName::try_from(
-                            proxy.host_str().unwrap().to_string(),
-                        )?;
-                        Box::new(connector.connect(name, stream).await?)
-                    } else {
-                        Box::new(stream)
-                    };
-                    let mut pinned = target.clone();
-                    pinned
-                        .set_ip_host(target_addr.ip())
-                        .map_err(|_| anyhow::anyhow!("target IP"))?;
-                    let mut request = if tunnel {
-                        format!("CONNECT {target_addr} HTTP/1.1\r\nHost: {target_addr}\r\n")
-                    } else if socks {
-                        let path = &target[url::Position::BeforePath..url::Position::AfterQuery];
-                        format!("GET {path} HTTP/1.1\r\n")
-                    } else {
-                        format!("GET {} HTTP/1.1\r\n", pinned.as_str())
-                    };
-                    let mut forwarded = Vec::new();
-                    for line in text.split("\r\n").skip(1).filter(|s| !s.is_empty()) {
-                        let lower = line.to_ascii_lowercase();
-                        if lower.starts_with("proxy-authorization:")
-                            || lower.starts_with("proxy-connection:")
-                            || (tunnel && lower.starts_with("host:"))
-                        {
-                            continue;
-                        }
-                        forwarded.push(line);
-                    }
-                    for line in forwarded {
-                        request.push_str(line);
-                        request.push_str("\r\n");
-                    }
-                    if !socks && !proxy.username().is_empty() {
-                        let username =
-                            percent_encoding::percent_decode_str(proxy.username()).decode_utf8()?;
-                        let password =
-                            percent_encoding::percent_decode_str(proxy.password().unwrap_or(""))
-                                .decode_utf8()?;
-                        request.push_str(&format!(
-                            "Proxy-Authorization: Basic {}\r\n",
-                            STANDARD.encode(format!("{username}:{password}"))
-                        ));
-                    }
-                    request.push_str("\r\n");
-                    upstream.write_all(request.as_bytes()).await?;
-                    tokio::io::copy_bidirectional(&mut local, &mut upstream).await?;
-                    Ok::<(), anyhow::Error>(())
                 };
-                let _ = tokio::time::timeout(std::time::Duration::from_secs(65), exchange).await;
-            });
+                let proxy = proxy.clone();
+                let target = target.clone();
+                let connection = tracing::info_span!("proxy_connection", local_port = peer.port());
+                tokio::spawn(
+                    async move {
+                        let started = Instant::now();
+                        let mut phase = "read_local_headers";
+                        let exchange = async {
+                            let mut head = Vec::new();
+                            while !head.ends_with(b"\r\n\r\n") {
+                                ensure!(head.len() < 16384, "proxy request headers too large");
+                                head.push(local.read_u8().await?);
+                            }
+                            let text = std::str::from_utf8(&head)?;
+                            let tunnel = text.starts_with("CONNECT ");
+                            phase = "connect_proxy";
+                            let mut stream = tokio::net::TcpStream::connect(proxy_addr).await?;
+                            tracing::info!(
+                                elapsed_ms = started.elapsed().as_millis(),
+                                "subscription proxy TCP connected"
+                            );
+                            let socks = proxy.scheme() == "socks5";
+                            if socks {
+                                phase = "socks_handshake";
+                                socks_handshake(&mut stream, &proxy, target_addr).await?;
+                                tracing::info!(
+                                    elapsed_ms = started.elapsed().as_millis(),
+                                    "subscription SOCKS destination connected"
+                                );
+                                if tunnel {
+                                    phase = "tunnel_exchange";
+                                    local
+                                        .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                                        .await?;
+                                    let (to_proxy, from_proxy) =
+                                        tokio::io::copy_bidirectional(&mut local, &mut stream)
+                                            .await?;
+                                    tracing::info!(
+                                        to_proxy,
+                                        from_proxy,
+                                        elapsed_ms = started.elapsed().as_millis(),
+                                        "subscription SOCKS tunnel finished"
+                                    );
+                                    return Ok(());
+                                }
+                            }
+                            phase = "proxy_tls_handshake";
+                            let mut upstream: Box<dyn ProxyIo> = if proxy.scheme() == "https" {
+                                let roots = tokio_rustls::rustls::RootCertStore::from_iter(
+                                    webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
+                                );
+                                let config = tokio_rustls::rustls::ClientConfig::builder()
+                                    .with_root_certificates(roots)
+                                    .with_no_client_auth();
+                                let connector =
+                                    tokio_rustls::TlsConnector::from(std::sync::Arc::new(config));
+                                let name = tokio_rustls::rustls::pki_types::ServerName::try_from(
+                                    proxy.host_str().unwrap().to_string(),
+                                )?;
+                                Box::new(connector.connect(name, stream).await?)
+                            } else {
+                                Box::new(stream)
+                            };
+                            tracing::info!(
+                                elapsed_ms = started.elapsed().as_millis(),
+                                "subscription proxy transport ready"
+                            );
+                            let mut pinned = target.clone();
+                            pinned
+                                .set_ip_host(target_addr.ip())
+                                .map_err(|_| anyhow::anyhow!("target IP"))?;
+                            let mut request = if tunnel {
+                                format!("CONNECT {target_addr} HTTP/1.1\r\nHost: {target_addr}\r\n")
+                            } else if socks {
+                                let path =
+                                    &target[url::Position::BeforePath..url::Position::AfterQuery];
+                                format!("GET {path} HTTP/1.1\r\n")
+                            } else {
+                                format!("GET {} HTTP/1.1\r\n", pinned.as_str())
+                            };
+                            let mut forwarded = Vec::new();
+                            for line in text.split("\r\n").skip(1).filter(|s| !s.is_empty()) {
+                                let lower = line.to_ascii_lowercase();
+                                if lower.starts_with("proxy-authorization:")
+                                    || lower.starts_with("proxy-connection:")
+                                    || (tunnel && lower.starts_with("host:"))
+                                {
+                                    continue;
+                                }
+                                forwarded.push(line);
+                            }
+                            for line in forwarded {
+                                request.push_str(line);
+                                request.push_str("\r\n");
+                            }
+                            if !socks && !proxy.username().is_empty() {
+                                let username =
+                                    percent_encoding::percent_decode_str(proxy.username())
+                                        .decode_utf8()?;
+                                let password = percent_encoding::percent_decode_str(
+                                    proxy.password().unwrap_or(""),
+                                )
+                                .decode_utf8()?;
+                                request.push_str(&format!(
+                                    "Proxy-Authorization: Basic {}\r\n",
+                                    STANDARD.encode(format!("{username}:{password}"))
+                                ));
+                            }
+                            request.push_str("\r\n");
+                            phase = "proxy_request_write";
+                            upstream.write_all(request.as_bytes()).await?;
+                            tracing::info!(
+                                tunnel,
+                                elapsed_ms = started.elapsed().as_millis(),
+                                "subscription proxy request forwarded"
+                            );
+                            phase = "proxy_exchange";
+                            let (to_proxy, from_proxy) =
+                                tokio::io::copy_bidirectional(&mut local, &mut upstream).await?;
+                            tracing::info!(
+                                to_proxy,
+                                from_proxy,
+                                elapsed_ms = started.elapsed().as_millis(),
+                                "subscription proxy exchange finished"
+                            );
+                            Ok::<(), anyhow::Error>(())
+                        };
+                        match tokio::time::timeout(std::time::Duration::from_secs(65), exchange)
+                            .await
+                        {
+                            Ok(Ok(())) => {}
+                            Ok(Err(error)) => log_network_failure(
+                                "proxy_bridge",
+                                target.host_str().unwrap_or(""),
+                                phase,
+                                started,
+                                &error,
+                            ),
+                            Err(_) => tracing::warn!(
+                                phase,
+                                elapsed_ms = started.elapsed().as_millis(),
+                                "subscription proxy bridge deadline exceeded"
+                            ),
+                        }
+                    }
+                    .instrument(connection),
+                );
+            }
         }
-    });
+        .instrument(span),
+    );
     Ok((address, task))
 }
 
@@ -606,6 +894,49 @@ async fn socks_handshake(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+
+    struct LogWriter(Arc<Mutex<Vec<u8>>>);
+    impl Write for LogWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn network_diagnostics_never_emit_secret_error_display() {
+        let output = Arc::new(Mutex::new(Vec::new()));
+        let sink = output.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(move || LogWriter(sink.clone()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            let error = anyhow::anyhow!("https://example.test/sub?token=DO_NOT_LOG");
+            log_network_failure(
+                "test",
+                "example.test",
+                "request_headers",
+                Instant::now(),
+                &error,
+            );
+        });
+        let log = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        assert!(
+            log.contains("request_headers") && log.contains("example.test"),
+            "{log}"
+        );
+        assert!(
+            !log.contains("DO_NOT_LOG") && !log.contains("/sub?"),
+            "{log}"
+        );
+    }
     #[test]
     fn trusted_dns_validates_question_chain_family_and_public_addresses() {
         let mut d = json!({"Status":0,"Question":[{"name":"example.com.","type":1}],"Answer":[

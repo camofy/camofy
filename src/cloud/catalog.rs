@@ -417,6 +417,8 @@ pub async fn publish(
     .await?;
     sqlx::query("INSERT INTO catalog_version_artifacts(version_id,artifact_hash,role) VALUES($1,$2,'rules')").bind(id).bind(&hash).execute(&mut *tx).await?;
     tx.commit().await?;
+    tracing::info!(version_id = %id, package = %p.slug, version = %p.version,
+        "catalog version published");
     Ok(Json(json!({"id":id,"hash":hash})))
 }
 #[derive(Deserialize)]
@@ -477,6 +479,8 @@ pub async fn install(
     hydrate(&mut tx, std::slice::from_mut(&mut r)).await?;
     store::notify(&mut tx, user).await?;
     tx.commit().await?;
+    tracing::info!(profile_id = %i.profile_id, version_id = %i.version_id,
+        "catalog profile installed");
     Ok(Json(r))
 }
 
@@ -583,6 +587,8 @@ async fn upgrade_inner(
             store::notify(&mut tx, user).await?;
         }
         tx.commit().await?;
+        tracing::info!(profile_id = %id, version_id = %u.version_id, affected_bundles = ids.len(),
+            "catalog profile upgrade committed");
     }
     Ok(Json(
         json!({"preview_digest":digest,"affected":affected,"added":new.difference(&old).count(),"removed":old.difference(&new).count(),"applied":commit}),

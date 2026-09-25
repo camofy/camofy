@@ -1,5 +1,5 @@
 //! Public, bounded release distribution. Never forward caller credentials or arbitrary URLs.
-use crate::Error;
+use crate::{Error, security};
 use axum::{
     Router,
     body::Body,
@@ -142,10 +142,13 @@ impl Service {
         bytes: Option<&str>,
     ) -> Result<reqwest::Response, Error> {
         let mut url = url::Url::parse(url).map_err(|_| unavailable())?;
-        for _ in 0..5 {
+        for hop in 0..5 {
             if !trusted(&url) {
+                tracing::warn!(hop, host = ?url.host_str(), "release upstream redirect rejected");
                 return Err(unavailable());
             }
+            let started = Instant::now();
+            let host = url.host_str().unwrap_or("");
             let mut request = self
                 .client
                 .request(method.clone(), url.clone())
@@ -160,7 +163,18 @@ impl Service {
             if let Some(bytes) = bytes {
                 request = request.header(header::RANGE, bytes);
             }
-            let response = request.send().await.map_err(|_| unavailable())?;
+            let response = request.send().await.map_err(|error| {
+                security::log_network_failure(
+                    "release_distribution",
+                    host,
+                    "request_headers",
+                    started,
+                    &anyhow::Error::new(error),
+                );
+                unavailable()
+            })?;
+            tracing::info!(host, hop, method = %method, status = response.status().as_u16(),
+                elapsed_ms = started.elapsed().as_millis(), "release upstream responded");
             if response.status().is_redirection() {
                 let location = response
                     .headers()
@@ -187,6 +201,7 @@ impl Service {
                 _ => Err(unavailable()),
             };
         }
+        tracing::warn!("release upstream exceeded redirect limit");
         Err(unavailable())
     }
     async fn latest(&self, repo: &str) -> Result<Value, Error> {
@@ -197,6 +212,7 @@ impl Service {
             return Ok(value.clone());
         }
         let _permit = self.slots.clone().try_acquire_owned().map_err(|_| busy())?;
+        let started = Instant::now();
         let value = tokio::time::timeout(Duration::from_secs(25), async {
             let mut response = self
                 .request(
@@ -206,7 +222,16 @@ impl Service {
                 )
                 .await?;
             let mut body = Vec::new();
-            while let Some(chunk) = response.chunk().await.map_err(|_| unavailable())? {
+            while let Some(chunk) = response.chunk().await.map_err(|error| {
+                security::log_network_failure(
+                    "release_distribution",
+                    "api.github.com",
+                    "latest_body",
+                    started,
+                    &anyhow::Error::new(error),
+                );
+                unavailable()
+            })? {
                 if body.len() + chunk.len() > 2 * 1024 * 1024 {
                     return Err(unavailable());
                 }
@@ -216,8 +241,12 @@ impl Service {
             release(&self.origin, repo, &raw)
         })
         .await
-        .map_err(|_| unavailable())??;
+        .map_err(|_| {
+            tracing::warn!(repo, "release metadata fetch exceeded deadline");
+            unavailable()
+        })??;
         cache.insert(repo.to_owned(), (Instant::now(), value.clone()));
+        tracing::info!(repo, "release metadata cache updated");
         Ok(value)
     }
 }
@@ -296,20 +325,26 @@ async fn proxy(
                 return builder.body(Body::empty()).map_err(|_| unavailable());
             }
             let stream = futures_util::stream::try_unfold(
-                (response, permit, 0_u64),
-                |(mut response, permit, total)| async move {
-                    match response
-                        .chunk()
-                        .await
-                        .map_err(|_| std::io::Error::other("upstream download interrupted"))?
-                    {
+                (response, permit, 0_u64, Instant::now()),
+                |(mut response, permit, total, started)| async move {
+                    let host = response.url().host_str().unwrap_or("").to_string();
+                    match response.chunk().await.map_err(|error| {
+                        security::log_network_failure(
+                            "release_distribution",
+                            &host,
+                            "asset_body",
+                            started,
+                            &anyhow::Error::new(error),
+                        );
+                        std::io::Error::other("upstream download interrupted")
+                    })? {
                         None => Ok(None),
                         Some(chunk) => {
                             let total = total + chunk.len() as u64;
                             if total > MAX_ASSET {
                                 return Err(std::io::Error::other("asset size limit exceeded"));
                             }
-                            Ok(Some((chunk, (response, permit, total))))
+                            Ok(Some((chunk, (response, permit, total, started))))
                         }
                     }
                 },

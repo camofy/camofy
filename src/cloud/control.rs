@@ -218,6 +218,8 @@ pub async fn enqueue(
     store::put(&app, &mut tx, user, &d).await?;
     store::notify(&mut tx, user).await?;
     tx.commit().await?;
+    tracing::info!(device_id = %d.id, job_id = %job.id, method = %job.method,
+        "device control job queued");
     Ok(Json(job))
 }
 
@@ -280,6 +282,7 @@ pub async fn select(
     }
     write_selection(&app, &mut tx, user, &mut r, e, "cloud").await?;
     tx.commit().await?;
+    tracing::info!(bundle_id = %id, version = version(&r), "identity selection committed");
     Ok(Json(json!({"version":version(&r)})))
 }
 
@@ -424,7 +427,7 @@ pub async fn agent_report(
         d.data["selection_overrides"] = json!({});
         settle_events(&mut d);
     }
-    if let Some(id) = body.job_id {
+    if let Some(id) = body.job_id.as_deref() {
         let mut queue = jobs(&d);
         normalize(&mut queue);
         let j = queue
@@ -453,6 +456,10 @@ pub async fn agent_report(
     }
     store::put(&app, &mut tx, a.user, &d).await?;
     tx.commit().await?;
+    if body.status.as_deref() == Some("failed") || body.status.as_deref() == Some("unknown") {
+        tracing::warn!(device_id = %id, job_id = ?body.job_id, status = ?body.status,
+            "device control job reported failure");
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

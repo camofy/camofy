@@ -26,6 +26,7 @@ use anyhow::{Result, bail, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Map, Value, json};
 use std::time::Duration;
+use tracing::Instrument;
 
 const API: &str = "https://api.zyte.com/v1/extract";
 const RESPONSE_LIMIT: usize = 4 * 1024 * 1024;
@@ -99,7 +100,12 @@ impl Zyte {
     }
 
     /// Bounded JSON POST to the Zyte endpoint, always carrying this conversation's session.
-    async fn extract(&self, mut payload: Map<String, Value>) -> Result<Value> {
+    async fn extract(
+        &self,
+        operation: &'static str,
+        mut payload: Map<String, Value>,
+    ) -> Result<Value> {
+        let started = std::time::Instant::now();
         payload.insert("session".into(), json!({ "id": self.session }));
         let body = Value::Object(payload);
         let response = match security::post_json_basic(
@@ -114,21 +120,50 @@ impl Zyte {
         {
             Ok(response) => response,
             // Zyte drops a session when its backend state is gone; a new session has to start.
-            Err(error) if expired(&error) => bail!(retryable(anyhow::Error::new(Restart))),
-            Err(error) => return Err(retryable(error)),
+            Err(error) if expired(&error) => {
+                tracing::warn!(
+                    operation,
+                    elapsed_ms = started.elapsed().as_millis(),
+                    "Zyte session expired during panel request"
+                );
+                bail!(retryable(anyhow::Error::new(Restart)));
+            }
+            Err(error) => {
+                security::log_network_failure(
+                    "zyte_panel",
+                    self.api.host_str().unwrap_or(""),
+                    operation,
+                    started,
+                    &error,
+                );
+                return Err(retryable(error));
+            }
         };
         // Zyte also reports request problems in the body with a 2xx status.
         if let Some(error) = response.get("error").and_then(Value::as_str) {
+            tracing::warn!(
+                operation,
+                session_expired = session_gone(None, error),
+                elapsed_ms = started.elapsed().as_millis(),
+                "Zyte panel request returned an error"
+            );
             if session_gone(None, error) {
                 bail!(retryable(anyhow::Error::new(Restart)));
             }
             bail!(retryable(anyhow::anyhow!("Zyte API error: {error}")));
         }
+        tracing::info!(operation, panel_status = ?response.get("statusCode").and_then(|value| value.as_u64()),
+            elapsed_ms = started.elapsed().as_millis(), "Zyte panel request completed");
         Ok(response)
     }
 
     /// A browser request: Zyte renders the page in its own browser and returns the DOM.
-    async fn browser(&self, url: &str, actions: Option<Value>) -> Result<String> {
+    async fn browser(
+        &self,
+        url: &str,
+        actions: Option<Value>,
+        operation: &'static str,
+    ) -> Result<String> {
         let started = std::time::Instant::now();
         let mut payload = Map::new();
         payload.insert("url".into(), json!(url));
@@ -136,7 +171,7 @@ impl Zyte {
         if let Some(actions) = actions {
             payload.insert("actions".into(), actions);
         }
-        let response = self.extract(payload).await?;
+        let response = self.extract(operation, payload).await?;
         let status = response
             .get("statusCode")
             .and_then(Value::as_u64)
@@ -145,13 +180,24 @@ impl Zyte {
             .get("browserHtml")
             .and_then(Value::as_str)
             .unwrap_or_default();
+        if status != 200 || html.is_empty() {
+            tracing::warn!(
+                operation,
+                status,
+                empty = html.is_empty(),
+                elapsed_ms = started.elapsed().as_millis(),
+                "Zyte browser result unusable"
+            );
+        }
         ensure!(
             status == 200 && !html.is_empty(),
             retryable(anyhow::anyhow!("Zyte browser request failed")),
         );
-        tracing::debug!(
-            "zyte browser request finished in {} ms",
-            started.elapsed().as_millis()
+        tracing::info!(
+            operation,
+            bytes = html.len(),
+            elapsed_ms = started.elapsed().as_millis(),
+            "Zyte browser page received"
         );
         Ok(html.to_string())
     }
@@ -159,22 +205,29 @@ impl Zyte {
     /// A page read. HTTP mode is cheaper and faster and the panel never challenges a GET from
     /// Zyte's address, so it is tried first; a page that comes back empty or challenged is retried
     /// in the browser.
-    async fn page(&self, url: &str) -> Result<String> {
-        if let Ok(html) = self.http_page(url).await
-            && !html.is_empty()
-            && !westdata::cloudflare_wall(&html)
-        {
-            return Ok(html);
+    async fn page(&self, url: &str, operation: &'static str) -> Result<String> {
+        match self.http_page(url, operation).await {
+            Ok(html) if !html.is_empty() && !westdata::cloudflare_wall(&html) => return Ok(html),
+            Ok(html) => tracing::warn!(
+                operation,
+                empty = html.is_empty(),
+                challenged = westdata::cloudflare_wall(&html),
+                "Zyte HTTP page requires browser fallback"
+            ),
+            Err(_) => tracing::warn!(
+                operation,
+                "Zyte HTTP page failed; browser fallback starting"
+            ),
         }
-        self.browser(url, None).await
+        self.browser(url, None, operation).await
     }
 
     /// Reads a page with Zyte's HTTP mode inside this session.
-    async fn http_page(&self, url: &str) -> Result<String> {
+    async fn http_page(&self, url: &str, operation: &'static str) -> Result<String> {
         let mut payload = Map::new();
         payload.insert("url".into(), json!(url));
         payload.insert("httpResponseBody".into(), json!(true));
-        let response = self.extract(payload).await?;
+        let response = self.extract(operation, payload).await?;
         let status = response
             .get("statusCode")
             .and_then(Value::as_u64)
@@ -183,6 +236,14 @@ impl Zyte {
             .get("httpResponseBody")
             .and_then(Value::as_str)
             .unwrap_or_default();
+        if status != 200 || encoded.is_empty() {
+            tracing::warn!(
+                operation,
+                status,
+                empty = encoded.is_empty(),
+                "Zyte HTTP page unusable"
+            );
+        }
         ensure!(
             status == 200 && !encoded.is_empty(),
             retryable(anyhow::anyhow!("Zyte HTTP request failed")),
@@ -198,7 +259,9 @@ impl Zyte {
     /// inside this session is answered with an expired session.
     async fn login(&self, vision: &captcha::Vision, cfg: &Config) -> Result<()> {
         let area = self.hosts.client_area();
-        let page = self.browser(&area, Some(grab_actions())).await?;
+        let page = self
+            .browser(&area, Some(grab_actions()), "login_page")
+            .await?;
         if westdata::cloudflare_wall(&page) {
             bail!(failure(
                 "westdata_egress",
@@ -206,6 +269,7 @@ impl Zyte {
             ));
         }
         if westdata::logged_in(&page) {
+            tracing::info!("WestData panel already authenticated");
             return Ok(());
         }
         let data = hidden_json(&page, "camofy-data")
@@ -223,11 +287,13 @@ impl Zyte {
             .browser(
                 &neutral,
                 Some(login_actions(&self.hosts.site, token, &code, cfg)?),
+                "login_submit",
             )
             .await?;
         let outcome = hidden_json(&result, "camofy-result")
             .ok_or_else(|| failure("westdata_login", "面板登录未返回结果，请稍后重试。"))?;
         if outcome.get("loggedIn").and_then(Value::as_bool) == Some(true) {
+            tracing::info!("WestData panel login accepted");
             return Ok(());
         }
         tracing::warn!("westdata login attempt was rejected");
@@ -235,7 +301,9 @@ impl Zyte {
     }
 
     async fn subscription(&self, product: &str) -> Result<String> {
-        let page = self.page(&self.hosts.product_page(product)).await?;
+        let page = self
+            .page(&self.hosts.product_page(product), "product_page")
+            .await?;
         if westdata::cloudflare_wall(&page) {
             bail!(failure(
                 "westdata_egress",
@@ -257,7 +325,9 @@ impl Zyte {
     }
 
     async fn activate(&self, product: &str) -> Result<()> {
-        let page = self.page(&self.hosts.activate(product)).await?;
+        let page = self
+            .page(&self.hosts.activate(product), "activation")
+            .await?;
         if westdata::cloudflare_wall(&page) {
             bail!(failure(
                 "westdata_egress",
@@ -271,12 +341,13 @@ impl Zyte {
                 "订阅更新开关打开失败，已保留上次成功配置。"
             ));
         }
+        tracing::info!("WestData activation confirmed");
         Ok(())
     }
 
     async fn services(&self) -> Result<Vec<Service>> {
         let url = format!("{}/clientarea.php?action=services", self.hosts.site);
-        let page = self.page(&url).await?;
+        let page = self.page(&url, "services_page").await?;
         if !westdata::logged_in(&page) {
             bail!(failure(
                 "westdata_login",
@@ -350,35 +421,61 @@ where
     F: FnMut(Zyte) -> Fut,
     Fut: std::future::Future<Output = Result<T>>,
 {
-    let mut restarts = 0;
-    loop {
-        let zyte = Zyte::from_env(private)?.ok_or_else(|| {
-            failure(
-                "westdata_login",
-                "未配置 Zyte API key，无法登录 WestData 面板。",
-            )
-        })?;
-        match tokio::time::timeout(CONVERSATION, conversation(zyte)).await {
-            Ok(Ok(value)) => return Ok(value),
-            Ok(Err(error)) if error.downcast_ref::<Restart>().is_some() => {
-                restarts += 1;
-                if restarts >= LOGIN_ATTEMPTS {
-                    bail!(failure(
-                        "westdata_login",
-                        "WestData 验证码连续识别失败，请稍后重试。"
-                    ));
+    let trace = uuid::Uuid::new_v4();
+    let span = tracing::info_span!("zyte_conversation", %trace);
+    async move {
+        let mut restarts = 0;
+        loop {
+            tracing::info!(
+                attempt = restarts + 1,
+                "WestData browser conversation started"
+            );
+            let zyte = Zyte::from_env(private)?.ok_or_else(|| {
+                failure(
+                    "westdata_login",
+                    "未配置 Zyte API key，无法登录 WestData 面板。",
+                )
+            })?;
+            match tokio::time::timeout(CONVERSATION, conversation(zyte)).await {
+                Ok(Ok(value)) => {
+                    tracing::info!(
+                        attempt = restarts + 1,
+                        "WestData browser conversation completed"
+                    );
+                    return Ok(value);
                 }
-                continue;
-            }
-            Ok(Err(error)) => return Err(error),
-            Err(_) => {
-                bail!(failure(
-                    "westdata_timeout",
-                    "WestData 面板响应超时，已保留上次成功配置。"
-                ))
+                Ok(Err(error)) if error.downcast_ref::<Restart>().is_some() => {
+                    restarts += 1;
+                    tracing::warn!(attempt = restarts, "WestData browser session needs restart");
+                    if restarts >= LOGIN_ATTEMPTS {
+                        bail!(failure(
+                            "westdata_login",
+                            "WestData 验证码连续识别失败，请稍后重试。"
+                        ));
+                    }
+                    continue;
+                }
+                Ok(Err(error)) => {
+                    tracing::warn!(attempt = restarts + 1,
+                    panel_step = ?error.downcast_ref::<Failure>().map(|f| f.step),
+                    "WestData browser conversation failed");
+                    return Err(error);
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        attempt = restarts + 1,
+                        "WestData browser conversation timed out"
+                    );
+                    bail!(failure(
+                        "westdata_timeout",
+                        "WestData 面板响应超时，已保留上次成功配置。"
+                    ))
+                }
             }
         }
     }
+    .instrument(span)
+    .await
 }
 
 /// True when Zyte reports the session as gone, which needs a new session.

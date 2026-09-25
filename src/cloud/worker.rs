@@ -5,7 +5,7 @@ use tracing::Instrument;
 use uuid::Uuid;
 
 pub async fn start(app: App) {
-    for _ in 0..app.workers {
+    for worker_id in 0..app.workers {
         let app = app.clone();
         tokio::spawn(async move {
             loop {
@@ -13,23 +13,26 @@ pub async fn start(app: App) {
                     Ok(true) => {}
                     Ok(false) => tokio::time::sleep(std::time::Duration::from_secs(1)).await,
                     Err(e) => {
-                        tracing::error!("fetch worker: {}", e.internal());
+                        tracing::error!(worker_id, error = %e.internal(), "fetch worker iteration failed");
                         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                     }
                 }
             }
-        });
+        }.instrument(tracing::info_span!("fetch_worker", worker_id)));
     }
     tokio::spawn(async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(600)).await;
-            let _ = sqlx::query("DELETE FROM sessions WHERE expires_at<now()")
-                .execute(&app.db)
-                .await;
-            let _ = sqlx::query("DELETE FROM rate_limits WHERE expires_at<now()")
-                .execute(&app.db)
-                .await;
-            let _ = sqlx::query("DELETE FROM refresh_history WHERE id IN (SELECT id FROM refresh_history WHERE started_at<now()-interval '30 days' ORDER BY started_at LIMIT 1000)").execute(&app.db).await;
+            for (table, result) in [
+                ("sessions", sqlx::query("DELETE FROM sessions WHERE expires_at<now()").execute(&app.db).await),
+                ("rate_limits", sqlx::query("DELETE FROM rate_limits WHERE expires_at<now()").execute(&app.db).await),
+                ("refresh_history", sqlx::query("DELETE FROM refresh_history WHERE id IN (SELECT id FROM refresh_history WHERE started_at<now()-interval '30 days' ORDER BY started_at LIMIT 1000)").execute(&app.db).await),
+            ] {
+                if let Err(error) = result {
+                    tracing::warn!(table, database_code = ?error.as_database_error().and_then(|e| e.code()),
+                        "expired-record cleanup failed");
+                }
+            }
         }
     });
 }
@@ -122,6 +125,9 @@ pub async fn once(app: &App) -> Result<bool, Error> {
     // A Zyte-driven panel refresh gets a longer attempt. Cheap proxy preparation can retry before
     // any login starts, but network retries must not repeat the expensive panel conversation.
     let slow_panel = westdata::config(&profile.data).is_some() && crate::zyte::Zyte::configured();
+    tracing::info!(%claim, profile_id = %id, reason = job.get::<String, _>("reason"),
+        policy_version = policy.version, proxy_id = ?policy.proxy.as_ref().map(|p| p.id),
+        direct = policy.direct, zyte_panel = slow_panel, "subscription refresh claimed");
     let max_attempts = retry::ATTEMPTS;
     let attempt_timeout = if slow_panel {
         retry::PANEL_ATTEMPT_TIMEOUT
@@ -159,6 +165,11 @@ pub async fn once(app: &App) -> Result<bool, Error> {
                     None if policy.direct => None,
                     None => return Err(anyhow::anyhow!("platform egress unavailable")),
                 };
+                let proxy_address = endpoint.as_deref().and_then(|s| url::Url::parse(s).ok());
+                tracing::info!(proxy_scheme = ?proxy_address.as_ref().map(url::Url::scheme),
+                    proxy_host = ?proxy_address.as_ref().and_then(url::Url::host_str),
+                    proxy_port = ?proxy_address.as_ref().and_then(url::Url::port_or_known_default),
+                    "subscription egress prepared");
                 let url = match westdata::config(&profile.data) {
                     Some(cfg) => match &panel {
                         Some((resolved, at)) if at.elapsed() < retry::PANEL_REUSE => {
@@ -167,6 +178,7 @@ pub async fn once(app: &App) -> Result<bool, Error> {
                         _ => {
                             // Log in, read the current Clash address, open the update switch.
                             stage = "westdata";
+                            tracing::info!(zyte = slow_panel, "WestData panel resolution started");
                             let vision = app.captcha.as_ref().ok_or_else(|| {
                                 anyhow::anyhow!("未配置验证码识别模型，无法刷新 WestData 订阅")
                             })?;
@@ -178,6 +190,8 @@ pub async fn once(app: &App) -> Result<bool, Error> {
                             )
                             .await?;
                             let clash = resolved.clash.clone();
+                            tracing::info!(subscription_host = ?url::Url::parse(&clash).ok().and_then(|u| u.host_str().map(str::to_owned)),
+                                "WestData panel link activated");
                             panel = Some((resolved, tokio::time::Instant::now()));
                             clash
                         }
@@ -194,6 +208,8 @@ pub async fn once(app: &App) -> Result<bool, Error> {
                     None => profile.data["url"].as_str().unwrap_or("").to_string(),
                 };
                 stage = "fetch";
+                tracing::info!(subscription_host = ?url::Url::parse(&url).ok().and_then(|u| u.host_str().map(str::to_owned)),
+                    "subscription fetch stage started");
                 let outcome = security::fetch(&url, endpoint.as_deref(), app.private_egress).await;
                 if let Err(error) = &outcome
                     && rejected(error)
@@ -209,11 +225,15 @@ pub async fn once(app: &App) -> Result<bool, Error> {
             let result = match tokio::time::timeout(attempt_timeout, attempt).await {
                 Ok(result) => result,
                 Err(e) => {
+                    tracing::warn!(%claim, attempt = attempts, last_stage = stage,
+                        deadline_seconds = attempt_timeout.as_secs(),
+                        "subscription refresh attempt deadline exceeded");
                     stage = "attempt_timeout";
                     Err(anyhow::Error::new(e))
                 }
             };
             let Err(ref error) = result else {
+                tracing::info!(%claim, attempt = attempts, "subscription refresh attempt completed");
                 break result;
             };
             let (code, _) = history::failure(error, stage);
@@ -279,6 +299,8 @@ pub async fn once(app: &App) -> Result<bool, Error> {
     {
         Ok(result) => result,
         Err(_) => {
+            tracing::warn!(%claim, last_stage = stage, attempts,
+                deadline_seconds = total_timeout.as_secs(), "subscription refresh total deadline exceeded");
             stage = "timeout";
             Err(anyhow::anyhow!("refresh deadline exceeded"))
         }
@@ -424,5 +446,8 @@ pub async fn once(app: &App) -> Result<bool, Error> {
     }
     history::prune(&mut tx, user, id).await?;
     tx.commit().await?;
+    tracing::info!(%claim, profile_id = %id, status = current.data["fetch_status"].as_str().unwrap_or(""),
+        code = ?failure.as_ref().map(|(code, _)| *code), attempts,
+        "subscription refresh result published");
     Ok(true)
 }

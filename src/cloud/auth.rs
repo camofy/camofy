@@ -86,7 +86,7 @@ pub async fn register(
         return Err(Error::new(StatusCode::FORBIDDEN, "registration disabled"));
     }
     rate(&app, format!("register:{}", addr.ip()), 10, 3600).await?;
-    credentials(app, c, true).await
+    credentials(app, c, true, addr.ip()).await
 }
 pub async fn login(
     State(app): State<App>,
@@ -104,12 +104,19 @@ pub async fn login(
         300,
     )
     .await?;
-    credentials(app, c, false).await
+    credentials(app, c, false, addr.ip()).await
 }
-async fn credentials(app: App, c: Credentials, register: bool) -> Result<Response, Error> {
+async fn credentials(
+    app: App,
+    c: Credentials,
+    register: bool,
+    remote: std::net::IpAddr,
+) -> Result<Response, Error> {
+    let started = std::time::Instant::now();
     let email = c.email.trim().to_lowercase();
     if email.len() > 254 || !email.contains('@') || c.password.len() < 12 || c.password.len() > 256
     {
+        tracing::info!(%remote, register, reason = "input_validation", "authentication rejected");
         return Err(Error::bad(
             "valid email and password of 12–256 bytes required",
         ));
@@ -150,6 +157,7 @@ async fn credentials(app: App, c: Credentials, register: bool) -> Result<Respons
         if let Err(sqlx::Error::Database(e)) = &result
             && e.is_unique_violation()
         {
+            tracing::info!(%remote, register, reason = "duplicate_account", "authentication rejected");
             return Err(Error::new(StatusCode::CONFLICT, "account already exists"));
         }
         result?;
@@ -161,6 +169,7 @@ async fn credentials(app: App, c: Credentials, register: bool) -> Result<Respons
                 .fetch_optional(&app.db)
                 .await?;
         let Some((id, hash)) = row else {
+            tracing::info!(%remote, register, reason = "unknown_account", "authentication rejected");
             return Err(Error::unauthorized());
         };
         tokio::task::spawn_blocking(move || {
@@ -170,7 +179,10 @@ async fn credentials(app: App, c: Credentials, register: bool) -> Result<Respons
                 .verify_password(c.password.as_bytes(), &hash)
                 .map_err(|_| Error::unauthorized())
         })
-        .await??;
+        .await?.map_err(|error| {
+            tracing::info!(%remote, register, reason = "credential_mismatch", "authentication rejected");
+            error
+        })?;
         id
     };
     let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
@@ -197,6 +209,8 @@ async fn credentials(app: App, c: Credentials, register: bool) -> Result<Respons
         .parse()
         .unwrap(),
     );
+    tracing::info!(user_id = %id, %remote, register, elapsed_ms = started.elapsed().as_millis(),
+        "authentication completed");
     Ok(response)
 }
 pub async fn me(
