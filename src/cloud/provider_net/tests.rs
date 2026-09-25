@@ -24,6 +24,18 @@ async fn transport_preserves_safe_categories_and_retry_after_without_leaking_cre
             Router::new()
                 .route("/ok", get(|| async { "one-result" }))
                 .route(
+                    "/auth",
+                    get(|headers: axum::http::HeaderMap| async move {
+                        if headers.get("x-api-signature").and_then(|v| v.to_str().ok())
+                            == Some("SECRET")
+                        {
+                            (StatusCode::OK, "authorized")
+                        } else {
+                            (StatusCode::UNAUTHORIZED, "rejected")
+                        }
+                    }),
+                )
+                .route(
                     "/limited",
                     get(|| async {
                         (
@@ -84,13 +96,35 @@ async fn transport_preserves_safe_categories_and_retry_after_without_leaking_cre
         assert!(!message.contains("http://"));
     }
     let slow = format!("http://{address}/slow?key=SECRET").parse().unwrap();
-    let error = get_at(&slow, vec![address], true, Duration::from_millis(100))
-        .await
-        .unwrap_err();
+    let error = get_at(
+        &slow,
+        vec![address],
+        true,
+        Duration::from_millis(100),
+        reqwest::header::HeaderMap::new(),
+    )
+    .await
+    .unwrap_err();
     assert_eq!(error.kind, FailureKind::Timeout);
     assert_eq!(error.diagnostic().0, "proxy_extract_timeout");
     let ok = format!("http://{address}/ok").parse().unwrap();
     assert_eq!(get_text(&ok, None, true).await.unwrap(), "one-result");
+    let auth = format!("http://{address}/auth").parse().unwrap();
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        "x-api-signature",
+        reqwest::header::HeaderValue::from_static("SECRET"),
+    );
+    assert_eq!(
+        get_text_with_headers(&auth, None, true, headers)
+            .await
+            .unwrap(),
+        "authorized"
+    );
+    assert_eq!(
+        get_text(&auth, None, true).await.unwrap_err().kind,
+        FailureKind::Http(401)
+    );
     assert_eq!(
         get_text(&ok, None, false).await.unwrap_err().kind,
         FailureKind::DnsInvalid
@@ -100,7 +134,8 @@ async fn transport_preserves_safe_categories_and_retry_after_without_leaking_cre
             &ok,
             vec!["127.0.0.1:1".parse().unwrap()],
             true,
-            Duration::from_secs(1)
+            Duration::from_secs(1),
+            reqwest::header::HeaderMap::new()
         )
         .await
         .unwrap_err()
