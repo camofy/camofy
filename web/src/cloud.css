@@ -621,9 +621,6 @@ p {
   background: #f5f5f2;
   color: #292a28;
 }
-.nav-separator {
-  margin-top: 28px;
-}
 .sidebar-note {
   display: flex;
   align-items: center;

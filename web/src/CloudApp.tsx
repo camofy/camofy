@@ -229,13 +229,13 @@ function CloudWorkspace() {
             </NavLink>
             {sections
               .filter((s) => s.key !== "proxies")
-              .map((s, i) => (
+              .map((s) => (
                 <NavLink
                   key={s.key}
                   to={`/${s.key}`}
                   onClick={() => setMobile(false)}
                   className={({ isActive }) =>
-                    `nav-item ${isActive ? "active" : ""} ${i === 3 ? "nav-separator" : ""}`
+                    `nav-item ${isActive ? "active" : ""}`
                   }
                 >
                   <Icon name={s.icon} />
