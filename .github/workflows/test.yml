@@ -33,6 +33,15 @@ jobs:
       - run: cargo test --locked --bin camofy-cloud catalog_end_to_end -- --ignored
         env:
           TEST_DATABASE_URL: postgres://postgres:test-only@localhost:5432/camofy_test
+      - run: cargo test --locked --bin camofy-cloud outbound_contract_http_end_to_end -- --ignored
+        env:
+          TEST_DATABASE_URL: postgres://postgres:test-only@localhost:5432/camofy_test
+      - run: cargo test --locked --bin camofy-cloud draft_publish_is_atomic_and_tenant_scoped -- --ignored
+        env:
+          TEST_DATABASE_URL: postgres://postgres:test-only@localhost:5432/camofy_test
+      - run: cargo test --locked --bin camofy-cloud responses_stream_executes_only_scoped_tools -- --ignored
+        env:
+          TEST_DATABASE_URL: postgres://postgres:test-only@localhost:5432/camofy_test
       - run: cargo build --locked --no-default-features --features agent --bin camofy-agent --example mock-core
       - run: cargo test --locked --no-default-features --features agent --bin camofy-agent
       - run: cargo test --locked --bin camofy-cloud cloud_end_to_end -- --ignored
