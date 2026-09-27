@@ -16,6 +16,7 @@ pub fn cloud_safety_profile(origin: &str) -> Result<Value> {
     let rule = match url.host() {
         Some(url::Host::Ipv4(ip)) => format!("IP-CIDR,{ip}/32,DIRECT,no-resolve"),
         Some(url::Host::Ipv6(ip)) => format!("IP-CIDR6,{ip}/128,DIRECT,no-resolve"),
+        _ if host == "camofy.app" => format!("DOMAIN-SUFFIX,{host},DIRECT"),
         _ => format!("DOMAIN,{host},DIRECT"),
     };
     Ok(serde_yaml::to_value(
@@ -31,6 +32,12 @@ fn safety_profile_wins_over_global_mode_and_catch_all_rules() {
         "https://[fd00::1]",
     ] {
         let safety = cloud_safety_profile(origin).unwrap();
+        let expected = match origin {
+            "https://camofy.app" => "DOMAIN-SUFFIX,camofy.app,DIRECT",
+            "https://custom.example" => "DOMAIN,custom.example,DIRECT",
+            _ => "IP-CIDR6,fd00::1/128,DIRECT,no-resolve",
+        };
+        assert_eq!(safety["prepend-rules"][0], expected);
         let composed = compose_profiles(&["mode: global\nrules: ['MATCH,REJECT']\nprepend-rules: ['DOMAIN,camofy.app,REJECT']".into(), serde_yaml::to_string(&safety).unwrap()], &BTreeMap::new()).unwrap();
         assert_eq!(composed["mode"], "rule");
         assert_eq!(composed["rules"][0], safety["prepend-rules"][0]);
