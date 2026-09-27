@@ -32,6 +32,19 @@ it does not contact a central Camofy account server.
   groups, rules or runtime settings. Neither profile type has global activation.
 * Identity (`kind: bundle` in the API): an ordered `profiles` array of
   `{profile_id, enabled}` bindings, shared selections and a published revision.
+  A source binding may also contain `source_filter: {include: ["proxies",
+  "proxy-groups"]}`. Missing or empty `include` retains the entire subscription.
+  Selecting `proxies` keeps node lists, their prepend/append directives and
+  `proxy-providers`; selecting `proxy-groups` keeps group lists, their directives
+  and group patches. Any other top-level setting (including rules, DNS, TUN and
+  ports) is excluded when a filter is active. The first source added in the UI
+  defaults to full content; later sources initially select both categories.
+  Existing bindings and the upstream source snapshot are never rewritten by this
+  default. Multiple full sources remain allowed; the identity preview warns about
+  full-source settings and same-named source nodes/groups. A filter is local to
+  its identity binding and persists through source refreshes. Outbound capabilities
+  are resolved against the filtered content, so a removed node or group cannot
+  remain an effective export in that identity.
   Any number of subscription/independent profiles can be combined, including only
   independent profiles. Disable preserves the binding and order. Profile changes
   rebuild identities; disabled bindings do not affect their output. Creation issues

@@ -35,6 +35,44 @@ fn identity_compiles_generic_outbound_contracts_into_client_yaml() {
 }
 
 #[test]
+fn new_variables_can_coexist_with_a_legacy_profile_during_migration() {
+    let provider = store::Resource {
+        id: Uuid::new_v4(),
+        kind: "profile".into(),
+        version: 1,
+        data: json!({"type":"source","name":"Provider",
+            "content":"proxy-groups: [{name: Gateway, type: select, proxies: [DIRECT]}]",
+            "exports":[{"key":"main","label":"Main","kind":"group","target":"Gateway"}]}),
+    };
+    let old = store::Resource {
+        id: Uuid::new_v4(),
+        kind: "profile".into(),
+        version: 1,
+        data: json!({"type":"overlay","name":"Old",
+            "content":"prepend-proxies: [{name: OldRelay, type: socks5, server: example.org, port: 1080}]",
+            "inputs":[{"key":"hop","label":"Hop","kind":"outbound","section":"prepend-proxies","name":"OldRelay","field":"dialer-proxy"}]}),
+    };
+    let new = store::Resource {
+        id: Uuid::new_v4(),
+        kind: "profile".into(),
+        version: 1,
+        data: json!({"type":"overlay","name":"New",
+            "content":"mixed-port: '{{camofy.port}}'",
+            "variables":[{"key":"port","label":"Port","type":"integer","required":true}]}),
+    };
+    let identity = json!({"profiles":[
+        {"profile_id":old.id,"enabled":true},
+        {"profile_id":new.id,"enabled":true,"variable_bindings":{"port":{"source":"literal","value":7897}}},
+        {"profile_id":provider.id,"enabled":true}],
+        "default_outbound":{"source":"export","profile_id":provider.id,"key":"main"}});
+    let (artifacts, _) =
+        store::render_bundle(&[old, new, provider], &identity, "https://cloud.example").unwrap();
+    let yaml = camofy::engine::parse(artifacts["router"]["content"].as_str().unwrap()).unwrap();
+    assert_eq!(yaml["mixed-port"].as_i64(), Some(7897));
+    assert_eq!(yaml["proxies"][0]["dialer-proxy"], "Gateway");
+}
+
+#[test]
 fn one_profile_can_bind_multiple_inputs_to_different_providers() {
     let make_provider = |name: &str, group: &str| store::Resource {
         id: Uuid::new_v4(),
@@ -124,6 +162,238 @@ fn identity_bindings_are_ordered_local_and_support_multiple_sources_or_only_inde
     );
     other["profiles"][3]["enabled"] = json!(true);
     assert!(store::render_bundle(&all, &other, "https://cloud.example").is_err());
+}
+
+#[test]
+fn source_filters_are_binding_local_and_preserve_legacy_full_merge() {
+    let first = store::Resource {
+        id: Uuid::new_v4(),
+        kind: "profile".into(),
+        version: 1,
+        data: json!({"type":"source","name":"primary","content":"mixed-port: 7890\ndns: {enable: true}\nproxies: [{name: original, type: ss, server: example.com, port: 443}]\nproxy-groups: [{name: Main, type: select, proxies: [original]}]\nrules: ['MATCH,Main']\n"}),
+    };
+    let second = store::Resource {
+        id: Uuid::new_v4(),
+        kind: "profile".into(),
+        version: 1,
+        data: json!({"type":"source","name":"secondary","content":"mixed-port: 9999\ndns: {enable: false}\nproxy-providers: {remote: {type: http, url: 'https://example.net/nodes'}}\nproxies: [{name: extra, type: ss, server: example.net, port: 443}]\nproxy-groups: [{name: Extra, type: select, proxies: [original]}]\nrules: ['DOMAIN,other.example,DIRECT']\n"}),
+    };
+    let resources = vec![first.clone(), second.clone()];
+    let full = json!({"profiles":[{"profile_id":first.id,"enabled":true},{"profile_id":second.id,"enabled":true}]});
+    let render = |data: &Value| {
+        let (artifacts, _) =
+            store::render_bundle(&resources, data, "https://cloud.example").unwrap();
+        camofy::engine::parse(artifacts["router"]["content"].as_str().unwrap()).unwrap()
+    };
+    let value = render(&full);
+    assert_eq!(value["mixed-port"], 9999);
+    assert_eq!(value["dns"]["enable"], false);
+    assert!(
+        value["rules"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .any(|v| v == "DOMAIN,other.example,DIRECT")
+    );
+    let mut filtered = full.clone();
+    filtered["profiles"][1]["source_filter"] = json!({"include":["proxies","proxy-groups"]});
+    let value = render(&filtered);
+    assert_eq!(value["mixed-port"], 7890);
+    assert_eq!(value["dns"]["enable"], true);
+    assert!(
+        value["proxies"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .any(|v| v["name"] == "extra")
+    );
+    assert!(
+        value["proxy-groups"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .any(|v| v["name"] == "Extra")
+    );
+    assert!(value["proxy-providers"]["remote"].is_mapping());
+    assert!(
+        !value["rules"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .any(|v| v == "DOMAIN,other.example,DIRECT")
+    );
+    filtered["profiles"][1]["source_filter"] = json!({"include":["proxies"]});
+    let value = render(&filtered);
+    assert!(
+        value["proxies"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .any(|v| v["name"] == "extra")
+    );
+    assert!(
+        !value["proxy-groups"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .any(|v| v["name"] == "Extra")
+    );
+    filtered["profiles"][1]["source_filter"] = json!({"include":["proxy-groups"]});
+    let value = render(&filtered);
+    assert!(
+        !value["proxies"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .any(|v| v["name"] == "extra")
+    );
+    assert!(
+        value["proxy-groups"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .any(|v| v["name"] == "Extra")
+    );
+    filtered["profiles"][1]["source_filter"] = json!({"include":[]});
+    assert_eq!(render(&filtered), render(&full));
+    // The same source remains unfiltered in another identity.
+    assert_eq!(render(&full)["mixed-port"], 9999);
+}
+
+#[test]
+fn source_filter_rejects_unknown_fields_and_warns_about_full_source_collisions() {
+    for bad in [
+        json!({"include":["rules"]}),
+        json!({"include":["proxies","proxies"]}),
+        json!({"include":"proxies"}),
+        json!({"include":[],"future":"ignored"}),
+    ] {
+        assert!(store::source_filter(&json!({"source_filter":bad})).is_err());
+    }
+    let first = store::Resource {
+        id: Uuid::new_v4(),
+        kind: "profile".into(),
+        version: 1,
+        data: json!({"type":"source","name":"one","content":"proxy-groups: [{name: Proxies, type: select, proxies: [DIRECT]}]"}),
+    };
+    let second = store::Resource {
+        id: Uuid::new_v4(),
+        kind: "profile".into(),
+        version: 1,
+        data: json!({"type":"source","name":"two","content":"proxy-groups: [{name: Proxies, type: select, proxies: [DIRECT]}]"}),
+    };
+    let resources = vec![first.clone(), second.clone()];
+    let full = json!({"profiles":[{"profile_id":first.id,"enabled":true},{"profile_id":second.id,"enabled":true}]});
+    let warnings = store::source_merge_warnings(&resources, &full).unwrap();
+    assert!(warnings.iter().any(|w| w.contains("多个订阅源")));
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("Proxies") && w.contains("覆盖"))
+    );
+    let mut filtered = full;
+    filtered["profiles"][1]["source_filter"] = json!({"include":["proxies"]});
+    assert!(
+        store::source_merge_warnings(&resources, &filtered)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn filtered_sources_only_export_outbounds_they_actually_contribute() {
+    let source = store::Resource {
+        id: Uuid::new_v4(),
+        kind: "profile".into(),
+        version: 1,
+        data: json!({
+            "type":"source","name":"upstream",
+            "content":"proxies: [{name: alpha, type: ss, server: example.net, port: 443, cipher: aes-256-gcm, password: test}]\nproxy-groups: [{name: Transit, type: select, proxies: [alpha]}]",
+            "exports":[{"key":"transit","label":"Transit","kind":"group","target":"Transit"}]
+        }),
+    };
+    let consumer = store::Resource {
+        id: Uuid::new_v4(),
+        kind: "profile".into(),
+        version: 1,
+        data: json!({
+            "type":"overlay","name":"consumer",
+            "content":"prepend-proxies: [{name: webshare, type: socks5, server: example.org, port: 1080}]",
+            "inputs":[{"key":"upstream","label":"前置代理","kind":"outbound","section":"prepend-proxies","name":"webshare","field":"dialer-proxy"}]
+        }),
+    };
+    let resources = [source.clone(), consumer.clone()];
+    let mut identity = json!({"profiles":[
+        {"profile_id":source.id,"enabled":true,"source_filter":{"include":["proxies","proxy-groups"]}},
+        {"profile_id":consumer.id,"enabled":true,"capability_bindings":{"upstream":{"source":"export","profile_id":source.id,"key":"transit"}}}
+    ]});
+    let (artifacts, _) =
+        store::render_bundle(&resources, &identity, "https://cloud.example").unwrap();
+    let config = camofy::engine::parse(artifacts["clash"]["content"].as_str().unwrap()).unwrap();
+    assert!(
+        config["proxies"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .any(|proxy| proxy["name"] == "webshare" && proxy["dialer-proxy"] == "Transit")
+    );
+
+    identity["profiles"][0]["source_filter"] = json!({"include":["proxies"]});
+    let effective = store::effective_resources(&resources, &identity).unwrap();
+    assert!(effective[0].data["exports"].as_array().unwrap().is_empty());
+    assert!(store::render_bundle(&resources, &identity, "https://cloud.example").is_err());
+    let source_only = json!({"profiles":[identity["profiles"][0].clone()]});
+    assert!(store::render_bundle(&resources, &source_only, "https://cloud.example").is_ok());
+}
+
+#[test]
+fn filtered_source_exports_feed_generic_variables_only_when_retained() {
+    let source = store::Resource {
+        id: Uuid::new_v4(),
+        kind: "profile".into(),
+        version: 1,
+        data: json!({
+            "type":"source","name":"upstream",
+            "content":"proxies: [{name: alpha, type: ss, server: example.net, port: 443, cipher: aes-256-gcm, password: test}]\nproxy-groups: [{name: Transit, type: select, proxies: [alpha]}]\nrules: ['MATCH,Transit']",
+            "provides":[{"key":"transit","label":"Transit","type":"outbound",
+                "selector":{"source":"named","section":"proxy-groups","match_field":"name","match_value":"Transit","value_field":"name"}}]
+        }),
+    };
+    let consumer = store::Resource {
+        id: Uuid::new_v4(),
+        kind: "profile".into(),
+        version: 1,
+        data: json!({
+            "type":"overlay","name":"relay",
+            "content":"prepend-proxies: [{name: webshare, type: socks5, server: example.org, port: 1080, dialer-proxy: '{{camofy.upstream}}'}]",
+            "variables":[{"key":"upstream","label":"前置代理","type":"outbound","required":true}]
+        }),
+    };
+    let resources = [source.clone(), consumer.clone()];
+    let mut identity = json!({"profiles":[
+        {"profile_id":source.id,"enabled":true,"source_filter":{"include":["proxies","proxy-groups"]}},
+        {"profile_id":consumer.id,"enabled":true,"variable_bindings":{"upstream":{"source":"export","profile_id":source.id,"key":"transit"}}}
+    ]});
+    let (artifacts, _) =
+        store::render_bundle(&resources, &identity, "https://cloud.example").unwrap();
+    let config = camofy::engine::parse(artifacts["clash"]["content"].as_str().unwrap()).unwrap();
+    assert!(
+        config["proxies"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .any(|proxy| proxy["name"] == "webshare" && proxy["dialer-proxy"] == "Transit")
+    );
+    assert!(
+        !config["rules"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .any(|rule| rule == "MATCH,Transit")
+    );
+
+    identity["profiles"][0]["source_filter"] = json!({"include":["proxies"]});
+    assert!(store::render_bundle(&resources, &identity, "https://cloud.example").is_err());
 }
 
 #[test]
@@ -571,6 +841,72 @@ async fn cloud_end_to_end() {
         "preview must not trigger upstream requests"
     );
     let overlay=request(&client,&origin,&alice,"POST","/resources",json!({"kind":"profile","data":{"name":"Work","type":"overlay","content":"prepend-rules: ['DOMAIN,work.example,DIRECT']"}}),200).await;
+    for (profile_id, filter) in [
+        (&overlay["id"], json!({"include":["proxies"]})),
+        (&src["id"], json!({"include":["rules"]})),
+    ] {
+        request(&client,&origin,&alice,"POST","/resources",json!({"kind":"bundle","data":{"name":"Invalid filter","profiles":[{"profile_id":profile_id,"enabled":true,"source_filter":filter}]}}),400).await;
+    }
+    let filtered_bundle=request(&client,&origin,&alice,"POST","/resources",json!({"kind":"bundle","data":{"name":"Filtered test","profiles":[{"profile_id":src["id"],"enabled":true,"source_filter":{"include":["proxies","proxy-groups"]}}]}}),200).await;
+    let filtered_id = filtered_bundle["id"].as_str().unwrap();
+    let filtered_revision = Uuid::parse_str(
+        filtered_bundle["data"]["published_revision"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    let locked: Value = sqlx::query_scalar("SELECT source_filter_lock FROM revisions WHERE id=$1")
+        .bind(filtered_revision)
+        .fetch_one(&db)
+        .await
+        .unwrap();
+    assert_eq!(
+        locked,
+        json!([{"profile_id":src["id"],"include":["proxies","proxy-groups"]}])
+    );
+    let filtered_preview = request(
+        &client,
+        &origin,
+        &alice,
+        "GET",
+        &format!("/bundles/{filtered_id}/preview/clash"),
+        json!(null),
+        200,
+    )
+    .await;
+    let filtered_yaml =
+        camofy::engine::parse(filtered_preview["content"].as_str().unwrap()).unwrap();
+    assert!(
+        filtered_yaml["proxies"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .any(|p| p["name"] == "mine")
+    );
+    assert!(
+        filtered_yaml["proxy-groups"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .any(|p| p["name"] == "route")
+    );
+    assert!(
+        !filtered_yaml["rules"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .any(|r| r == "MATCH,route")
+    );
+    request(
+        &client,
+        &origin,
+        &alice,
+        "DELETE",
+        &format!("/resources/{filtered_id}"),
+        json!(null),
+        204,
+    )
+    .await;
     let bundle=request(&client,&origin,&alice,"POST","/resources",json!({"kind":"bundle","data":{"name":"Everywhere","profiles":[{"profile_id":src["id"],"enabled":true},{"profile_id":overlay["id"],"enabled":true}],"selections":{"route":"DIRECT"}}}),200).await;
     assert!(bundle["data"]["published_revision"].is_string(), "{bundle}");
     let bid = bundle["id"].as_str().unwrap();

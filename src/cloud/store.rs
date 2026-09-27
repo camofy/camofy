@@ -78,6 +78,7 @@ pub async fn list(app: &App, conn: &mut PgConnection, user: Uuid) -> Result<Vec<
     for r in &mut records {
         if r.kind == "profile" {
             r.data["_exports"] = crate::capabilities::available_exports(&r.data);
+            r.data["_candidates"] = crate::variables::candidates(&r.data);
         }
     }
     Ok(records)
@@ -103,6 +104,7 @@ pub async fn get(
     crate::catalog::hydrate(conn, std::slice::from_mut(&mut record)).await?;
     if record.kind == "profile" {
         record.data["_exports"] = crate::capabilities::available_exports(&record.data);
+        record.data["_candidates"] = crate::variables::candidates(&record.data);
     }
     Ok(record)
 }
@@ -115,6 +117,7 @@ pub async fn put(
     let mut data = r.data.clone();
     data.as_object_mut().unwrap().remove("_package");
     data.as_object_mut().unwrap().remove("_exports");
+    data.as_object_mut().unwrap().remove("_candidates");
     sqlx::query("INSERT INTO resources(id,user_id,kind,data,version) VALUES($1,$2,$3,$4,$5) ON CONFLICT(id) DO UPDATE SET data=EXCLUDED.data,version=EXCLUDED.version,updated_at=now() WHERE resources.user_id=EXCLUDED.user_id")
         .bind(r.id).bind(user).bind(&r.kind).bind(app.vault.seal(&data)?).bind(r.version).execute(conn).await?;
     Ok(())
@@ -157,18 +160,38 @@ pub async fn rebuild_selected(
                     json!(crate::usage::sources(app, user, &resources, &bundle.data));
                 bundle.data["system_profile"] = system_profile(&app.origin)?;
                 let catalog_lock = crate::catalog::lock_manifest(&resources, &bundle.data);
-                let capability_lock =
-                    crate::capabilities::dependency_lock(&resources, &bundle.data)?;
-                // Keep pre-contract fingerprints stable during migration. A dependency
-                // snapshot affects the hash only when the identity actually uses one.
-                let hash_input = if capability_lock.as_array().is_some_and(Vec::is_empty) {
-                    if catalog_lock.as_array().is_some_and(Vec::is_empty) {
-                        json!([&artifacts, &selections])
-                    } else {
-                        json!([&artifacts, &selections, &catalog_lock])
-                    }
+                let source_filter_lock = source_filter_lock(&resources, &bundle.data)?;
+                let effective = effective_resources(&resources, &bundle.data)?;
+                let legacy_lock = crate::capabilities::dependency_lock(&effective, &bundle.data)?;
+                let variable_lock = if crate::variables::active(&effective, &bundle.data) {
+                    crate::variables::Resolver::new(&effective, &bundle.data)?.lock()?
                 } else {
+                    json!([])
+                };
+                let capability_lock = if variable_lock.as_array().is_some_and(Vec::is_empty) {
+                    legacy_lock
+                } else {
+                    json!({"legacy":legacy_lock,"variables":variable_lock})
+                };
+                // Preserve existing fingerprints when no source filter is active.
+                let filtered = !source_filter_lock.as_array().is_some_and(Vec::is_empty);
+                let capable = !capability_lock.as_array().is_some_and(Vec::is_empty);
+                let hash_input = if filtered && capable {
+                    json!([
+                        &artifacts,
+                        &selections,
+                        &catalog_lock,
+                        &capability_lock,
+                        &source_filter_lock
+                    ])
+                } else if filtered {
+                    json!([&artifacts, &selections, &catalog_lock, &source_filter_lock])
+                } else if capable {
                     json!([&artifacts, &selections, &catalog_lock, &capability_lock])
+                } else if catalog_lock.as_array().is_some_and(Vec::is_empty) {
+                    json!([&artifacts, &selections])
+                } else {
+                    json!([&artifacts, &selections, &catalog_lock])
                 };
                 let content_hash = camofy::digest(serde_json::to_vec(&hash_input)?);
                 let current = bundle.data["published_revision"]
@@ -200,7 +223,7 @@ pub async fn rebuild_selected(
                     continue;
                 }
                 let revision = Uuid::new_v4();
-                sqlx::query("INSERT INTO revisions(id,user_id,bundle_id,artifacts,selections,usage_sources,catalog_lock,capability_lock) VALUES($1,$2,$3,$4,$5,$6,$7,$8)").bind(revision).bind(user).bind(bundle.id).bind(app.vault.seal(&artifacts)?).bind(selections).bind(usage_sources).bind(catalog_lock).bind(capability_lock).execute(&mut *conn).await?;
+                sqlx::query("INSERT INTO revisions(id,user_id,bundle_id,artifacts,selections,usage_sources,catalog_lock,capability_lock,source_filter_lock) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)").bind(revision).bind(user).bind(bundle.id).bind(app.vault.seal(&artifacts)?).bind(selections).bind(usage_sources).bind(catalog_lock).bind(capability_lock).bind(source_filter_lock).execute(&mut *conn).await?;
                 changed = true;
                 tracing::info!(bundle_id = %bundle.id, %revision,
                     "bundle configuration revision staged");
@@ -239,61 +262,257 @@ pub fn system_profile(origin: &str) -> anyhow::Result<Value> {
     Ok(json!({"name":"系统 · 云端直连保护","content":content,"locked":true,"version":1}))
 }
 
+/// No filter (including an explicit empty include list) preserves legacy full-source behavior.
+/// The two flags represent nodes and groups; additional categories require an explicit API change.
+pub fn source_filter(binding: &Value) -> anyhow::Result<Option<(bool, bool)>> {
+    let Some(filter) = binding.get("source_filter") else {
+        return Ok(None);
+    };
+    if filter.is_null() {
+        return Ok(None);
+    }
+    let object = filter
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("source_filter must contain an include list"))?;
+    anyhow::ensure!(
+        object.len() == 1 && object.contains_key("include"),
+        "source_filter only supports include"
+    );
+    let fields = object["include"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("source_filter.include must be a list"))?;
+    anyhow::ensure!(fields.len() <= 2, "source_filter has too many fields");
+    let mut nodes = false;
+    let mut groups = false;
+    for field in fields {
+        match field.as_str() {
+            Some("proxies") if !nodes => nodes = true,
+            Some("proxy-groups") if !groups => groups = true,
+            _ => anyhow::bail!("source_filter contains an unknown or duplicate field"),
+        }
+    }
+    Ok((nodes || groups).then_some((nodes, groups)))
+}
+
+fn filtered_source_content(content: &str, binding: &Value) -> anyhow::Result<String> {
+    let Some((nodes, groups)) = source_filter(binding)? else {
+        return Ok(content.to_owned());
+    };
+    let parsed = camofy::engine::parse(content)?;
+    let mut selected = serde_yaml::Mapping::new();
+    for (key, value) in parsed.as_mapping().unwrap() {
+        let keep = match key.as_str() {
+            Some("proxies" | "prepend-proxies" | "append-proxies" | "proxy-providers") => nodes,
+            Some(
+                "proxy-groups"
+                | "prepend-proxy-groups"
+                | "append-proxy-groups"
+                | "proxy-group-patches",
+            ) => groups,
+            _ => false,
+        };
+        if keep {
+            selected.insert(key.clone(), value.clone());
+        }
+    }
+    Ok(serde_yaml::to_string(&selected)?)
+}
+
+/// Capabilities and YAML composition must see the same per-identity source snapshot.
+/// Never mutate the stored upstream content shared by other identities.
+pub fn effective_resources(resources: &[Resource], data: &Value) -> anyhow::Result<Vec<Resource>> {
+    let mut effective = resources.to_vec();
+    for binding in data["profiles"].as_array().into_iter().flatten() {
+        if binding["enabled"] != true {
+            continue;
+        }
+        let Some((nodes, groups)) = source_filter(binding)? else {
+            continue;
+        };
+        let Some(profile) = effective.iter_mut().find(|r| {
+            r.kind == "profile"
+                && r.data["type"] == "source"
+                && r.id.to_string() == binding["profile_id"].as_str().unwrap_or("")
+        }) else {
+            continue;
+        };
+        let content = profile.data["content"].as_str().ok_or_else(|| {
+            anyhow::anyhow!(
+                "profile {} has no successfully fetched content",
+                profile.data["name"]
+            )
+        })?;
+        profile.data["content"] = json!(filtered_source_content(content, binding)?);
+        if let Some(exports) = profile.data["exports"].as_array_mut() {
+            exports.retain(|entry| match entry["kind"].as_str() {
+                Some("proxy") => nodes,
+                Some("group") => groups,
+                _ => true,
+            });
+        }
+        profile.data["_exports"] = crate::capabilities::available_exports(&profile.data);
+    }
+    Ok(effective)
+}
+
+fn source_filter_lock(resources: &[Resource], data: &Value) -> anyhow::Result<Value> {
+    let mut result = Vec::new();
+    for binding in data["profiles"].as_array().into_iter().flatten() {
+        if binding["enabled"] != true {
+            continue;
+        }
+        let Some(profile) = resources.iter().find(|r| {
+            r.kind == "profile" && r.id.to_string() == binding["profile_id"].as_str().unwrap_or("")
+        }) else {
+            continue;
+        };
+        if profile.data["type"] != "source" {
+            continue;
+        }
+        if let Some((nodes, groups)) = source_filter(binding)? {
+            let mut include = Vec::new();
+            if nodes {
+                include.push("proxies");
+            }
+            if groups {
+                include.push("proxy-groups");
+            }
+            result.push(json!({"profile_id":profile.id,"include":include}));
+        }
+    }
+    Ok(json!(result))
+}
+
+/// Explain collisions before name-based merging replaces an earlier source's node/group.
+pub fn source_merge_warnings(resources: &[Resource], data: &Value) -> anyhow::Result<Vec<String>> {
+    let mut seen = std::collections::BTreeMap::<(String, String), (Uuid, String)>::new();
+    let mut warnings = Vec::new();
+    let mut full_sources = 0;
+    for binding in data["profiles"].as_array().into_iter().flatten() {
+        if binding["enabled"] != true {
+            continue;
+        }
+        let Some(profile) = resources.iter().find(|r| {
+            r.kind == "profile"
+                && r.id.to_string() == binding["profile_id"].as_str().unwrap_or("")
+                && r.data["type"] == "source"
+        }) else {
+            continue;
+        };
+        if source_filter(binding)?.is_none() {
+            full_sources += 1;
+        }
+        let Some(content) = profile.data["content"].as_str() else {
+            continue;
+        };
+        let parsed = camofy::engine::parse(&filtered_source_content(content, binding)?)?;
+        for (field, keys) in [
+            ("代理", ["proxies", "prepend-proxies", "append-proxies"]),
+            (
+                "代理组",
+                [
+                    "proxy-groups",
+                    "prepend-proxy-groups",
+                    "append-proxy-groups",
+                ],
+            ),
+        ] {
+            for key in keys {
+                for item in parsed[key].as_sequence().into_iter().flatten() {
+                    let Some(name) = item["name"].as_str() else {
+                        continue;
+                    };
+                    let current = profile.data["name"].as_str().unwrap_or("订阅源");
+                    if let Some((previous_id, previous)) =
+                        seen.insert((field.into(), name.into()), (profile.id, current.into()))
+                        && previous_id != profile.id
+                        && warnings.len() < 20
+                    {
+                        warnings.push(format!(
+                            "{field}「{name}」在订阅源「{previous}」和「{current}」中同名；后者按现有合并顺序覆盖前者。"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    if full_sources > 1 {
+        warnings.insert(
+            0,
+            "多个订阅源提供完整配置；普通设置按关联顺序由后者覆盖。".into(),
+        );
+    }
+    Ok(warnings)
+}
+
 pub fn render_bundle(
     resources: &[Resource],
     data: &Value,
     origin: &str,
 ) -> anyhow::Result<(Value, Value)> {
+    let effective = effective_resources(resources, data)?;
     // Validate every declared reference, including an unused explicit default,
     // before considering this revision publishable.
-    crate::capabilities::dependency_lock(resources, data)?;
+    crate::capabilities::dependency_lock(&effective, data)?;
+    let variable_resolver = crate::variables::active(&effective, data)
+        .then(|| crate::variables::Resolver::new(&effective, data))
+        .transpose()?;
+    if let Some(resolver) = &variable_resolver {
+        resolver.lock()?;
+    }
     let bindings = data["profiles"]
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("identity requires ordered profile bindings"))?;
     let mut profiles = Vec::new();
-    let resolver = crate::capabilities::active_contracts(resources, data)
-        .then(|| crate::capabilities::Resolver::new(resources, data))
+    let mut rendered_profiles = Vec::new();
+    let resolver = crate::capabilities::active_contracts(&effective, data)
+        .then(|| crate::capabilities::Resolver::new(&effective, data))
         .transpose()?;
     for binding in bindings {
         if binding["enabled"] != true {
             continue;
         }
-        let p = resources
+        let p = effective
             .iter()
             .find(|r| {
                 r.kind == "profile"
                     && r.id.to_string() == binding["profile_id"].as_str().unwrap_or("")
             })
             .ok_or_else(|| anyhow::anyhow!("profile binding not found"))?;
-        if p.data["store"].is_object() {
+        let content = if let Some(resolver) = &variable_resolver {
+            resolver.compile(p)?
+        } else if p.data["store"].is_object() {
             let mut resolved = binding.clone();
             if let Some(choice) = binding["capability_bindings"].get("policy") {
                 let (policy, _) = resolver.as_ref().unwrap().resolve(Some(choice))?;
                 resolved["parameters"]["policy"] = json!(policy);
             }
-            profiles.push(crate::catalog::compile(p, &resolved)?);
+            crate::catalog::compile(p, &resolved)?
         } else {
             if let Some(resolver) = &resolver {
-                profiles.push(resolver.compile(p, binding)?.0);
+                resolver.compile(p, binding)?.0
             } else {
-                profiles.push(
-                    p.data["content"]
-                        .as_str()
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "profile {} has no successfully fetched content",
-                                p.data["name"]
-                            )
-                        })?
-                        .to_string(),
-                );
+                p.data["content"]
+                    .as_str()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "profile {} has no successfully fetched content",
+                            p.data["name"]
+                        )
+                    })?
+                    .to_string()
             }
-        }
+        };
+        rendered_profiles.push((p.id, content.clone()));
+        profiles.push(content);
     }
     anyhow::ensure!(
         !profiles.is_empty(),
         "enable at least one profile in this identity"
     );
+    if let Some(resolver) = &variable_resolver {
+        resolver.validate_outbounds(&rendered_profiles)?;
+    }
     profiles.push(
         system_profile(origin)?["content"]
             .as_str()

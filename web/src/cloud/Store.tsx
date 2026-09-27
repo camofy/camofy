@@ -5,7 +5,7 @@ import {
   useParams,
   useSearchParams,
 } from "react-router-dom";
-import { api, type Resource, type User } from "./model";
+import { api, type Resource, type User, type VariableBinding } from "./model";
 import { useWorkspace } from "./context";
 import {
   Copy,
@@ -63,6 +63,7 @@ export type IdentityPreview = {
   warnings: string[];
   policies: string[];
   capability_lock?: { profile_id: string; input: string; resolved: string; source: { profile_id?: string; export?: string; literal?: string } }[];
+  variable_resolutions?: { profile_id: string; input: string; value: unknown; binding: VariableBinding | { source: "declared_default" | "legacy_package_parameter" } }[];
 };
 
 export function StorePage() {

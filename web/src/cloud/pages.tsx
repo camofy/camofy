@@ -5,7 +5,7 @@ import {
   useParams,
   useSearchParams,
 } from "react-router-dom";
-import { api, displayTime, type CapabilityBinding, type Resource } from "./model";
+import { api, displayTime, type CapabilityBinding, type Resource, type VariableBinding } from "./model";
 import { useWorkspace } from "./context";
 import { Editor } from "./Forms";
 import { ManagedProfile, ManagedSource } from "./Store";
@@ -25,6 +25,7 @@ import {
 import { resourcePath, sectionOf, sections, type Section } from "./navigation";
 import { UsageCompact, UsagePanel, RefreshHistory } from "./Usage";
 import { ProxyControl } from "./ProxyControl";
+import { AssistantEditor } from "./Assistant";
 
 const meta = (section: Section) => sections.find((s) => s.key === section)!;
 const host = (url?: string) => {
@@ -882,6 +883,14 @@ function Composition({ r }: { r: Resource }) {
     const outlet = (provider?.data._exports ?? provider?.data.exports ?? []).find((e) => e.key === choice.key);
     return `${provider?.data.name ?? "已移除的 Profile"} / ${outlet?.label ?? choice.key}${outlet ? ` → ${outlet.target}` : ""}`;
   };
+  const describeVariable = (choice?: VariableBinding) => {
+    if (!choice) return "未绑定（使用声明的默认值）";
+    if (choice.source === "literal") return "身份内直接填写";
+    if (choice.source === "identity") return `身份变量 · ${choice.key}`;
+    const provider = resources.find((profile) => profile.id === choice.profile_id);
+    const provided = provider?.data.provides?.find((item) => item.key === choice.key);
+    return `${provider?.data.name ?? "已移除的 Profile"} / ${provided?.label ?? choice.key}`;
+  };
   return (
     <div className="detail-columns">
       <div className="detail-main">
@@ -922,12 +931,16 @@ function Composition({ r }: { r: Resource }) {
                       <small>
                         {p?.data.type === "source" ? "订阅源" : "配置 Profile"}
                         {p ? ` · v${p.version}` : ""}
+                        {p?.data.type === "source" &&
+                          ` · ${b.source_filter?.include.length ? `仅${b.source_filter.include.map((field) => field === "proxies" ? "代理" : "代理组").join("、")}` : "全部配置"}`}
                         {p?.data.store &&
                           ` · 商店 ${p.data._package?.version} · ${b.parameters?.policy || p.data._package?.manifest.default_policy || "未选择策略"}`}
                       </small>
-                      {(p?.data.inputs ?? []).map((input) => (
-                        <small key={input.key}>{input.label}：{describe(b.capability_bindings?.[input.key])}</small>
+                      {(p?.data.variables ?? []).map((input) => (
+                        <small key={input.key}>{input.label}：{describeVariable(b.variable_bindings?.[input.key])}</small>
                       ))}
+                      {p?.data.store && b.variable_bindings?.policy && <small>访问策略：{describeVariable(b.variable_bindings.policy)}</small>}
+                      {(p?.data.inputs ?? []).map((input) => <small key={input.key}>{input.label}（旧版绑定）：{describe(b.capability_bindings?.[input.key])}</small>)}
                       {p?.data.store && b.capability_bindings?.policy && (
                         <small>访问策略：{describe(b.capability_bindings.policy)}</small>
                       )}
@@ -989,10 +1002,15 @@ function Composition({ r }: { r: Resource }) {
             启用状态仅属于当前身份，不影响其他身份。
           </div>
         </section>
+        {(r.data.identity_values && Object.keys(r.data.identity_values).length > 0) && (
+          <Panel title="身份变量" description="此身份中显式声明的可复用值；不同身份可绑定不同来源。">
+            <PanelBody>{Object.entries(r.data.identity_values).map(([key, item]) => <p key={key}><strong>{key}</strong> <span className="muted">({item.type})</span> · {describeVariable(item.binding)}</p>)}</PanelBody>
+          </Panel>
+        )}
         {(r.data.default_outbound || bindings.some((b) => Object.keys(b.capability_bindings ?? {}).length > 0)) && (
-          <Panel title="出口绑定" description="引用属于此身份；同一 Profile 可以在其他身份选择不同出口。">
+          <Panel title="旧版出口绑定" description="旧配置仍可运行；新配置请改用身份变量与输入绑定。">
             <PanelBody>
-              <p>默认出口：{describe(r.data.default_outbound)}</p>
+              {r.data.default_outbound && <p>旧版默认出口：{describe(r.data.default_outbound)}</p>}
               <p className="muted">最终名称与依赖可在「编辑身份 → 合并预览」中核对。</p>
             </PanelBody>
           </Panel>
@@ -1026,15 +1044,18 @@ function Composition({ r }: { r: Resource }) {
   );
 }
 function ProfileContracts({ r }: { r: Resource }) {
-  const exports = r.data._exports ?? r.data.exports ?? [];
-  const inputs = r.data.inputs ?? [];
-  if (!exports.length && !inputs.length) return null;
+  const provided = r.data.provides ?? [];
+  const needed = r.data.variables ?? [];
+  const legacyExports = r.data.exports ?? [];
+  const legacyInputs = r.data.inputs ?? [];
+  if (!provided.length && !needed.length && !legacyExports.length && !legacyInputs.length) return null;
   return (
-    <Panel title="Profile 能力" description="订阅 YAML 无需提供这些元数据；出口映射由当前工作区维护。">
+    <Panel title="Profile 能力" description="YAML 的值位置由作者声明变量；订阅源的导出映射由当前工作区维护，上游无需配合。">
       <PanelBody>
-        {exports.map((item) => <p key={item.key}>提供 · {item.label} <span className="muted">({item.key})</span> → {item.target}</p>)}
-        {inputs.map((item) => <p key={item.key}>需要 · {item.label} <span className="muted">({item.key})</span> → {item.section} / {item.name} / {item.field}</p>)}
-        {inputs.length > 0 && <p className="muted">这里展示尚未绑定的配置片段；每个身份的最终值以合并预览为准。</p>}
+        {provided.map((item) => <p key={item.key}>提供 · {item.label} <span className="muted">({item.key} · {item.type})</span> · {item.selector.source === "named" ? `${item.selector.section} / ${String(item.selector.match_value)}` : item.selector.source === "pointer" ? item.selector.path : "固定值"}</p>)}
+        {needed.map((item) => <p key={item.key}>需要 · {item.label} <span className="muted">({item.key} · {item.type})</span> → <code>{`{{camofy.${item.key}}}`}</code></p>)}
+        {(legacyExports.length > 0 || legacyInputs.length > 0) && <p className="muted">此 Profile 仍含旧版出口声明；迁移前继续按旧规则运行。</p>}
+        {needed.length > 0 && <p className="muted">每个身份的实际值以合并预览为准；未绑定的必填值阻止发布。</p>}
       </PanelBody>
     </Panel>
   );
@@ -1055,6 +1076,7 @@ export function DetailPage({ section }: { section: Section }) {
   if (!r) return <NotFound />;
   const isBundle = r.kind === "bundle",
     isSource = section === "subscriptions";
+  const aiEditable = section === "profiles" && r.data.type === "overlay" && !r.data.store && r.data.origin !== "store";
   const tabs = isBundle
     ? [
         { id: "composition", label: "配置组合" },
@@ -1069,6 +1091,7 @@ export function DetailPage({ section }: { section: Section }) {
         { id: "overview", label: section === "profiles" ? "配置内容" : "概览" },
         ...(r.kind === "device" ? [{ id: "proxies", label: "代理与控制" }] : []),
         ...(r.data.store ? [{ id: "management", label: "版本与副本" }] : []),
+        ...(aiEditable ? [{ id: "ai", label: "AI 编辑" }] : []),
         ...(isSource ? [{ id: "content", label: "订阅内容" }] : []),
         ...(isSource ? [{ id: "refresh-history", label: "刷新历史" }] : []),
         { id: "settings", label: "设置" },
@@ -1108,6 +1131,7 @@ export function DetailPage({ section }: { section: Section }) {
             立即刷新
           </button>
         )}
+        {aiEditable && <Link className="button" to={`?tab=ai`}><Icon name="edit" size={16} />AI 编辑</Link>}
         <Link className="button primary" to={`${resourcePath(r)}/edit`}>
           <Icon name="edit" size={16} />
           {r.data.store ? "编辑名称" : `编辑${isBundle ? "身份" : ""}`}
@@ -1153,6 +1177,7 @@ export function DetailPage({ section }: { section: Section }) {
           <ManagedProfile key={`${r.id}-${r.version}`} resource={r} />
         </div>
       )}
+      {tab === "ai" && aiEditable && <AssistantEditor key={r.id} profile={r} />}
       {tab === "overview" && (
         <div className="detail-columns">
           <div className="detail-main">

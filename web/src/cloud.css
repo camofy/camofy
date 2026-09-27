@@ -1108,6 +1108,21 @@ p {
 .capability-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) auto; gap: 10px; align-items: end; min-width: 0; }
 .capability-row label, .capability-picker label { min-width: 0; }
 .capability-picker { display: grid; gap: 10px; min-width: 0; }
+.capability-editor .section-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+.capability-editor .section-heading button { flex: none; }
+.variable-contract-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; align-items: end; gap: 12px; min-width: 0; padding: 16px 0; border-top: 1px solid var(--line); }
+.variable-contract-row > label, .variable-contract-row .variable-binding, .identity-variable-row { min-width: 0; }
+.variable-contract-row > .check { align-self: center; }
+.variable-contract-row > button { justify-self: start; }
+.variable-contract-hint { grid-column: 1 / -1; overflow-wrap: anywhere; }
+.variable-value-field { display: grid; gap: 4px; min-width: 0; }
+.variable-binding { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; width: 100%; }
+.variable-binding > :only-child { grid-column: 1 / -1; }
+.identity-variable-row { display: grid; grid-template-columns: minmax(0, 1fr); align-items: center; gap: 8px; width: 100%; }
+.identity-variable-row small { display: block; }
+.overlay-row:has(.identity-variable-row) { flex-wrap: wrap; }
+@media (max-width: 800px) { .variable-contract-row { grid-template-columns: repeat(2, minmax(0, 1fr)); } .capability-editor .section-heading { flex-wrap: wrap; } }
+@media (max-width: 540px) { .variable-contract-row, .identity-variable-row, .variable-binding { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 800px) { .capability-row { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 540px) { .capability-row { grid-template-columns: minmax(0, 1fr); } }
 .config-preview {
@@ -1596,6 +1611,7 @@ textarea {
 }
 .overlay-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 7px;
   background: #f9f9f8;
@@ -1615,6 +1631,24 @@ textarea {
   padding: 5px 7px;
   font-size: 10px;
   white-space: nowrap;
+}
+.source-filter {
+  order: 1;
+  display: flex;
+  flex: 1 0 100%;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding-top: 9px;
+  border-top: 1px solid #eaeae9;
+  font-size: 11px;
+}
+.source-filter > span { font-weight: 600; }
+.source-filter .check { flex: 0 0 auto; }
+.source-filter small { color: var(--muted); }
+@media (max-width: 650px) {
+  .source-filter { flex-wrap: wrap; gap: 9px 14px; }
+  .source-filter small { flex-basis: 100%; }
 }
 .form-actions {
   display: flex;

@@ -1,4 +1,8 @@
 export type Data = {
+  variables?: TemplateVariable[];
+  provides?: VariableExport[];
+  _candidates?: ExportCandidate[];
+  identity_values?: Record<string, IdentityValue>;
   exports?: OutboundExport[];
   _exports?: OutboundExport[];
   inputs?: OutboundInput[];
@@ -46,6 +50,8 @@ export type Data = {
     enabled: boolean;
     parameters?: { policy?: string };
     capability_bindings?: Record<string, CapabilityBinding>;
+    source_filter?: { include: ("proxies" | "proxy-groups")[] };
+    variable_bindings?: Record<string, VariableBinding>;
   }[];
   subscription_url?: string;
   selections?: Record<string, string>;
@@ -68,6 +74,19 @@ export type Data = {
   };
   command?: { id: string; type: string; expires_at: number } | null;
 };
+export type VariableType = "string" | "integer" | "number" | "boolean" | "list" | "object" | "outbound";
+export type TemplateVariable = { key: string; label: string; type: VariableType; required: boolean; default?: unknown };
+export type VariableSelector =
+  | { source: "literal"; value: unknown }
+  | { source: "pointer"; path: string; expected?: unknown }
+  | { source: "named"; section: string; match_field: string; match_value: unknown; value_field: string };
+export type VariableExport = { key: string; label: string; type: VariableType; selector: VariableSelector };
+export type ExportCandidate = { label: string; type: VariableType; selector: VariableSelector };
+export type VariableBinding =
+  | { source: "literal"; value: unknown }
+  | { source: "export"; profile_id: string; key: string }
+  | { source: "identity"; key: string };
+export type IdentityValue = { type: VariableType; binding: VariableBinding };
 export type OutboundExport = {
   key: string;
   label: string;

@@ -178,5 +178,83 @@ async fn outbound_contract_http_end_to_end() {
         400,
     )
     .await;
+
+    // New contracts are independent of YAML field names and legacy default outlets.
+    let source = request(&client,&origin,&cookie,"POST","/resources",json!({"kind":"profile","data":{
+        "type":"overlay","name":"Typed provider","content":"proxy-groups: [{name: Path, type: select, proxies: [DIRECT]}]",
+        "provides":[{"key":"route","label":"My route","type":"outbound",
+            "selector":{"source":"named","section":"proxy-groups","match_field":"name",
+                "match_value":"Path","value_field":"name"}}]
+    }}),200).await;
+    let template = request(&client,&origin,&cookie,"POST","/resources",json!({"kind":"profile","data":{
+        "type":"overlay","name":"Typed consumer",
+        "content":"mixed-port: '{{camofy.listen}}'\nprepend-proxies: [{name: Home, type: socks5, server: example.org, port: 1080, dialer-proxy: '{{camofy.path}}'}]",
+        "variables":[{"key":"listen","label":"Listen","type":"integer","required":true},
+            {"key":"path","label":"Path","type":"outbound","required":true}]
+    }}),200).await;
+    let typed_identity = json!({"name":"Typed identity","profiles":[
+        {"profile_id":template["id"],"enabled":true,"variable_bindings":{
+            "listen":{"source":"literal","value":7897},
+            "path":{"source":"identity","key":"main"}}},
+        {"profile_id":source["id"],"enabled":true}],
+        "identity_values":{"main":{"type":"outbound","binding":{
+            "source":"export","profile_id":source["id"],"key":"route"}}}});
+    let preview = request(
+        &client,
+        &origin,
+        &cookie,
+        "POST",
+        "/store/identity-preview",
+        json!({"data":typed_identity}),
+        200,
+    )
+    .await;
+    assert_eq!(preview["variable_resolutions"].as_array().unwrap().len(), 2);
+    assert_eq!(preview["artifacts"]["router"]["error"], Value::Null);
+    let typed = request(
+        &client,
+        &origin,
+        &cookie,
+        "POST",
+        "/resources",
+        json!({"kind":"bundle","data":typed_identity}),
+        200,
+    )
+    .await;
+    let typed_url = typed["data"]["subscription_url"].as_str().unwrap();
+    let typed_yaml = client
+        .get(typed_url)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let typed_config = camofy::engine::parse(&typed_yaml).unwrap();
+    assert_eq!(typed_config["mixed-port"].as_i64(), Some(7897));
+    assert_eq!(typed_config["proxies"][0]["dialer-proxy"], "Path");
+    let mut invalid = typed_identity.clone();
+    invalid["profiles"][1]["enabled"] = json!(false);
+    request(
+        &client,
+        &origin,
+        &cookie,
+        "POST",
+        "/store/identity-preview",
+        json!({"data":invalid}),
+        400,
+    )
+    .await;
+    assert_eq!(
+        client
+            .get(typed_url)
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap(),
+        typed_yaml
+    );
     server.abort();
 }

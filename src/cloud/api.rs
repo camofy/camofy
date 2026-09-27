@@ -133,6 +133,7 @@ async fn save(
         .ok_or_else(|| Error::bad("data must be an object"))?;
     object.remove("_package");
     object.remove("_exports");
+    object.remove("_candidates");
     if new && (object.contains_key("store") || object.get("origin").is_some_and(|v| v == "store")) {
         return Err(Error::bad("install managed profiles through the store"));
     }
@@ -143,6 +144,8 @@ async fn save(
                 || data["type"] != old.data["type"]
                 || data["inputs"] != old.data["inputs"]
                 || data["exports"] != old.data["exports"]
+                || data["variables"] != old.data["variables"]
+                || data["provides"] != old.data["provides"]
             {
                 return Err(Error::bad(
                     "managed content is immutable; use upgrade or fork",
@@ -199,6 +202,7 @@ async fn save(
         }
         "profile" => {
             crate::capabilities::validate_profile(&data).map_err(|e| Error::bad(e.to_string()))?;
+            crate::variables::validate_profile(&data).map_err(|e| Error::bad(e.to_string()))?;
             if data.get("enabled").is_some() || data.get("is_active").is_some() {
                 return Err(Error::bad(
                     "profile activation belongs to an identity binding",
@@ -304,6 +308,7 @@ async fn save(
         }
         "bundle" => {
             crate::capabilities::validate_bindings(&data).map_err(|e| Error::bad(e.to_string()))?;
+            crate::variables::validate_identity(&data).map_err(|e| Error::bad(e.to_string()))?;
             let bindings = data["profiles"].as_array().ok_or_else(|| {
                 Error::bad("profiles must be ordered {profile_id, enabled} bindings")
             })?;
@@ -316,6 +321,20 @@ async fn save(
                 }
                 if !binding["enabled"].is_boolean() {
                     return Err(Error::bad("each profile binding needs an enabled boolean"));
+                }
+                if binding.get("source_filter").is_some_and(|f| !f.is_null()) {
+                    let profile = records
+                        .iter()
+                        .find(|r| {
+                            r.kind == "profile" && r.id.to_string() == p.as_str().unwrap_or("")
+                        })
+                        .ok_or_else(|| Error::bad("source_filter profile does not exist"))?;
+                    if profile.data["type"] != "source" {
+                        return Err(Error::bad(
+                            "source_filter is only supported on subscription sources",
+                        ));
+                    }
+                    store::source_filter(binding).map_err(|e| Error::bad(e.to_string()))?;
                 }
             }
             data.as_object_mut().unwrap().remove("source_id");
@@ -392,7 +411,8 @@ async fn save(
     store::put(&app, &mut tx, user, &r).await?;
     // A managed identity edit must be valid before its association can be committed.
     if r.kind == "bundle"
-        && (r.data["default_outbound"].is_object()
+        && (crate::variables::active(&records, &r.data)
+            || r.data["default_outbound"].is_object()
             || r.data["profiles"].as_array().is_some_and(|bs| {
                 bs.iter().any(|b| {
                     b["enabled"] == true
@@ -443,12 +463,15 @@ async fn save(
             (r.data["type"] == "overlay" && o.data["content"] != r.data["content"])
                 || o.data["exports"] != r.data["exports"]
                 || o.data["inputs"] != r.data["inputs"]
+                || o.data["variables"] != r.data["variables"]
+                || o.data["provides"] != r.data["provides"]
         }),
         "bundle" => {
             new || old.as_ref().is_some_and(|o| {
                 o.data["profiles"] != r.data["profiles"]
                     || o.data["selections"] != r.data["selections"]
                     || o.data["default_outbound"] != r.data["default_outbound"]
+                    || o.data["identity_values"] != r.data["identity_values"]
             })
         }
         _ => false,
