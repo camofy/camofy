@@ -1,0 +1,14 @@
+# Put this independent profile after the subscription that defines the group.
+# Omit append-proxies if my-node is already defined in the subscription.
+append-proxies:
+  - name: my-node
+    type: ss
+    server: proxy.example.com
+    port: 443
+    cipher: aes-256-gcm
+    password: REPLACE_ME
+
+proxy-group-patches:
+  - name: existing-group
+    append-proxies:
+      - my-node

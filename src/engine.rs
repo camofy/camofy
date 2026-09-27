@@ -72,6 +72,9 @@ pub fn merge(base: &mut Value, overlay: &Value) -> Result<()> {
         .as_mapping()
         .ok_or_else(|| anyhow::anyhow!("overlay must be mapping"))?;
     for (k, v) in src {
+        if k.as_str() == Some("proxy-group-patches") {
+            continue;
+        }
         if k.as_str()
             .is_some_and(|s| s.starts_with("prepend-") || s.starts_with("append-"))
         {
@@ -107,6 +110,76 @@ pub fn merge(base: &mut Value, overlay: &Value) -> Result<()> {
         }
         dst.insert(field.into(), Value::Sequence(result));
     }
+    apply_proxy_group_patches(base, src.get("proxy-group-patches"))?;
+    Ok(())
+}
+
+/// Apply group-scoped changes after node and group definitions in the same profile.
+/// A patch never replaces a group's other settings or appears in rendered YAML.
+fn apply_proxy_group_patches(config: &mut Value, patches: Option<&Value>) -> Result<()> {
+    let Some(patches) = patches.filter(|value| !value.is_null()) else {
+        return Ok(());
+    };
+    let patches = patches
+        .as_sequence()
+        .ok_or_else(|| anyhow::anyhow!("proxy-group-patches must be a list or null"))?;
+    let mut patched_groups = HashSet::new();
+    for patch in patches {
+        let fields = patch
+            .as_mapping()
+            .ok_or_else(|| anyhow::anyhow!("proxy-group-patches entries must be mappings"))?;
+        ensure!(
+            fields
+                .keys()
+                .all(|key| matches!(key.as_str(), Some("name" | "append-proxies"))),
+            "unknown proxy-group-patches field"
+        );
+        let name = required(patch, "name")?;
+        ensure!(
+            patched_groups.insert(name),
+            "duplicate proxy-group-patches target: {name}"
+        );
+        let additions = patch
+            .get("append-proxies")
+            .and_then(Value::as_sequence)
+            .ok_or_else(|| {
+                anyhow::anyhow!("proxy-group-patches append-proxies must be a list: {name}")
+            })?;
+        let mut unique = HashSet::new();
+        for addition in additions {
+            let member = addition
+                .as_str()
+                .filter(|member| !member.is_empty())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("proxy-group-patches members must be nonempty strings: {name}")
+                })?;
+            ensure!(
+                unique.insert(member),
+                "duplicate proxy-group-patches member in {name}: {member}"
+            );
+        }
+        let group = config
+            .get_mut("proxy-groups")
+            .and_then(Value::as_sequence_mut)
+            .and_then(|groups| {
+                groups
+                    .iter_mut()
+                    .find(|group| group["name"].as_str() == Some(name))
+            })
+            .ok_or_else(|| anyhow::anyhow!("proxy-group-patches target does not exist: {name}"))?;
+        let members = group
+            .as_mapping_mut()
+            .ok_or_else(|| anyhow::anyhow!("proxy group must be a mapping: {name}"))?
+            .entry(Value::String("proxies".into()))
+            .or_insert_with(|| Value::Sequence(Vec::new()))
+            .as_sequence_mut()
+            .ok_or_else(|| anyhow::anyhow!("proxy group proxies must be a list: {name}"))?;
+        for addition in additions {
+            if !members.contains(addition) {
+                members.push(addition.clone());
+            }
+        }
+    }
     Ok(())
 }
 
@@ -124,7 +197,7 @@ pub fn compose(
 }
 
 /// Identity profiles are peers: concatenate rules and upsert named nodes/groups.
-/// The six legacy prepend/append directives run after ordinary keys at each step.
+/// The six legacy prepend/append directives and group patches run after ordinary keys.
 pub fn compose_profiles(
     profiles: &[String],
     selections: &BTreeMap<String, String>,
@@ -143,6 +216,7 @@ pub fn compose_profiles(
             map.remove(format!("prepend-{field}"));
             map.remove(format!("append-{field}"));
         }
+        map.remove("proxy-group-patches");
         merge(&mut v, &ordinary)?;
         for field in ["rules", "proxies", "proxy-groups"] {
             for (key, placement) in [
@@ -207,6 +281,7 @@ pub fn compose_profiles(
                 }
             }
         }
+        apply_proxy_group_patches(&mut v, profile.get("proxy-group-patches"))?;
     }
     select(&mut v, selections)?;
     Ok(v)
@@ -675,6 +750,82 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+    #[test]
+    fn group_patch_appends_to_current_members_without_replacing_group_settings() {
+        let source = "proxies: [{name: a, type: ss, server: a.example, port: 443}]\nproxy-groups: [{name: pick, type: select, proxies: [a, DIRECT], url: 'https://example.com/test', interval: 300}]\nrules: ['MATCH,pick']";
+        let patch = "append-proxies: [{name: b, type: ss, server: b.example, port: 443}]\nproxy-group-patches: [{name: pick, append-proxies: [b]}]";
+        let result = compose_profiles(&[source.into(), patch.into()], &BTreeMap::new()).unwrap();
+        assert_eq!(
+            result["proxy-groups"][0]["proxies"],
+            parse("members: [a, DIRECT, b]").unwrap()["members"]
+        );
+        assert_eq!(result["proxy-groups"][0]["interval"], 300);
+        assert_eq!(result["proxy-groups"][0]["url"], "https://example.com/test");
+        assert!(result.get("proxy-group-patches").is_none());
+        assert!(
+            !mihomo(&result, false)
+                .unwrap()
+                .contains("proxy-group-patches")
+        );
+
+        // A refreshed subscription may introduce the patched member itself.
+        let refreshed = source.replace("[a, DIRECT]", "[a, b, DIRECT]");
+        let result = compose_profiles(&[refreshed, patch.into()], &BTreeMap::new()).unwrap();
+        assert_eq!(
+            result["proxy-groups"][0]["proxies"],
+            parse("members: [a, b, DIRECT]").unwrap()["members"]
+        );
+    }
+    #[test]
+    fn group_patch_works_in_same_profile_and_agent_local_overlay() {
+        let content = "proxy-groups: [{name: pick, type: select}]\nproxy-group-patches: [{name: pick, append-proxies: [DIRECT]}]";
+        let result = compose_profiles(&[content.into()], &BTreeMap::new()).unwrap();
+        assert_eq!(result["proxy-groups"][0]["proxies"][0], "DIRECT");
+
+        let mut local = parse(&source()).unwrap();
+        merge(
+            &mut local,
+            &parse("proxy-group-patches: [{name: pick, append-proxies: [DIRECT]}]").unwrap(),
+        )
+        .unwrap();
+        validate(&local).unwrap();
+        assert_eq!(
+            local["proxy-groups"][0]["proxies"],
+            parse("members: [a, DIRECT]").unwrap()["members"]
+        );
+        assert!(local.get("proxy-group-patches").is_none());
+    }
+    #[test]
+    fn group_patch_rejects_invalid_shape_target_and_references() {
+        let source = source();
+        for bad in [
+            "proxy-group-patches: wrong",
+            "proxy-group-patches: [wrong]",
+            "proxy-group-patches: [{name: pick}]",
+            "proxy-group-patches: [{name: pick, append-proxies: wrong}]",
+            "proxy-group-patches: [{name: pick, append-proxies: [a, a]}]",
+            "proxy-group-patches: [{name: pick, append-proxies: [a], typo: true}]",
+            "proxy-group-patches: [{name: missing, append-proxies: [a]}]",
+            "proxy-group-patches: [{name: pick, append-proxies: [missing]}]",
+            "proxy-group-patches: [{name: pick, append-proxies: [pick]}]",
+            "proxy-group-patches: [{name: pick, append-proxies: [a]}, {name: pick, append-proxies: [DIRECT]}]",
+        ] {
+            assert!(
+                compose_profiles(&[source.clone(), bad.into()], &BTreeMap::new()).is_err(),
+                "{bad}"
+            );
+        }
+        let invalid_group = "proxy-groups: [{name: pick, type: select, proxies: null}]\nproxy-group-patches: [{name: pick, append-proxies: [DIRECT]}]";
+        assert!(compose_profiles(&[invalid_group.into()], &BTreeMap::new()).is_err());
+        let mut local = parse(&source).unwrap();
+        assert!(
+            merge(
+                &mut local,
+                &parse("proxy-group-patches: [{name: unknown, append-proxies: [a]}]").unwrap()
+            )
+            .is_err()
+        );
     }
     #[test]
     fn ordered_overlays_and_selection() {

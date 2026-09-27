@@ -62,6 +62,34 @@ after it; named directive entries replace and reposition same-named entries.
 Directives never leak into rendered YAML. Null ordinary lists clear the accumulated
 list; null directives do nothing. Empty YAML is a no-op. An earlier MATCH still
 shadows later rules: use prepend-rules for exceptions.
+
+To add a node to an existing group without copying the whole group, place an
+independent profile after the profile that defines the group:
+
+```yaml
+append-proxies:
+  - name: my-node
+    type: ss
+    server: proxy.example.com
+    port: 443
+    cipher: aes-256-gcm
+    password: REPLACE_ME
+proxy-group-patches:
+  - name: existing-group
+    append-proxies: [my-node]
+```
+
+The top-level `append-proxies` defines nodes; `append-proxies` inside a group
+patch lists member names. If the node already exists, omit the top-level entry.
+Patches run after ordinary keys and the six list directives in each profile.
+They preserve group settings and existing members, appending only names not
+already present. A group with no `proxies` field starts with an empty explicit
+list. The target group must exist when the patch runs; duplicate targets or
+members within one patch, malformed fields and missing final references fail
+composition. A later full same-name group replacement still wins, so place
+the patch after such profiles. `proxy-group-patches` is also supported by the
+Agent local overlay and is removed from the rendered Mihomo configuration.
+
 Duplicate names within one input list, missing group references, cycles, missing
 rule policies and invalid roots are rejected. This is structural validation, not
 a replacement for a target core's semantic validation. The cloud has no Mihomo;

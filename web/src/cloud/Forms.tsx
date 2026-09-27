@@ -698,6 +698,7 @@ export function Editor({
                 节点/代理组按名称合并，后者覆盖同名项；规则按顺序拼接；对象深合并，其他数组覆盖。
                 支持 prepend-/append-rules、proxies、proxy-groups；prepend
                 将内容放到已有列表前面。
+                用 proxy-group-patches 为已有代理组追加节点名称，无需复制整组。
               </p>
             </>
           )}
