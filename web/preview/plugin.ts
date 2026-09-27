@@ -160,6 +160,8 @@ export function designPreview(): Plugin {
       },
     },
   ];
+  const assistantSessions = new Map<string, { id: string; current_draft?: string; events: { type: string; text?: string; name?: string; draft_id?: string; lines?: number }[] }>();
+  const assistantDrafts = new Map<string, { id: string; status: string; original: string; content: string; stale: boolean; affected: { id: string; name: string }[]; errors: unknown[]; validation_hash: string; can_commit: boolean }>();
   const user = {
     email: "demo@example.invalid",
     nickname: "我的工作区",
@@ -252,6 +254,53 @@ export function designPreview(): Plugin {
           let body = "";
           for await (const chunk of req) body += chunk;
           const draft = body ? JSON.parse(body) : {};
+          if (path === "/assistant/config")
+            return send({ enabled: true, model: "gpt-6-luna", effort: "medium", portal_url: "https://example.invalid/models" });
+          if (path.startsWith("/profiles/") && path.endsWith("/assistant/sessions") && req.method === "POST") {
+            const id = `demo-agent-${Date.now()}`;
+            assistantSessions.set(id, { id, events: [] });
+            return send({ id, profile_id: path.split("/")[2], model: "gpt-6-luna", effort: "medium" });
+          }
+          if (path.startsWith("/assistant/sessions/")) {
+            const id = path.split("/")[3];
+            const session = assistantSessions.get(id);
+            if (!session) return send({ error: "演示对话不存在" }, 404);
+            if (path.endsWith("/turn") && req.method === "POST") {
+              const original = String(resources.find((r) => r.id === "routing")?.data.content ?? "");
+              const content = original.replace("example.org", "example.edu");
+              const draftId = `demo-draft-${Date.now()}`;
+              assistantDrafts.set(draftId, { id: draftId, status: "draft", original, content, stale: false,
+                affected: [{ id: "everyday", name: "日常网络" }, { id: "home", name: "家里的网络" }],
+                errors: [], validation_hash: "demo-validation", can_commit: true });
+              session.current_draft = draftId;
+              session.events.push({ type: "user", text: draft.text }, { type: "tool", name: "profile_read", lines: 4 },
+                { type: "tool", name: "profile_replace", draft_id: draftId },
+                { type: "assistant", text: "已将 example.org 替换为 example.edu，生成草稿。请检查差异和受影响身份后确认提交。" });
+              res.statusCode = 200;
+              res.setHeader("Content-Type", "text/event-stream");
+              res.setHeader("Cache-Control", "no-store");
+              for (const item of [
+                { type: "delta", text: "已阅读配置并生成草稿。" },
+                { type: "tool", name: "profile_replace", draft_id: draftId },
+                { type: "done" },
+              ]) res.write(`data: ${JSON.stringify(item)}\n\n`);
+              res.end(); return;
+            }
+            return send(session);
+          }
+          if (path.startsWith("/assistant/drafts/")) {
+            const id = path.split("/")[3];
+            const item = assistantDrafts.get(id);
+            if (!item) return send({ error: "演示草稿不存在" }, 404);
+            if (path.endsWith("/commit") && req.method === "POST") {
+              if (draft.validation_hash !== item.validation_hash) return send({ error: "预览已过期" }, 409);
+              item.status = "committed"; item.can_commit = false;
+              const profile = resources.find((r) => r.id === "routing");
+              if (profile) { profile.data.content = item.content; profile.version++; }
+              return send({ draft_id: id, status: "committed", published_identities: item.affected, devices_applied: false });
+            }
+            return send(item);
+          }
           if (path === "/account") {
             user.nickname = draft.nickname ?? user.nickname;
             return send(user);

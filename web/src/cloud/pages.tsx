@@ -25,6 +25,7 @@ import {
 import { resourcePath, sectionOf, sections, type Section } from "./navigation";
 import { UsageCompact, UsagePanel, RefreshHistory } from "./Usage";
 import { ProxyControl } from "./ProxyControl";
+import { AssistantEditor } from "./Assistant";
 
 const meta = (section: Section) => sections.find((s) => s.key === section)!;
 const host = (url?: string) => {
@@ -1020,6 +1021,7 @@ export function DetailPage({ section }: { section: Section }) {
   if (!r) return <NotFound />;
   const isBundle = r.kind === "bundle",
     isSource = section === "subscriptions";
+  const aiEditable = section === "profiles" && r.data.type === "overlay" && !r.data.store && r.data.origin !== "store";
   const tabs = isBundle
     ? [
         { id: "composition", label: "配置组合" },
@@ -1034,6 +1036,7 @@ export function DetailPage({ section }: { section: Section }) {
         { id: "overview", label: section === "profiles" ? "配置内容" : "概览" },
         ...(r.kind === "device" ? [{ id: "proxies", label: "代理与控制" }] : []),
         ...(r.data.store ? [{ id: "management", label: "版本与副本" }] : []),
+        ...(aiEditable ? [{ id: "ai", label: "AI 编辑" }] : []),
         ...(isSource ? [{ id: "content", label: "订阅内容" }] : []),
         ...(isSource ? [{ id: "refresh-history", label: "刷新历史" }] : []),
         { id: "settings", label: "设置" },
@@ -1073,6 +1076,7 @@ export function DetailPage({ section }: { section: Section }) {
             立即刷新
           </button>
         )}
+        {aiEditable && <Link className="button" to={`?tab=ai`}><Icon name="edit" size={16} />AI 编辑</Link>}
         <Link className="button primary" to={`${resourcePath(r)}/edit`}>
           <Icon name="edit" size={16} />
           {r.data.store ? "编辑名称" : `编辑${isBundle ? "身份" : ""}`}
@@ -1118,6 +1122,7 @@ export function DetailPage({ section }: { section: Section }) {
           <ManagedProfile key={`${r.id}-${r.version}`} resource={r} />
         </div>
       )}
+      {tab === "ai" && aiEditable && <AssistantEditor key={r.id} profile={r} />}
       {tab === "overview" && (
         <div className="detail-columns">
           <div className="detail-main">

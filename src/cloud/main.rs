@@ -1,5 +1,6 @@
 mod admin;
 mod api;
+mod assistant;
 mod auth;
 mod captcha;
 mod catalog;
@@ -124,6 +125,18 @@ pub fn router(app: App) -> Router {
         .route("/api/auth/register", post(auth::register))
         .route("/api/auth/login", post(auth::login))
         .route("/api/auth/me", get(auth::me))
+        .route("/api/assistant/config", get(assistant::public_config))
+        .route(
+            "/api/profiles/:id/assistant/sessions",
+            post(assistant::create_session),
+        )
+        .route("/api/assistant/sessions/:id", get(assistant::get_session))
+        .route("/api/assistant/sessions/:id/turn", post(assistant::turn))
+        .route("/api/assistant/drafts/:id", get(assistant::draft_preview))
+        .route(
+            "/api/assistant/drafts/:id/commit",
+            post(assistant::approve_commit),
+        )
         .route("/api/admin/proxies", get(admin::list).post(admin::create))
         .route(
             "/api/admin/proxies/:id",
@@ -293,6 +306,7 @@ async fn main() -> anyhow::Result<()> {
     );
     sync::listen(app.clone()).await;
     worker::start(app.clone()).await;
+    tokio::spawn(assistant::cleanup(app.clone()));
     let addr = std::env::var("CAMOFY_LISTEN").unwrap_or_else(|_| "0.0.0.0:3000".into());
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     tracing::info!("camofy-cloud listening at {addr}");
