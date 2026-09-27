@@ -1,4 +1,8 @@
 export type Data = {
+  exports?: OutboundExport[];
+  _exports?: OutboundExport[];
+  inputs?: OutboundInput[];
+  default_outbound?: CapabilityBinding;
   origin?: string;
   store?: { slug: string; version_id: string; update_policy: string };
   _package?: { version: string; manifest: import("./Store").PackageManifest };
@@ -41,6 +45,7 @@ export type Data = {
     profile_id: string;
     enabled: boolean;
     parameters?: { policy?: string };
+    capability_bindings?: Record<string, CapabilityBinding>;
   }[];
   subscription_url?: string;
   selections?: Record<string, string>;
@@ -63,6 +68,24 @@ export type Data = {
   };
   command?: { id: string; type: string; expires_at: number } | null;
 };
+export type OutboundExport = {
+  key: string;
+  label: string;
+  kind: "group" | "proxy";
+  target: string;
+};
+export type OutboundInput = {
+  key: string;
+  label: string;
+  kind: "outbound";
+  section: "proxies" | "prepend-proxies" | "append-proxies";
+  name: string;
+  field: "dialer-proxy";
+};
+export type CapabilityBinding =
+  | { source: "default" }
+  | { source: "export"; profile_id: string; key: string }
+  | { source: "literal"; value: string };
 export type Resource = {
   id: string;
   kind: string;

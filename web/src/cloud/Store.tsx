@@ -62,6 +62,7 @@ export type IdentityPreview = {
   artifacts: Record<string, { content?: string; error?: string }>;
   warnings: string[];
   policies: string[];
+  capability_lock?: { profile_id: string; input: string; resolved: string; source: { profile_id?: string; export?: string; literal?: string } }[];
 };
 
 export function StorePage() {

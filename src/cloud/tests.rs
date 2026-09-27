@@ -1,6 +1,77 @@
 use super::*;
 use serde_json::Value;
 #[test]
+fn identity_compiles_generic_outbound_contracts_into_client_yaml() {
+    let provider = store::Resource {
+        id: Uuid::new_v4(),
+        kind: "profile".into(),
+        version: 1,
+        data: json!({"type":"source","name":"Transit","content":"proxy-groups: [{name: Gateway, type: select, proxies: [DIRECT]}]","exports":[{"key":"main","label":"Main","kind":"group","target":"Gateway"}]}),
+    };
+    let consumer = store::Resource {
+        id: Uuid::new_v4(),
+        kind: "profile".into(),
+        version: 1,
+        data: json!({"type":"overlay","name":"Relay","content":"prepend-proxies: [{name: Exit, type: socks5, server: example.org, port: 1080}]","inputs":[{"key":"upstream","label":"Upstream","kind":"outbound","section":"prepend-proxies","name":"Exit","field":"dialer-proxy"}]}),
+    };
+    let identity = json!({"profiles":[{"profile_id":consumer.id,"enabled":true},{"profile_id":provider.id,"enabled":true}],"default_outbound":{"source":"export","profile_id":provider.id,"key":"main"}});
+    let resources = [consumer.clone(), provider.clone()];
+    let (artifacts, _) =
+        store::render_bundle(&resources, &identity, "https://cloud.example").unwrap();
+    let yaml = camofy::engine::parse(artifacts["clash"]["content"].as_str().unwrap()).unwrap();
+    assert_eq!(yaml["proxies"][0]["dialer-proxy"], "Gateway");
+    assert_eq!(
+        capabilities::dependency_lock(&resources, &identity).unwrap()[0]["source"]["profile_id"],
+        provider.id.to_string()
+    );
+
+    let mut missing = resources.clone();
+    missing[1].data["content"] =
+        json!("proxy-groups: [{name: Different, type: select, proxies: [DIRECT]}]");
+    assert!(store::render_bundle(&missing, &identity, "https://cloud.example").is_err());
+    let mut disabled = identity.clone();
+    disabled["profiles"][1]["enabled"] = json!(false);
+    assert!(store::render_bundle(&resources, &disabled, "https://cloud.example").is_err());
+}
+
+#[test]
+fn one_profile_can_bind_multiple_inputs_to_different_providers() {
+    let make_provider = |name: &str, group: &str| store::Resource {
+        id: Uuid::new_v4(),
+        kind: "profile".into(),
+        version: 1,
+        data: json!({"type":"source","name":name,"content":format!("proxy-groups: [{{name: {group}, type: select, proxies: [DIRECT]}}]"),
+            "exports":[{"key":"out","label":"Outbound","kind":"group","target":group}]}),
+    };
+    let first = make_provider("First", "East");
+    let second = make_provider("Second", "West");
+    let consumer = store::Resource {
+        id: Uuid::new_v4(),
+        kind: "profile".into(),
+        version: 1,
+        data: json!({"type":"overlay","name":"Two relays","content":"prepend-proxies: [{name: Alpha, type: socks5, server: alpha.example, port: 1080}, {name: Beta, type: socks5, server: beta.example, port: 1080}]",
+        "inputs":[
+            {"key":"alpha","label":"Alpha hop","kind":"outbound","section":"prepend-proxies","name":"Alpha","field":"dialer-proxy"},
+            {"key":"beta","label":"Beta hop","kind":"outbound","section":"prepend-proxies","name":"Beta","field":"dialer-proxy"}
+        ]}),
+    };
+    let identity = json!({"profiles":[
+        {"profile_id":consumer.id,"enabled":true,"capability_bindings":{
+            "alpha":{"source":"export","profile_id":first.id,"key":"out"},
+            "beta":{"source":"export","profile_id":second.id,"key":"out"}}},
+        {"profile_id":second.id,"enabled":true},
+        {"profile_id":first.id,"enabled":true}]});
+    let (artifacts, _) = store::render_bundle(
+        &[consumer, first, second],
+        &identity,
+        "https://cloud.example",
+    )
+    .unwrap();
+    let yaml = camofy::engine::parse(artifacts["clash"]["content"].as_str().unwrap()).unwrap();
+    assert_eq!(yaml["proxies"][0]["dialer-proxy"], "East");
+    assert_eq!(yaml["proxies"][1]["dialer-proxy"], "West");
+}
+#[test]
 fn identity_bindings_are_ordered_local_and_support_multiple_sources_or_only_independent_profiles() {
     let first = store::Resource {
         id: Uuid::new_v4(),
