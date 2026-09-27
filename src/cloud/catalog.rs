@@ -687,7 +687,14 @@ pub async fn identity_preview(
         .chain(v["proxies"].as_sequence().into_iter().flatten())
         .filter_map(|g| g["name"].as_str().map(str::to_owned))
         .collect();
+    let variable_resolutions = if crate::variables::active(&records, &c.data) {
+        crate::variables::Resolver::new(&records, &c.data)
+            .and_then(|resolver| resolver.explain())
+            .map_err(bad)?
+    } else {
+        json!([])
+    };
     Ok(Json(
-        json!({"artifacts":a,"warnings":diagnostics(yaml),"policies":policies,"lock":lock_manifest(&records,&c.data),"capability_lock":crate::capabilities::dependency_lock(&records,&c.data)?}),
+        json!({"artifacts":a,"warnings":diagnostics(yaml),"policies":policies,"lock":lock_manifest(&records,&c.data),"capability_lock":crate::capabilities::dependency_lock(&records,&c.data)?,"variable_resolutions":variable_resolutions}),
     ))
 }

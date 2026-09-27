@@ -35,6 +35,44 @@ fn identity_compiles_generic_outbound_contracts_into_client_yaml() {
 }
 
 #[test]
+fn new_variables_can_coexist_with_a_legacy_profile_during_migration() {
+    let provider = store::Resource {
+        id: Uuid::new_v4(),
+        kind: "profile".into(),
+        version: 1,
+        data: json!({"type":"source","name":"Provider",
+            "content":"proxy-groups: [{name: Gateway, type: select, proxies: [DIRECT]}]",
+            "exports":[{"key":"main","label":"Main","kind":"group","target":"Gateway"}]}),
+    };
+    let old = store::Resource {
+        id: Uuid::new_v4(),
+        kind: "profile".into(),
+        version: 1,
+        data: json!({"type":"overlay","name":"Old",
+            "content":"prepend-proxies: [{name: OldRelay, type: socks5, server: example.org, port: 1080}]",
+            "inputs":[{"key":"hop","label":"Hop","kind":"outbound","section":"prepend-proxies","name":"OldRelay","field":"dialer-proxy"}]}),
+    };
+    let new = store::Resource {
+        id: Uuid::new_v4(),
+        kind: "profile".into(),
+        version: 1,
+        data: json!({"type":"overlay","name":"New",
+            "content":"mixed-port: '{{camofy.port}}'",
+            "variables":[{"key":"port","label":"Port","type":"integer","required":true}]}),
+    };
+    let identity = json!({"profiles":[
+        {"profile_id":old.id,"enabled":true},
+        {"profile_id":new.id,"enabled":true,"variable_bindings":{"port":{"source":"literal","value":7897}}},
+        {"profile_id":provider.id,"enabled":true}],
+        "default_outbound":{"source":"export","profile_id":provider.id,"key":"main"}});
+    let (artifacts, _) =
+        store::render_bundle(&[old, new, provider], &identity, "https://cloud.example").unwrap();
+    let yaml = camofy::engine::parse(artifacts["router"]["content"].as_str().unwrap()).unwrap();
+    assert_eq!(yaml["mixed-port"].as_i64(), Some(7897));
+    assert_eq!(yaml["proxies"][0]["dialer-proxy"], "Gateway");
+}
+
+#[test]
 fn one_profile_can_bind_multiple_inputs_to_different_providers() {
     let make_provider = |name: &str, group: &str| store::Resource {
         id: Uuid::new_v4(),
