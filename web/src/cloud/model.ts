@@ -46,6 +46,7 @@ export type Data = {
     enabled: boolean;
     parameters?: { policy?: string };
     capability_bindings?: Record<string, CapabilityBinding>;
+    source_filter?: { include: ("proxies" | "proxy-groups")[] };
   }[];
   subscription_url?: string;
   selections?: Record<string, string>;

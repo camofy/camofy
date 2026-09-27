@@ -317,6 +317,20 @@ async fn save(
                 if !binding["enabled"].is_boolean() {
                     return Err(Error::bad("each profile binding needs an enabled boolean"));
                 }
+                if binding.get("source_filter").is_some_and(|f| !f.is_null()) {
+                    let profile = records
+                        .iter()
+                        .find(|r| {
+                            r.kind == "profile" && r.id.to_string() == p.as_str().unwrap_or("")
+                        })
+                        .ok_or_else(|| Error::bad("source_filter profile does not exist"))?;
+                    if profile.data["type"] != "source" {
+                        return Err(Error::bad(
+                            "source_filter is only supported on subscription sources",
+                        ));
+                    }
+                    store::source_filter(binding).map_err(|e| Error::bad(e.to_string()))?;
+                }
             }
             data.as_object_mut().unwrap().remove("source_id");
             data.as_object_mut().unwrap().remove("overlays");
