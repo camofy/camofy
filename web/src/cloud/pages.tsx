@@ -922,6 +922,8 @@ function Composition({ r }: { r: Resource }) {
                       <small>
                         {p?.data.type === "source" ? "订阅源" : "配置 Profile"}
                         {p ? ` · v${p.version}` : ""}
+                        {p?.data.type === "source" &&
+                          ` · ${b.source_filter?.include.length ? `仅${b.source_filter.include.map((field) => field === "proxies" ? "代理" : "代理组").join("、")}` : "全部配置"}`}
                         {p?.data.store &&
                           ` · 商店 ${p.data._package?.version} · ${b.parameters?.policy || p.data._package?.manifest.default_policy || "未选择策略"}`}
                       </small>

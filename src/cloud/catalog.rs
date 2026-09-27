@@ -687,7 +687,9 @@ pub async fn identity_preview(
         .chain(v["proxies"].as_sequence().into_iter().flatten())
         .filter_map(|g| g["name"].as_str().map(str::to_owned))
         .collect();
+    let mut warnings = diagnostics(yaml);
+    warnings.extend(store::source_merge_warnings(&records, &c.data).map_err(bad)?);
     Ok(Json(
-        json!({"artifacts":a,"warnings":diagnostics(yaml),"policies":policies,"lock":lock_manifest(&records,&c.data),"capability_lock":crate::capabilities::dependency_lock(&records,&c.data)?}),
+        json!({"artifacts":a,"warnings":warnings,"policies":policies,"lock":lock_manifest(&records,&c.data),"capability_lock":crate::capabilities::dependency_lock(&store::effective_resources(&records,&c.data)?,&c.data)?}),
     ))
 }

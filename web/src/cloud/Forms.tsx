@@ -139,7 +139,16 @@ export function Editor({
     data.profiles?.some(
       (b) => b.enabled && ((all.find((r) => r.id === b.profile_id)?.data.store) || (all.find((r) => r.id === b.profile_id)?.data.inputs?.length ?? 0) > 0),
     );
-  const enabledProviders = all.filter((p) => p.kind === "profile" && data.profiles?.some((b) => b.profile_id === p.id && b.enabled));
+  const enabledProviders = all
+    .filter((p) => p.kind === "profile" && data.profiles?.some((b) => b.profile_id === p.id && b.enabled))
+    .map((p) => {
+      const include = data.profiles?.find((b) => b.profile_id === p.id)?.source_filter?.include ?? [];
+      if (p.data.type !== "source" || include.length === 0) return p;
+      const exports = (p.data._exports ?? p.data.exports ?? []).filter((entry) =>
+        entry.kind === "proxy" ? include.includes("proxies") : include.includes("proxy-groups"),
+      );
+      return { ...p, data: { ...p.data, _exports: exports, exports } };
+    });
   let currentPreviewKey = "";
   try {
     currentPreviewKey = JSON.stringify({
@@ -203,6 +212,24 @@ export function Editor({
     const ids = [...(data.profiles ?? [])];
     [ids[i], ids[i + delta]] = [ids[i + delta], ids[i]];
     set("profiles", ids);
+  };
+  const toggleSourceFilter = (
+    index: number,
+    field: "proxies" | "proxy-groups",
+    checked: boolean,
+  ) => {
+    setData((current) => ({
+      ...current,
+      profiles: current.profiles?.map((binding, i) => {
+        if (i !== index) return binding;
+        const selected = binding.source_filter?.include ?? [];
+        const include = checked
+          ? [...new Set([...selected, field])]
+          : selected.filter((item) => item !== field);
+        return { ...binding, source_filter: { include } };
+      }),
+    }));
+    setPreview(null);
   };
   return (
     <section className="editor-panel">
@@ -788,6 +815,41 @@ export function Editor({
                     onChange={(value) => { set("profiles", data.profiles?.map((x, n) => n === i ? { ...x, capability_bindings: { ...x.capability_bindings, [input.key]: value ?? { source: "default" } } } : x)); setPreview(null); }}
                   />
                 ))}
+                {all.find((r) => r.id === binding.profile_id)?.data.type ===
+                  "source" && (
+                  <div
+                    className="source-filter"
+                    role="group"
+                    aria-label={`仅包含 ${all.find((r) => r.id === binding.profile_id)?.data.name ?? "订阅源"} 的内容类型`}
+                  >
+                    <span>仅包含以下类型的数据</span>
+                    <label className="check">
+                      <input
+                        type="checkbox"
+                        checked={binding.source_filter?.include.includes("proxies") ?? false}
+                        onChange={(e) =>
+                          toggleSourceFilter(i, "proxies", e.target.checked)
+                        }
+                      />
+                      代理
+                    </label>
+                    <label className="check">
+                      <input
+                        type="checkbox"
+                        checked={binding.source_filter?.include.includes("proxy-groups") ?? false}
+                        onChange={(e) =>
+                          toggleSourceFilter(i, "proxy-groups", e.target.checked)
+                        }
+                      />
+                      代理组
+                    </label>
+                    <small>
+                      {binding.source_filter?.include.length
+                        ? "其余配置不参与当前身份的合并"
+                        : "未勾选：包含全部配置"}
+                    </small>
+                  </div>
+                )}
                 <button
                   type="button"
                   disabled={i === 0}
@@ -821,11 +883,25 @@ export function Editor({
               aria-label="关联 Profile"
               value=""
               onChange={(e) => {
-                if (e.target.value)
+                const selected = all.find((r) => r.id === e.target.value);
+                if (selected) {
+                  const hasSource = (data.profiles ?? []).some((binding) =>
+                    all.some(
+                      (r) =>
+                        r.id === binding.profile_id && r.data.type === "source",
+                    ),
+                  );
                   set("profiles", [
                     ...(data.profiles ?? []),
-                    { profile_id: e.target.value, enabled: true },
+                    {
+                      profile_id: selected.id,
+                      enabled: true,
+                      ...(selected.data.type === "source" && hasSource
+                        ? { source_filter: { include: ["proxies", "proxy-groups"] } }
+                        : {}),
+                    },
                   ]);
+                }
               }}
             >
               <option value="">选择订阅源或配置 Profile…</option>
@@ -870,7 +946,7 @@ export function Editor({
                 ))}
               </div>
             )}
-            {managedIdentity && (
+            {resource.kind === "bundle" && (
               <ConfigPreview
                 title="合并预览"
                 description={
@@ -878,7 +954,9 @@ export function Editor({
                     ? "预览完成 · 保存后才发布。内容含私有节点，请勿公开。"
                     : preview
                       ? "配置已变化，请重新预览后保存。"
-                      : "先验证规则与客户端兼容性，再保存发布。"
+                      : managedIdentity
+                        ? "先验证规则与客户端兼容性，再保存发布。"
+                        : "可预览合并后的完整配置；筛选只影响这个身份。"
                 }
                 actions={
                   <button
