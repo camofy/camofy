@@ -1070,10 +1070,21 @@ mod tests {
             data: json!({"name":"rules","type":"overlay","content":"rules:\n  - MATCH,DIRECT\n"}),
         };
         store::put(&app, &mut conn, user, &profile).await.unwrap();
+        let source_id = Uuid::new_v4();
+        store::put(&app, &mut conn, user, &Resource {
+            id: source_id,
+            kind: "profile".into(),
+            version: 1,
+            data: json!({"name":"nodes","type":"source","content":"proxies: [{name: node, type: ss, server: example.invalid, port: 443}]\nproxy-groups: [{name: Egress, type: select, proxies: [node]}]\nrules: ['DOMAIN,ignored.example,DIRECT']\n"}),
+        }).await.unwrap();
         let ids = [Uuid::new_v4(), Uuid::new_v4()];
-        for id in ids {
+        for (index, id) in ids.into_iter().enumerate() {
+            let mut bindings = vec![json!({"profile_id":profile_id,"enabled":true})];
+            if index == 0 {
+                bindings.insert(0, json!({"profile_id":source_id,"enabled":true,"source_filter":{"include":["proxies","proxy-groups"]}}));
+            }
             store::put(&app,&mut conn,user,&Resource{id,kind:"bundle".into(),version:1,
-            data:json!({"name":format!("identity-{id}"),"profiles":[{"profile_id":profile_id,"enabled":true}],"selections":{}})}).await.unwrap();
+            data:json!({"name":format!("identity-{id}"),"profiles":bindings,"selections":{}})}).await.unwrap();
         }
         drop(conn);
         let sid = Uuid::new_v4();
@@ -1209,6 +1220,14 @@ mod tests {
                     .is_string()
             );
         }
+        let resources = store::list(&app, &mut tx, user).await.unwrap();
+        let filtered_identity = store::get(&app, &mut tx, user, ids[0]).await.unwrap();
+        let (artifacts, _) =
+            store::render_bundle(&resources, &filtered_identity.data, &app.origin).unwrap();
+        let merged = artifacts["router"]["content"].as_str().unwrap();
+        assert!(merged.contains("Egress"));
+        assert!(merged.contains("MATCH,REJECT"));
+        assert!(!merged.contains("ignored.example"));
         tx.rollback().await.unwrap();
 
         // One broken dependent identity must reject the entire next edit. The valid
