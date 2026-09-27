@@ -467,8 +467,11 @@ async fn run_turn(
     Err(Error::bad("AI turn limit reached"))
 }
 
-fn content_ref(kind: &str, id: &str, content: &str) -> String {
-    format!("{kind}:{id}:{}", camofy::digest(content.as_bytes()))
+fn content_ref(app: &App, user: Uuid, kind: &str, id: &str, content: &str) -> String {
+    format!(
+        "{kind}:{id}:{}",
+        app.vault.assistant_reference(user, kind, id, content)
+    )
 }
 
 fn secret_line(line: &str) -> bool {
@@ -568,14 +571,14 @@ async fn read_tool(
         let row = sqlx::query("SELECT content FROM assistant_drafts WHERE id=$1 AND session_id=$2 AND user_id=$3 AND profile_id=$4 AND status='draft'")
             .bind(did).bind(sid).bind(user).bind(profile_id).fetch_optional(&app.db).await?.ok_or_else(Error::not_found)?;
         let body: String = serde_json::from_value(app.vault.open(row.get("content"))?)?;
-        let reference = content_ref("draft", &did.to_string(), &body);
+        let reference = content_ref(app, user, "draft", &did.to_string(), &body);
         (body, reference)
     } else {
         let mut tx = app.db.begin().await?;
         let r = store::get(app, &mut tx, user, profile_id).await?;
         editable(&r)?;
         let body = r.data["content"].as_str().unwrap().to_string();
-        let reference = content_ref("live", &r.version.to_string(), &body);
+        let reference = content_ref(app, user, "live", &r.version.to_string(), &body);
         (body, reference)
     };
     let view = masked(&body);
@@ -681,7 +684,7 @@ async fn replace_tool(
         let content: String = serde_json::from_value(app.vault.open(row.get("content"))?)?;
         let base_content: String =
             serde_json::from_value(app.vault.open(row.get("base_content"))?)?;
-        if a.base_ref != content_ref("draft", &did.to_string(), &content) {
+        if a.base_ref != content_ref(app, user, "draft", &did.to_string(), &content) {
             return Err(conflict("draft changed; read it again"));
         }
         (
@@ -693,7 +696,7 @@ async fn replace_tool(
         )
     } else {
         let content = profile.data["content"].as_str().unwrap().to_string();
-        if a.base_ref != content_ref("live", &profile.version.to_string(), &content) {
+        if a.base_ref != content_ref(app, user, "live", &profile.version.to_string(), &content) {
             return Err(conflict("Profile changed; read it again"));
         }
         (
@@ -735,7 +738,7 @@ async fn replace_tool(
     tx.commit().await?;
     let parse_error = camofy::engine::parse(&next).err().map(|e| e.to_string());
     Ok(
-        json!({"draft_id":draft,"base_ref":content_ref("draft",&draft.to_string(),&next),"replacements":a.replacements.len(),"parse_error":parse_error,"published":false}),
+        json!({"draft_id":draft,"base_ref":content_ref(app,user,"draft",&draft.to_string(),&next),"replacements":a.replacements.len(),"parse_error":parse_error,"published":false}),
     )
 }
 

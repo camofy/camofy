@@ -96,6 +96,27 @@ impl Vault {
             .map(|b| format!("{b:02x}"))
             .collect()
     }
+    pub fn assistant_reference(
+        &self,
+        user: uuid::Uuid,
+        kind: &str,
+        id: &str,
+        content: &str,
+    ) -> String {
+        use hmac::{Hmac, Mac};
+        let mut mac = <Hmac<sha2::Sha256> as Mac>::new_from_slice(&self.1).unwrap();
+        mac.update(b"camofy-assistant-ref-v1\0");
+        mac.update(user.as_bytes());
+        for part in [kind, id, content] {
+            mac.update(&(part.len() as u64).to_be_bytes());
+            mac.update(part.as_bytes());
+        }
+        mac.finalize()
+            .into_bytes()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
     pub fn seal(&self, v: &Value) -> Result<Value> {
         let mut nonce = [0; 12];
         OsRng.fill_bytes(&mut nonce);
@@ -1052,6 +1073,26 @@ mod tests {
                 .unwrap()
                 .open(sealed)
                 .is_err()
+        );
+    }
+    #[test]
+    fn assistant_refs_are_private_and_scoped() {
+        let vault = Vault::new(&STANDARD.encode([1; 32])).unwrap();
+        let user = uuid::Uuid::new_v4();
+        let content = "password: guessable\n";
+        let reference = vault.assistant_reference(user, "live", "1", content);
+        assert_eq!(
+            reference,
+            vault.assistant_reference(user, "live", "1", content)
+        );
+        assert_ne!(reference, camofy::digest(content.as_bytes()));
+        assert_ne!(
+            reference,
+            vault.assistant_reference(uuid::Uuid::new_v4(), "live", "1", content)
+        );
+        assert_ne!(
+            reference,
+            vault.assistant_reference(user, "draft", "1", content)
         );
     }
 }
