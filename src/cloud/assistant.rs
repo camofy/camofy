@@ -918,6 +918,8 @@ pub async fn approve_commit(
             ));
         }
     }
+    // The Profile itself changed even when no identity needs a new revision.
+    store::notify(&mut tx, user).await?;
     let result = json!({"draft_id":id,"status":"committed","profile_version":profile.version,"published_identities":affected,"devices_applied":false});
     sqlx::query("UPDATE assistant_drafts SET status='committed',committed_result=$3 WHERE id=$1 AND user_id=$2")
         .bind(id).bind(user).bind(&result).execute(&mut *tx).await?;
