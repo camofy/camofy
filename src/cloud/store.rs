@@ -78,6 +78,7 @@ pub async fn list(app: &App, conn: &mut PgConnection, user: Uuid) -> Result<Vec<
     for r in &mut records {
         if r.kind == "profile" {
             r.data["_exports"] = crate::capabilities::available_exports(&r.data);
+            r.data["_candidates"] = crate::variables::candidates(&r.data);
         }
     }
     Ok(records)
@@ -103,6 +104,7 @@ pub async fn get(
     crate::catalog::hydrate(conn, std::slice::from_mut(&mut record)).await?;
     if record.kind == "profile" {
         record.data["_exports"] = crate::capabilities::available_exports(&record.data);
+        record.data["_candidates"] = crate::variables::candidates(&record.data);
     }
     Ok(record)
 }
@@ -115,6 +117,7 @@ pub async fn put(
     let mut data = r.data.clone();
     data.as_object_mut().unwrap().remove("_package");
     data.as_object_mut().unwrap().remove("_exports");
+    data.as_object_mut().unwrap().remove("_candidates");
     sqlx::query("INSERT INTO resources(id,user_id,kind,data,version) VALUES($1,$2,$3,$4,$5) ON CONFLICT(id) DO UPDATE SET data=EXCLUDED.data,version=EXCLUDED.version,updated_at=now() WHERE resources.user_id=EXCLUDED.user_id")
         .bind(r.id).bind(user).bind(&r.kind).bind(app.vault.seal(&data)?).bind(r.version).execute(conn).await?;
     Ok(())
@@ -159,8 +162,17 @@ pub async fn rebuild_selected(
                 let catalog_lock = crate::catalog::lock_manifest(&resources, &bundle.data);
                 let source_filter_lock = source_filter_lock(&resources, &bundle.data)?;
                 let effective = effective_resources(&resources, &bundle.data)?;
-                let capability_lock =
-                    crate::capabilities::dependency_lock(&effective, &bundle.data)?;
+                let legacy_lock = crate::capabilities::dependency_lock(&effective, &bundle.data)?;
+                let variable_lock = if crate::variables::active(&effective, &bundle.data) {
+                    crate::variables::Resolver::new(&effective, &bundle.data)?.lock()?
+                } else {
+                    json!([])
+                };
+                let capability_lock = if variable_lock.as_array().is_some_and(Vec::is_empty) {
+                    legacy_lock
+                } else {
+                    json!({"legacy":legacy_lock,"variables":variable_lock})
+                };
                 // Preserve existing fingerprints when no source filter is active.
                 let filtered = !source_filter_lock.as_array().is_some_and(Vec::is_empty);
                 let capable = !capability_lock.as_array().is_some_and(Vec::is_empty);
@@ -442,10 +454,17 @@ pub fn render_bundle(
     // Validate every declared reference, including an unused explicit default,
     // before considering this revision publishable.
     crate::capabilities::dependency_lock(&effective, data)?;
+    let variable_resolver = crate::variables::active(&effective, data)
+        .then(|| crate::variables::Resolver::new(&effective, data))
+        .transpose()?;
+    if let Some(resolver) = &variable_resolver {
+        resolver.lock()?;
+    }
     let bindings = data["profiles"]
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("identity requires ordered profile bindings"))?;
     let mut profiles = Vec::new();
+    let mut rendered_profiles = Vec::new();
     let resolver = crate::capabilities::active_contracts(&effective, data)
         .then(|| crate::capabilities::Resolver::new(&effective, data))
         .transpose()?;
@@ -460,35 +479,40 @@ pub fn render_bundle(
                     && r.id.to_string() == binding["profile_id"].as_str().unwrap_or("")
             })
             .ok_or_else(|| anyhow::anyhow!("profile binding not found"))?;
-        if p.data["store"].is_object() {
+        let content = if let Some(resolver) = &variable_resolver {
+            resolver.compile(p)?
+        } else if p.data["store"].is_object() {
             let mut resolved = binding.clone();
             if let Some(choice) = binding["capability_bindings"].get("policy") {
                 let (policy, _) = resolver.as_ref().unwrap().resolve(Some(choice))?;
                 resolved["parameters"]["policy"] = json!(policy);
             }
-            profiles.push(crate::catalog::compile(p, &resolved)?);
+            crate::catalog::compile(p, &resolved)?
         } else {
             if let Some(resolver) = &resolver {
-                profiles.push(resolver.compile(p, binding)?.0);
+                resolver.compile(p, binding)?.0
             } else {
-                profiles.push(
-                    p.data["content"]
-                        .as_str()
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "profile {} has no successfully fetched content",
-                                p.data["name"]
-                            )
-                        })?
-                        .to_string(),
-                );
+                p.data["content"]
+                    .as_str()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "profile {} has no successfully fetched content",
+                            p.data["name"]
+                        )
+                    })?
+                    .to_string()
             }
-        }
+        };
+        rendered_profiles.push((p.id, content.clone()));
+        profiles.push(content);
     }
     anyhow::ensure!(
         !profiles.is_empty(),
         "enable at least one profile in this identity"
     );
+    if let Some(resolver) = &variable_resolver {
+        resolver.validate_outbounds(&rendered_profiles)?;
+    }
     profiles.push(
         system_profile(origin)?["content"]
             .as_str()

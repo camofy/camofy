@@ -689,7 +689,15 @@ pub async fn identity_preview(
         .collect();
     let mut warnings = diagnostics(yaml);
     warnings.extend(store::source_merge_warnings(&records, &c.data).map_err(bad)?);
+    let effective = store::effective_resources(&records, &c.data).map_err(bad)?;
+    let variable_resolutions = if crate::variables::active(&effective, &c.data) {
+        crate::variables::Resolver::new(&effective, &c.data)
+            .and_then(|resolver| resolver.explain())
+            .map_err(bad)?
+    } else {
+        json!([])
+    };
     Ok(Json(
-        json!({"artifacts":a,"warnings":warnings,"policies":policies,"lock":lock_manifest(&records,&c.data),"capability_lock":crate::capabilities::dependency_lock(&store::effective_resources(&records,&c.data)?,&c.data)?}),
+        json!({"artifacts":a,"warnings":warnings,"policies":policies,"lock":lock_manifest(&records,&c.data),"capability_lock":crate::capabilities::dependency_lock(&effective,&c.data)?,"variable_resolutions":variable_resolutions}),
     ))
 }

@@ -20,6 +20,7 @@ mod security;
 mod store;
 mod sync;
 mod usage;
+mod variables;
 mod westdata;
 mod worker;
 mod zyte;

@@ -4,7 +4,9 @@ import { useBlocker, useBeforeUnload } from "react-router-dom";
 import { api, type Data, type PanelService, type Resource, type User } from "./model";
 import { Modal, ConfigPreview, Icon } from "./ui";
 import { type IdentityPreview } from "./Store";
-import { ExportEditor, InputEditor, OutboundPicker } from "./Capabilities";
+import { OutboundPicker } from "./Capabilities";
+import { BindingPicker, IdentityValuesEditor, ProvideEditor, VariableEditor } from "./Variables";
+import type { TemplateVariable, VariableBinding } from "./model";
 
 export function Login({ onLogin }: { onLogin: (u: User) => void }) {
   const [register, setRegister] = useState(false),
@@ -136,9 +138,14 @@ export function Editor({
     [previewData, setPreviewData] = useState("");
   const managedIdentity =
     resource.kind === "bundle" &&
-    data.profiles?.some(
-      (b) => b.enabled && ((all.find((r) => r.id === b.profile_id)?.data.store) || (all.find((r) => r.id === b.profile_id)?.data.inputs?.length ?? 0) > 0),
-    );
+    (Object.keys(data.identity_values ?? {}).length > 0 || data.profiles?.some(
+      (b) => b.enabled && (
+        Boolean(all.find((r) => r.id === b.profile_id)?.data.store) ||
+        (all.find((r) => r.id === b.profile_id)?.data.inputs?.length ?? 0) > 0 ||
+        (all.find((r) => r.id === b.profile_id)?.data.variables?.length ?? 0) > 0 ||
+        Object.keys(b.variable_bindings ?? {}).length > 0
+      ),
+    ));
   const enabledProviders = all
     .filter((p) => p.kind === "profile" && data.profiles?.some((b) => b.profile_id === p.id && b.enabled))
     .map((p) => {
@@ -147,7 +154,17 @@ export function Editor({
       const exports = (p.data._exports ?? p.data.exports ?? []).filter((entry) =>
         entry.kind === "proxy" ? include.includes("proxies") : include.includes("proxy-groups"),
       );
-      return { ...p, data: { ...p.data, _exports: exports, exports } };
+      const retained = (section: string) =>
+        ["proxies", "prepend-proxies", "append-proxies", "proxy-providers"].includes(section)
+          ? include.includes("proxies")
+          : ["proxy-groups", "prepend-proxy-groups", "append-proxy-groups", "proxy-group-patches"].includes(section)
+            && include.includes("proxy-groups");
+      const provides = (p.data.provides ?? []).filter((item) => {
+        if (item.selector.source === "literal") return true;
+        if (item.selector.source === "named") return retained(item.selector.section);
+        return retained(item.selector.path.split("/")[1]?.replace(/~1/g, "/").replace(/~0/g, "~") ?? "");
+      });
+      return { ...p, data: { ...p.data, _exports: exports, exports, provides } };
     });
   let currentPreviewKey = "";
   try {
@@ -253,7 +270,7 @@ export function Editor({
             if (resource.kind === "bundle")
               next.selections = JSON.parse(selections);
             if (managedIdentity && previewData !== JSON.stringify(next)) {
-              setError("引用出口或商店组件需要先预览当前配置，再确认保存。");
+              setError("变量绑定或商店组件需要先预览当前配置，再确认保存。");
               return;
             }
             const result = await onSave({ ...original, data: next });
@@ -732,21 +749,18 @@ export function Editor({
             </>
           )}
         {resource.kind === "profile" && !data.store && (
-          <ExportEditor value={data.exports ?? []} automatic={data._exports} onChange={(value) => set("exports", value)} />
+          <ProvideEditor value={data.provides ?? []} candidates={data._candidates ?? []} onChange={(value) => set("provides", value)} />
         )}
         {resource.kind === "profile" && data.type === "overlay" && !data.store && (
-          <InputEditor value={data.inputs ?? []} onChange={(value) => set("inputs", value)} />
+          <VariableEditor value={data.variables ?? []} onChange={(value) => set("variables", value)} />
+        )}
+        {resource.kind === "profile" && ((data.inputs?.length ?? 0) > 0 || (data.exports?.length ?? 0) > 0) && (
+          <p className="store-readonly">此 Profile 仍含旧版出口绑定声明，会保留并兼容运行。请在新变量配置中完成迁移并预览身份结果；旧声明不会自动改写。</p>
         )}
         {resource.kind === "bundle" && (
           <>
-            <OutboundPicker
-              label="此身份的默认出口"
-              value={data.default_outbound}
-              providers={enabledProviders}
-              allowDefault={false}
-              onChange={(value) => { set("default_outbound", value); setPreview(null); }}
-            />
-            <p className="muted">只存在一个默认出口时会自动选择。多个订阅都提供默认出口时，请明确指定来源。</p>
+            <IdentityValuesEditor value={data.identity_values ?? {}} providers={enabledProviders} onChange={(value) => { set("identity_values", value); setPreview(null); }} />
+            {data.default_outbound && <p className="store-readonly">此身份仍含旧版默认出口设置，已保留作兼容；新变量只使用明确的身份变量和输入绑定。</p>}
             <label>
               关联的 Profile（从上到下合并，可混合多个订阅和独立配置）
             </label>
@@ -767,87 +781,77 @@ export function Editor({
                   />
                   {all.find((r) => r.id === binding.profile_id)?.data.name}
                 </label>
-                {all.find((r) => r.id === binding.profile_id)?.data.store && (
-                  <label className="store-policy">
-                    此身份的策略
-                    {!binding.capability_bindings?.policy && <input
-                      placeholder={
-                        all.find((r) => r.id === binding.profile_id)?.data
-                          ._package?.manifest.default_policy ??
-                        "必填：现有策略组名称"
-                      }
-                      value={binding.parameters?.policy ?? ""}
-                      onChange={(e) => {
-                        set(
-                          "profiles",
-                          data.profiles?.map((x, index) =>
-                            index === i
-                              ? { ...x, parameters: { policy: e.target.value } }
-                              : x,
-                          ),
-                        );
+                {(() => {
+                  const profile = all.find((r) => r.id === binding.profile_id);
+                  const variables: TemplateVariable[] = profile?.data.store
+                    ? [{ key: "policy", label: "访问策略", type: "outbound", required: !profile.data._package?.manifest.default_policy }]
+                    : profile?.data.variables ?? [];
+                  return variables.map((variable) => <div className="identity-variable-row" key={variable.key}>
+                    <label>{variable.label} <small><code>{variable.key}</code> · {variable.type}{variable.required ? " · 必填" : ""}</small></label>
+                    <BindingPicker
+                      type={variable.type}
+                      value={binding.variable_bindings?.[variable.key]}
+                      providers={enabledProviders}
+                      aliases={data.identity_values ?? {}}
+                      onChange={(value?: VariableBinding) => {
+                        set("profiles", data.profiles?.map((x, index) => {
+                          if (index !== i) return x;
+                          const next = { ...x.variable_bindings };
+                          if (value) next[variable.key] = value;
+                          else delete next[variable.key];
+                          return { ...x, variable_bindings: next };
+                        }));
                         setPreview(null);
                       }}
                     />
-                    }
-                    {binding.capability_bindings?.policy ? (
-                      <button type="button" onClick={() => set("profiles", data.profiles?.map((x, n) => n === i ? { ...x, capability_bindings: { ...x.capability_bindings, policy: undefined } } : x))}>改用手填策略</button>
-                    ) : (
-                      <button type="button" onClick={() => set("profiles", data.profiles?.map((x, n) => n === i ? { ...x, capability_bindings: { ...x.capability_bindings, policy: { source: "default" } } } : x))}>引用其他 Profile 的出口</button>
-                    )}
-                    <small>留空采用组件默认值；引用出口后按身份解析。</small>
-                  </label>
-                )}
-                {all.find((r) => r.id === binding.profile_id)?.data.store && binding.capability_bindings?.policy && (
-                  <OutboundPicker
-                    label="商店组件的访问策略"
-                    value={binding.capability_bindings.policy}
-                    providers={enabledProviders}
-                    onChange={(value) => { set("profiles", data.profiles?.map((x, n) => n === i ? { ...x, capability_bindings: { ...x.capability_bindings, policy: value ?? { source: "default" } } } : x)); setPreview(null); }}
-                  />
-                )}
-                {(all.find((r) => r.id === binding.profile_id)?.data.inputs ?? []).map((input) => (
-                  <OutboundPicker
-                    key={input.key}
-                    label={input.label}
-                    value={binding.capability_bindings?.[input.key]}
-                    providers={enabledProviders}
-                    onChange={(value) => { set("profiles", data.profiles?.map((x, n) => n === i ? { ...x, capability_bindings: { ...x.capability_bindings, [input.key]: value ?? { source: "default" } } } : x)); setPreview(null); }}
-                  />
-                ))}
-                {all.find((r) => r.id === binding.profile_id)?.data.type ===
-                  "source" && (
-                  <div
-                    className="source-filter"
-                    role="group"
-                    aria-label={`仅包含 ${all.find((r) => r.id === binding.profile_id)?.data.name ?? "订阅源"} 的内容类型`}
-                  >
+                    {profile?.data.store && !binding.variable_bindings?.policy && binding.parameters?.policy && <small>当前沿用旧版策略：{binding.parameters.policy}</small>}
+                  </div>);
+                })()}
+                {(() => {
+                  const profile = all.find((r) => r.id === binding.profile_id);
+                  const legacyInputs = profile?.data.inputs ?? [];
+                  if (!legacyInputs.length && !binding.capability_bindings?.policy &&
+                    !(profile?.data.store && binding.parameters?.policy)) return null;
+                  return <details className="capability-editor legacy-bindings">
+                    <summary>旧版出口绑定（兼容设置）</summary>
+                    <small>新变量绑定优先生效；更改旧版绑定后请先预览结果。</small>
+                    {profile?.data.store && binding.parameters?.policy &&
+                      <label>旧版访问策略名称
+                        <input value={binding.parameters.policy}
+                          onChange={(e) => set("profiles", data.profiles?.map((x, n) => n === i
+                            ? { ...x, parameters: { ...x.parameters, policy: e.target.value } } : x))} />
+                      </label>}
+                    {profile?.data.store && binding.capability_bindings?.policy &&
+                      <OutboundPicker label="旧版商店访问策略"
+                        value={binding.capability_bindings.policy} providers={enabledProviders}
+                        onChange={(value) => { set("profiles", data.profiles?.map((x, n) => n === i
+                          ? { ...x, capability_bindings: { ...x.capability_bindings, policy: value ?? { source: "default" } } } : x)); setPreview(null); }} />}
+                    {legacyInputs.map((input) => <OutboundPicker key={input.key}
+                      label={input.label} value={binding.capability_bindings?.[input.key]}
+                      providers={enabledProviders}
+                      onChange={(value) => { set("profiles", data.profiles?.map((x, n) => n === i
+                        ? { ...x, capability_bindings: { ...x.capability_bindings, [input.key]: value ?? { source: "default" } } } : x)); setPreview(null); }} />)}
+                  </details>;
+                })()}
+                {all.find((r) => r.id === binding.profile_id)?.data.type === "source" && (
+                  <div className="source-filter" role="group"
+                    aria-label={`仅包含 ${all.find((r) => r.id === binding.profile_id)?.data.name ?? "订阅源"} 的内容类型`}>
                     <span>仅包含以下类型的数据</span>
                     <label className="check">
-                      <input
-                        type="checkbox"
+                      <input type="checkbox"
                         checked={binding.source_filter?.include.includes("proxies") ?? false}
-                        onChange={(e) =>
-                          toggleSourceFilter(i, "proxies", e.target.checked)
-                        }
-                      />
+                        onChange={(e) => toggleSourceFilter(i, "proxies", e.target.checked)} />
                       代理
                     </label>
                     <label className="check">
-                      <input
-                        type="checkbox"
+                      <input type="checkbox"
                         checked={binding.source_filter?.include.includes("proxy-groups") ?? false}
-                        onChange={(e) =>
-                          toggleSourceFilter(i, "proxy-groups", e.target.checked)
-                        }
-                      />
+                        onChange={(e) => toggleSourceFilter(i, "proxy-groups", e.target.checked)} />
                       代理组
                     </label>
-                    <small>
-                      {binding.source_filter?.include.length
-                        ? "其余配置不参与当前身份的合并"
-                        : "未勾选：包含全部配置"}
-                    </small>
+                    <small>{binding.source_filter?.include.length
+                      ? "其余配置不参与当前身份的合并"
+                      : "未勾选：包含全部配置"}</small>
                   </div>
                 )}
                 <button
@@ -938,6 +942,26 @@ export function Editor({
             </details>
             {managedIdentity && (
               <div className="capability-resolutions" aria-live="polite">
+                {currentPreview?.variable_resolutions?.map((item) => {
+                  const trail = (choice: VariableBinding | { source: "declared_default" | "legacy_package_parameter" }, depth = 0): string => {
+                    if (depth > 8) return "循环引用";
+                    if (choice.source === "identity") {
+                      const alias = data.identity_values?.[choice.key];
+                      return alias ? `身份变量 ${choice.key} → ${trail(alias.binding, depth + 1)}` : `失效的身份变量 ${choice.key}`;
+                    }
+                    if (choice.source === "export") {
+                      const provider = all.find((profile) => profile.id === choice.profile_id);
+                      const provided = provider?.data.provides?.find((candidate) => candidate.key === choice.key);
+                      return `${provider?.data.name ?? "已移除的 Profile"} / ${provided?.label ?? choice.key}`;
+                    }
+                    if (choice.source === "literal") return "身份内直接填写";
+                    if (choice.source === "legacy_package_parameter") return "旧版商店参数";
+                    return "Profile 声明的默认值";
+                  };
+                  return <p key={`variable:${item.profile_id}:${item.input}`}>
+                    {all.find((profile) => profile.id === item.profile_id)?.data.name} / {item.input} → {typeof item.value === "string" ? item.value : JSON.stringify(item.value)} · {trail(item.binding)}
+                  </p>;
+                })}
                 {currentPreview?.capability_lock?.map((item) => (
                   <p key={`${item.profile_id}:${item.input}`}>
                     {all.find((r) => r.id === item.profile_id)?.data.name} / {item.input} → {item.resolved}

@@ -35,6 +35,44 @@ fn identity_compiles_generic_outbound_contracts_into_client_yaml() {
 }
 
 #[test]
+fn new_variables_can_coexist_with_a_legacy_profile_during_migration() {
+    let provider = store::Resource {
+        id: Uuid::new_v4(),
+        kind: "profile".into(),
+        version: 1,
+        data: json!({"type":"source","name":"Provider",
+            "content":"proxy-groups: [{name: Gateway, type: select, proxies: [DIRECT]}]",
+            "exports":[{"key":"main","label":"Main","kind":"group","target":"Gateway"}]}),
+    };
+    let old = store::Resource {
+        id: Uuid::new_v4(),
+        kind: "profile".into(),
+        version: 1,
+        data: json!({"type":"overlay","name":"Old",
+            "content":"prepend-proxies: [{name: OldRelay, type: socks5, server: example.org, port: 1080}]",
+            "inputs":[{"key":"hop","label":"Hop","kind":"outbound","section":"prepend-proxies","name":"OldRelay","field":"dialer-proxy"}]}),
+    };
+    let new = store::Resource {
+        id: Uuid::new_v4(),
+        kind: "profile".into(),
+        version: 1,
+        data: json!({"type":"overlay","name":"New",
+            "content":"mixed-port: '{{camofy.port}}'",
+            "variables":[{"key":"port","label":"Port","type":"integer","required":true}]}),
+    };
+    let identity = json!({"profiles":[
+        {"profile_id":old.id,"enabled":true},
+        {"profile_id":new.id,"enabled":true,"variable_bindings":{"port":{"source":"literal","value":7897}}},
+        {"profile_id":provider.id,"enabled":true}],
+        "default_outbound":{"source":"export","profile_id":provider.id,"key":"main"}});
+    let (artifacts, _) =
+        store::render_bundle(&[old, new, provider], &identity, "https://cloud.example").unwrap();
+    let yaml = camofy::engine::parse(artifacts["router"]["content"].as_str().unwrap()).unwrap();
+    assert_eq!(yaml["mixed-port"].as_i64(), Some(7897));
+    assert_eq!(yaml["proxies"][0]["dialer-proxy"], "Gateway");
+}
+
+#[test]
 fn one_profile_can_bind_multiple_inputs_to_different_providers() {
     let make_provider = |name: &str, group: &str| store::Resource {
         id: Uuid::new_v4(),
@@ -306,6 +344,56 @@ fn filtered_sources_only_export_outbounds_they_actually_contribute() {
     assert!(store::render_bundle(&resources, &identity, "https://cloud.example").is_err());
     let source_only = json!({"profiles":[identity["profiles"][0].clone()]});
     assert!(store::render_bundle(&resources, &source_only, "https://cloud.example").is_ok());
+}
+
+#[test]
+fn filtered_source_exports_feed_generic_variables_only_when_retained() {
+    let source = store::Resource {
+        id: Uuid::new_v4(),
+        kind: "profile".into(),
+        version: 1,
+        data: json!({
+            "type":"source","name":"upstream",
+            "content":"proxies: [{name: alpha, type: ss, server: example.net, port: 443, cipher: aes-256-gcm, password: test}]\nproxy-groups: [{name: Transit, type: select, proxies: [alpha]}]\nrules: ['MATCH,Transit']",
+            "provides":[{"key":"transit","label":"Transit","type":"outbound",
+                "selector":{"source":"named","section":"proxy-groups","match_field":"name","match_value":"Transit","value_field":"name"}}]
+        }),
+    };
+    let consumer = store::Resource {
+        id: Uuid::new_v4(),
+        kind: "profile".into(),
+        version: 1,
+        data: json!({
+            "type":"overlay","name":"relay",
+            "content":"prepend-proxies: [{name: webshare, type: socks5, server: example.org, port: 1080, dialer-proxy: '{{camofy.upstream}}'}]",
+            "variables":[{"key":"upstream","label":"前置代理","type":"outbound","required":true}]
+        }),
+    };
+    let resources = [source.clone(), consumer.clone()];
+    let mut identity = json!({"profiles":[
+        {"profile_id":source.id,"enabled":true,"source_filter":{"include":["proxies","proxy-groups"]}},
+        {"profile_id":consumer.id,"enabled":true,"variable_bindings":{"upstream":{"source":"export","profile_id":source.id,"key":"transit"}}}
+    ]});
+    let (artifacts, _) =
+        store::render_bundle(&resources, &identity, "https://cloud.example").unwrap();
+    let config = camofy::engine::parse(artifacts["clash"]["content"].as_str().unwrap()).unwrap();
+    assert!(
+        config["proxies"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .any(|proxy| proxy["name"] == "webshare" && proxy["dialer-proxy"] == "Transit")
+    );
+    assert!(
+        !config["rules"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .any(|rule| rule == "MATCH,Transit")
+    );
+
+    identity["profiles"][0]["source_filter"] = json!({"include":["proxies"]});
+    assert!(store::render_bundle(&resources, &identity, "https://cloud.example").is_err());
 }
 
 #[test]

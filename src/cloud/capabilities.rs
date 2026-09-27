@@ -192,7 +192,7 @@ mod tests {
         );
     }
     #[test]
-    fn default_is_automatic_only_when_unambiguous() {
+    fn a_default_is_never_inferred_from_names_or_a_single_provider() {
         let a = resource(
             "a",
             "proxy-groups: [{name: Proxies, type: select, proxies: [DIRECT]}]",
@@ -206,13 +206,11 @@ mod tests {
             Value::Null,
         );
         let one = json!({"profiles":[{"profile_id":a.id,"enabled":true}]});
-        assert_eq!(
+        assert!(
             Resolver::new(&[a.clone()], &one)
                 .unwrap()
                 .resolve(None)
-                .unwrap()
-                .0,
-            "Proxies"
+                .is_err()
         );
         let two = json!({"profiles":[{"profile_id":a.id,"enabled":true},{"profile_id":b.id,"enabled":true}]});
         assert!(Resolver::new(&[a, b], &two).unwrap().resolve(None).is_err());
@@ -271,23 +269,10 @@ fn names(data: &Value) -> Result<(BTreeSet<String>, BTreeSet<String>)> {
 }
 fn may_export(data: &Value) -> bool {
     !data["exports"].is_null()
-        || data["content"]
-            .as_str()
-            .is_some_and(|yaml| yaml.contains("Proxies"))
 }
 pub fn exports(data: &Value) -> Result<Vec<Export>> {
     let (groups, proxies) = names(data)?;
-    let mut exports = declared_exports(data)?;
-    // A conventional name is a useful automatic default only if its target exists.
-    // Other names need an explicit user mapping; no airport-specific branch is used.
-    if !exports.iter().any(|e| e.key == "default") && groups.contains("Proxies") {
-        exports.push(Export {
-            key: "default".into(),
-            label: "默认代理出口".into(),
-            kind: "group".into(),
-            target: "Proxies".into(),
-        });
-    }
+    let exports = declared_exports(data)?;
     for e in &exports {
         let found = if e.kind == "group" {
             groups.contains(&e.target)
@@ -419,23 +404,7 @@ impl<'a> Resolver<'a> {
         let default = if !data["default_outbound"].is_null() {
             Some(serde_json::from_value(data["default_outbound"].clone())?)
         } else {
-            let mut providers = Vec::new();
-            for (id, p) in &enabled {
-                if p.data["store"].is_object() || !may_export(&p.data) {
-                    continue;
-                }
-                if exports(&p.data)?.iter().any(|e| e.key == "default") {
-                    providers.push(*id);
-                }
-            }
-            if providers.len() == 1 {
-                Some(Binding::Export {
-                    profile_id: providers[0],
-                    key: "default".into(),
-                })
-            } else {
-                None
-            }
+            None
         };
         Ok(Self { enabled, default })
     }
