@@ -1102,6 +1102,14 @@ p {
 .field-action-row > button {
   flex-shrink: 0;
 }
+.capability-editor { display: grid; gap: 14px; padding: 20px; border: 1px solid var(--line); border-radius: 10px; min-width: 0; }
+.capability-editor h3 { margin: 0; font-size: 15px; }
+.capability-editor p { margin: 0; }
+.capability-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) auto; gap: 10px; align-items: end; min-width: 0; }
+.capability-row label, .capability-picker label { min-width: 0; }
+.capability-picker { display: grid; gap: 10px; min-width: 0; }
+@media (max-width: 800px) { .capability-row { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 540px) { .capability-row { grid-template-columns: minmax(0, 1fr); } }
 .config-preview {
   min-width: 0;
   overflow: hidden;

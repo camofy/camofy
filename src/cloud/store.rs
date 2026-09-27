@@ -75,6 +75,11 @@ pub async fn list(app: &App, conn: &mut PgConnection, user: Uuid) -> Result<Vec<
         })
         .collect::<Result<_, Error>>()?;
     crate::catalog::hydrate(conn, &mut records).await?;
+    for r in &mut records {
+        if r.kind == "profile" {
+            r.data["_exports"] = crate::capabilities::available_exports(&r.data);
+        }
+    }
     Ok(records)
 }
 pub async fn get(
@@ -96,6 +101,9 @@ pub async fn get(
         data: canonical_data(app.vault.open(row.get("data"))?, &app.origin),
     };
     crate::catalog::hydrate(conn, std::slice::from_mut(&mut record)).await?;
+    if record.kind == "profile" {
+        record.data["_exports"] = crate::capabilities::available_exports(&record.data);
+    }
     Ok(record)
 }
 pub async fn put(
@@ -106,6 +114,7 @@ pub async fn put(
 ) -> Result<(), Error> {
     let mut data = r.data.clone();
     data.as_object_mut().unwrap().remove("_package");
+    data.as_object_mut().unwrap().remove("_exports");
     sqlx::query("INSERT INTO resources(id,user_id,kind,data,version) VALUES($1,$2,$3,$4,$5) ON CONFLICT(id) DO UPDATE SET data=EXCLUDED.data,version=EXCLUDED.version,updated_at=now() WHERE resources.user_id=EXCLUDED.user_id")
         .bind(r.id).bind(user).bind(&r.kind).bind(app.vault.seal(&data)?).bind(r.version).execute(conn).await?;
     Ok(())
@@ -148,11 +157,18 @@ pub async fn rebuild_selected(
                     json!(crate::usage::sources(app, user, &resources, &bundle.data));
                 bundle.data["system_profile"] = system_profile(&app.origin)?;
                 let catalog_lock = crate::catalog::lock_manifest(&resources, &bundle.data);
-                // Preserve existing fingerprints for identities without store components.
-                let hash_input = if catalog_lock.as_array().is_some_and(Vec::is_empty) {
-                    json!([&artifacts, &selections])
+                let capability_lock =
+                    crate::capabilities::dependency_lock(&resources, &bundle.data)?;
+                // Keep pre-contract fingerprints stable during migration. A dependency
+                // snapshot affects the hash only when the identity actually uses one.
+                let hash_input = if capability_lock.as_array().is_some_and(Vec::is_empty) {
+                    if catalog_lock.as_array().is_some_and(Vec::is_empty) {
+                        json!([&artifacts, &selections])
+                    } else {
+                        json!([&artifacts, &selections, &catalog_lock])
+                    }
                 } else {
-                    json!([&artifacts, &selections, &catalog_lock])
+                    json!([&artifacts, &selections, &catalog_lock, &capability_lock])
                 };
                 let content_hash = camofy::digest(serde_json::to_vec(&hash_input)?);
                 let current = bundle.data["published_revision"]
@@ -184,7 +200,7 @@ pub async fn rebuild_selected(
                     continue;
                 }
                 let revision = Uuid::new_v4();
-                sqlx::query("INSERT INTO revisions(id,user_id,bundle_id,artifacts,selections,usage_sources,catalog_lock) VALUES($1,$2,$3,$4,$5,$6,$7)").bind(revision).bind(user).bind(bundle.id).bind(app.vault.seal(&artifacts)?).bind(selections).bind(usage_sources).bind(catalog_lock).execute(&mut *conn).await?;
+                sqlx::query("INSERT INTO revisions(id,user_id,bundle_id,artifacts,selections,usage_sources,catalog_lock,capability_lock) VALUES($1,$2,$3,$4,$5,$6,$7,$8)").bind(revision).bind(user).bind(bundle.id).bind(app.vault.seal(&artifacts)?).bind(selections).bind(usage_sources).bind(catalog_lock).bind(capability_lock).execute(&mut *conn).await?;
                 changed = true;
                 tracing::info!(bundle_id = %bundle.id, %revision,
                     "bundle configuration revision staged");
@@ -228,10 +244,16 @@ pub fn render_bundle(
     data: &Value,
     origin: &str,
 ) -> anyhow::Result<(Value, Value)> {
+    // Validate every declared reference, including an unused explicit default,
+    // before considering this revision publishable.
+    crate::capabilities::dependency_lock(resources, data)?;
     let bindings = data["profiles"]
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("identity requires ordered profile bindings"))?;
     let mut profiles = Vec::new();
+    let resolver = crate::capabilities::active_contracts(resources, data)
+        .then(|| crate::capabilities::Resolver::new(resources, data))
+        .transpose()?;
     for binding in bindings {
         if binding["enabled"] != true {
             continue;
@@ -244,19 +266,28 @@ pub fn render_bundle(
             })
             .ok_or_else(|| anyhow::anyhow!("profile binding not found"))?;
         if p.data["store"].is_object() {
-            profiles.push(crate::catalog::compile(p, binding)?);
+            let mut resolved = binding.clone();
+            if let Some(choice) = binding["capability_bindings"].get("policy") {
+                let (policy, _) = resolver.as_ref().unwrap().resolve(Some(choice))?;
+                resolved["parameters"]["policy"] = json!(policy);
+            }
+            profiles.push(crate::catalog::compile(p, &resolved)?);
         } else {
-            profiles.push(
-                p.data["content"]
-                    .as_str()
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "profile {} has no successfully fetched content",
-                            p.data["name"]
-                        )
-                    })?
-                    .to_string(),
-            );
+            if let Some(resolver) = &resolver {
+                profiles.push(resolver.compile(p, binding)?.0);
+            } else {
+                profiles.push(
+                    p.data["content"]
+                        .as_str()
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "profile {} has no successfully fetched content",
+                                p.data["name"]
+                            )
+                        })?
+                        .to_string(),
+                );
+            }
         }
     }
     anyhow::ensure!(

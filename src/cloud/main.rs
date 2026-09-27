@@ -1,6 +1,9 @@
 mod admin;
 mod api;
 mod auth;
+mod capabilities;
+#[cfg(test)]
+mod capability_tests;
 mod captcha;
 mod catalog;
 mod control;

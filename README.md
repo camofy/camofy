@@ -4,6 +4,7 @@
 向路由器 Agent、Clash Verge Rev 和 Shadowrocket 分发生成的配置。
 
 - 多个 Clash YAML 订阅与独立 Profile，按身份内的顺序和启用状态组合。
+- Profile 可声明多个出口和输入；身份绑定具体提供者，云端生成最终 YAML。见 [Profile 能力与绑定](docs/profile-capabilities.md)。
 - 管理员维护平台代理池，全局选择 HTTP / HTTPS / SOCKS5 订阅出口。
 - 首次、手动和定时刷新共用全局代理；失败保留最后有效配置，禁止回退直连。
 - 多设备绑定、版本历史、发布回滚、独立订阅令牌与撤销。
@@ -42,6 +43,7 @@ docker compose up -d --build
    [WestData 账号订阅](docs/westdata-source.md)。
 3. 创建功能 profiles，例如 [工作节点示例](examples/work-profile.yaml)。
 4. 新建“身份”，关联任意订阅/独立 Profile，在关联上启用、禁用和排序。
+   如果某个 Profile 需要前置代理，可在配置中声明输入，在身份内绑定订阅源或其他 Profile 提供的出口；同一份 Profile 在不同身份可以使用不同出口。
 5. 两条下发渠道：第三方客户端使用身份订阅 URL；路由器打开本地绑定页，通过云端登录授权绑定设备，云端分配身份并自动下发，用户无需配置订阅 URL。
 6. 每个身份带有固定最后应用的系统 Profile，保护云端域名直连。设备详情页和路由器本地页面均可控制 Mihomo 启动、停止、重启。
 

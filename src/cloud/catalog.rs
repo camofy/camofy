@@ -688,6 +688,6 @@ pub async fn identity_preview(
         .filter_map(|g| g["name"].as_str().map(str::to_owned))
         .collect();
     Ok(Json(
-        json!({"artifacts":a,"warnings":diagnostics(yaml),"policies":policies,"lock":lock_manifest(&records,&c.data)}),
+        json!({"artifacts":a,"warnings":diagnostics(yaml),"policies":policies,"lock":lock_manifest(&records,&c.data),"capability_lock":crate::capabilities::dependency_lock(&records,&c.data)?}),
     ))
 }

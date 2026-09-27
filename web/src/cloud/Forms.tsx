@@ -4,6 +4,7 @@ import { useBlocker, useBeforeUnload } from "react-router-dom";
 import { api, type Data, type PanelService, type Resource, type User } from "./model";
 import { Modal, ConfigPreview, Icon } from "./ui";
 import { type IdentityPreview } from "./Store";
+import { ExportEditor, InputEditor, OutboundPicker } from "./Capabilities";
 
 export function Login({ onLogin }: { onLogin: (u: User) => void }) {
   const [register, setRegister] = useState(false),
@@ -136,8 +137,9 @@ export function Editor({
   const managedIdentity =
     resource.kind === "bundle" &&
     data.profiles?.some(
-      (b) => b.enabled && all.find((r) => r.id === b.profile_id)?.data.store,
+      (b) => b.enabled && ((all.find((r) => r.id === b.profile_id)?.data.store) || (all.find((r) => r.id === b.profile_id)?.data.inputs?.length ?? 0) > 0),
     );
+  const enabledProviders = all.filter((p) => p.kind === "profile" && data.profiles?.some((b) => b.profile_id === p.id && b.enabled));
   let currentPreviewKey = "";
   try {
     currentPreviewKey = JSON.stringify({
@@ -224,7 +226,7 @@ export function Editor({
             if (resource.kind === "bundle")
               next.selections = JSON.parse(selections);
             if (managedIdentity && previewData !== JSON.stringify(next)) {
-              setError("商店组件需要先预览当前配置，再确认保存。");
+              setError("引用出口或商店组件需要先预览当前配置，再确认保存。");
               return;
             }
             const result = await onSave({ ...original, data: next });
@@ -702,8 +704,22 @@ export function Editor({
               </p>
             </>
           )}
+        {resource.kind === "profile" && !data.store && (
+          <ExportEditor value={data.exports ?? []} automatic={data._exports} onChange={(value) => set("exports", value)} />
+        )}
+        {resource.kind === "profile" && data.type === "overlay" && !data.store && (
+          <InputEditor value={data.inputs ?? []} onChange={(value) => set("inputs", value)} />
+        )}
         {resource.kind === "bundle" && (
           <>
+            <OutboundPicker
+              label="此身份的默认出口"
+              value={data.default_outbound}
+              providers={enabledProviders}
+              allowDefault={false}
+              onChange={(value) => { set("default_outbound", value); setPreview(null); }}
+            />
+            <p className="muted">只存在一个默认出口时会自动选择。多个订阅都提供默认出口时，请明确指定来源。</p>
             <label>
               关联的 Profile（从上到下合并，可混合多个订阅和独立配置）
             </label>
@@ -727,7 +743,7 @@ export function Editor({
                 {all.find((r) => r.id === binding.profile_id)?.data.store && (
                   <label className="store-policy">
                     此身份的策略
-                    <input
+                    {!binding.capability_bindings?.policy && <input
                       placeholder={
                         all.find((r) => r.id === binding.profile_id)?.data
                           ._package?.manifest.default_policy ??
@@ -746,9 +762,32 @@ export function Editor({
                         setPreview(null);
                       }}
                     />
-                    <small>留空采用默认值；不存在的策略不会发布。</small>
+                    }
+                    {binding.capability_bindings?.policy ? (
+                      <button type="button" onClick={() => set("profiles", data.profiles?.map((x, n) => n === i ? { ...x, capability_bindings: { ...x.capability_bindings, policy: undefined } } : x))}>改用手填策略</button>
+                    ) : (
+                      <button type="button" onClick={() => set("profiles", data.profiles?.map((x, n) => n === i ? { ...x, capability_bindings: { ...x.capability_bindings, policy: { source: "default" } } } : x))}>引用其他 Profile 的出口</button>
+                    )}
+                    <small>留空采用组件默认值；引用出口后按身份解析。</small>
                   </label>
                 )}
+                {all.find((r) => r.id === binding.profile_id)?.data.store && binding.capability_bindings?.policy && (
+                  <OutboundPicker
+                    label="商店组件的访问策略"
+                    value={binding.capability_bindings.policy}
+                    providers={enabledProviders}
+                    onChange={(value) => { set("profiles", data.profiles?.map((x, n) => n === i ? { ...x, capability_bindings: { ...x.capability_bindings, policy: value ?? { source: "default" } } } : x)); setPreview(null); }}
+                  />
+                )}
+                {(all.find((r) => r.id === binding.profile_id)?.data.inputs ?? []).map((input) => (
+                  <OutboundPicker
+                    key={input.key}
+                    label={input.label}
+                    value={binding.capability_bindings?.[input.key]}
+                    providers={enabledProviders}
+                    onChange={(value) => { set("profiles", data.profiles?.map((x, n) => n === i ? { ...x, capability_bindings: { ...x.capability_bindings, [input.key]: value ?? { source: "default" } } } : x)); setPreview(null); }}
+                  />
+                ))}
                 <button
                   type="button"
                   disabled={i === 0}
@@ -821,6 +860,16 @@ export function Editor({
               会立即应用；第三方客户端将收到首选节点顺序，已有本地选择可能优先。
             </p>
             </details>
+            {managedIdentity && (
+              <div className="capability-resolutions" aria-live="polite">
+                {currentPreview?.capability_lock?.map((item) => (
+                  <p key={`${item.profile_id}:${item.input}`}>
+                    {all.find((r) => r.id === item.profile_id)?.data.name} / {item.input} → {item.resolved}
+                    {item.source.profile_id && ` · 来源：${all.find((r) => r.id === item.source.profile_id)?.data.name ?? "已删除"} / ${item.source.export}`}
+                  </p>
+                ))}
+              </div>
+            )}
             {managedIdentity && (
               <ConfigPreview
                 title="合并预览"

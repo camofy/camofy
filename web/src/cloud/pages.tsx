@@ -5,7 +5,7 @@ import {
   useParams,
   useSearchParams,
 } from "react-router-dom";
-import { api, displayTime, type Resource } from "./model";
+import { api, displayTime, type CapabilityBinding, type Resource } from "./model";
 import { useWorkspace } from "./context";
 import { Editor } from "./Forms";
 import { ManagedProfile, ManagedSource } from "./Store";
@@ -875,6 +875,13 @@ function History({ r }: { r: Resource }) {
 function Composition({ r }: { r: Resource }) {
   const { resources, busy, save } = useWorkspace();
   const bindings = r.data.profiles ?? [];
+  const describe = (choice?: CapabilityBinding) => {
+    if (!choice || choice.source === "default") return "身份默认出口";
+    if (choice.source === "literal") return `手动指定 · ${choice.value}`;
+    const provider = resources.find((p) => p.id === choice.profile_id);
+    const outlet = (provider?.data._exports ?? provider?.data.exports ?? []).find((e) => e.key === choice.key);
+    return `${provider?.data.name ?? "已移除的 Profile"} / ${outlet?.label ?? choice.key}${outlet ? ` → ${outlet.target}` : ""}`;
+  };
   return (
     <div className="detail-columns">
       <div className="detail-main">
@@ -918,6 +925,12 @@ function Composition({ r }: { r: Resource }) {
                         {p?.data.store &&
                           ` · 商店 ${p.data._package?.version} · ${b.parameters?.policy || p.data._package?.manifest.default_policy || "未选择策略"}`}
                       </small>
+                      {(p?.data.inputs ?? []).map((input) => (
+                        <small key={input.key}>{input.label}：{describe(b.capability_bindings?.[input.key])}</small>
+                      ))}
+                      {p?.data.store && b.capability_bindings?.policy && (
+                        <small>访问策略：{describe(b.capability_bindings.policy)}</small>
+                      )}
                     </div>
                     <label className="switch">
                       <input
@@ -976,6 +989,14 @@ function Composition({ r }: { r: Resource }) {
             启用状态仅属于当前身份，不影响其他身份。
           </div>
         </section>
+        {(r.data.default_outbound || bindings.some((b) => Object.keys(b.capability_bindings ?? {}).length > 0)) && (
+          <Panel title="出口绑定" description="引用属于此身份；同一 Profile 可以在其他身份选择不同出口。">
+            <PanelBody>
+              <p>默认出口：{describe(r.data.default_outbound)}</p>
+              <p className="muted">最终名称与依赖可在「编辑身份 → 合并预览」中核对。</p>
+            </PanelBody>
+          </Panel>
+        )}
         <section className="panel">
           <div className="panel-heading">
             <h2>下发渠道 · 绑定设备</h2>
@@ -1002,6 +1023,20 @@ function Composition({ r }: { r: Resource }) {
       </div>
       <Distribution r={r} />
     </div>
+  );
+}
+function ProfileContracts({ r }: { r: Resource }) {
+  const exports = r.data._exports ?? r.data.exports ?? [];
+  const inputs = r.data.inputs ?? [];
+  if (!exports.length && !inputs.length) return null;
+  return (
+    <Panel title="Profile 能力" description="订阅 YAML 无需提供这些元数据；出口映射由当前工作区维护。">
+      <PanelBody>
+        {exports.map((item) => <p key={item.key}>提供 · {item.label} <span className="muted">({item.key})</span> → {item.target}</p>)}
+        {inputs.map((item) => <p key={item.key}>需要 · {item.label} <span className="muted">({item.key})</span> → {item.section} / {item.name} / {item.field}</p>)}
+        {inputs.length > 0 && <p className="muted">这里展示尚未绑定的配置片段；每个身份的最终值以合并预览为准。</p>}
+      </PanelBody>
+    </Panel>
   );
 }
 export function DetailPage({ section }: { section: Section }) {
@@ -1125,11 +1160,14 @@ export function DetailPage({ section }: { section: Section }) {
             {section === "profiles" && r.data.store ? (
               <ManagedSource key={`${r.id}-${r.version}`} resource={r} />
             ) : section === "profiles" ? (
-              <ConfigPreview
-                title="独立配置"
-                actions={<span className="chip">v{r.version}</span>}
-                content={r.data.content ?? ""}
-              />
+              <>
+                <ConfigPreview
+                  title="独立配置"
+                  actions={<span className="chip">v{r.version}</span>}
+                  content={r.data.content ?? ""}
+                />
+                <ProfileContracts r={r} />
+              </>
             ) : (
               <section className="panel">
                 <div className="panel-heading">
@@ -1318,6 +1356,7 @@ export function DetailPage({ section }: { section: Section }) {
                 )}
               </section>
             )}
+            {isSource && <ProfileContracts r={r} />}
             {section !== "devices" && section !== "proxies" && (
               <References r={r} />
             )}

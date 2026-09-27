@@ -386,35 +386,48 @@ pub fn validate(v: &Value) -> Result<()> {
             }
         }
     }
-    if let Some(groups) = v.get("proxy-groups").and_then(Value::as_sequence) {
+    {
         let mut edges = BTreeMap::new();
-        for group in groups {
-            let name = required(group, "name")?;
-            let mut refs = Vec::new();
-            if let Some(nodes) = group.get("proxies") {
-                for n in nodes
-                    .as_sequence()
-                    .ok_or_else(|| anyhow::anyhow!("group proxies must be list"))?
-                {
-                    let n = n
+        if let Some(proxies) = v.get("proxies").and_then(Value::as_sequence) {
+            for node in proxies {
+                if let Some(dialer) = node.get("dialer-proxy") {
+                    let target = dialer
                         .as_str()
-                        .ok_or_else(|| anyhow::anyhow!("group references must be strings"))?;
-                    ensure!(names.contains(n), "unknown proxy/group reference: {n}");
-                    refs.push(n.to_string());
+                        .ok_or_else(|| anyhow::anyhow!("dialer-proxy must be a name"))?;
+                    ensure!(names.contains(target), "unknown dialer-proxy: {target}");
+                    edges.insert(required(node, "name")?.to_owned(), vec![target.to_owned()]);
                 }
             }
-            if let Some(providers) = group.get("use") {
-                for p in providers
-                    .as_sequence()
-                    .ok_or_else(|| anyhow::anyhow!("use must be list"))?
-                {
-                    ensure!(
-                        v.get("proxy-providers").and_then(|x| x.get(p)).is_some(),
-                        "unknown proxy provider"
-                    );
+        }
+        if let Some(groups) = v.get("proxy-groups").and_then(Value::as_sequence) {
+            for group in groups {
+                let name = required(group, "name")?;
+                let mut refs = Vec::new();
+                if let Some(nodes) = group.get("proxies") {
+                    for n in nodes
+                        .as_sequence()
+                        .ok_or_else(|| anyhow::anyhow!("group proxies must be list"))?
+                    {
+                        let n = n
+                            .as_str()
+                            .ok_or_else(|| anyhow::anyhow!("group references must be strings"))?;
+                        ensure!(names.contains(n), "unknown proxy/group reference: {n}");
+                        refs.push(n.to_string());
+                    }
                 }
+                if let Some(providers) = group.get("use") {
+                    for p in providers
+                        .as_sequence()
+                        .ok_or_else(|| anyhow::anyhow!("use must be list"))?
+                    {
+                        ensure!(
+                            v.get("proxy-providers").and_then(|x| x.get(p)).is_some(),
+                            "unknown proxy provider"
+                        );
+                    }
+                }
+                edges.insert(name.to_string(), refs);
             }
-            edges.insert(name.to_string(), refs);
         }
         fn visit(
             n: &str,
@@ -476,6 +489,18 @@ fn required<'a>(v: &'a Value, field: &str) -> Result<&'a str> {
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| anyhow::anyhow!("missing string field: {field}"))
+}
+
+#[test]
+fn dialer_proxy_cycle_through_group_is_rejected() {
+    let yaml = r#"
+proxies:
+  - { name: Relay, type: socks5, server: example.org, port: 1080, dialer-proxy: Route }
+proxy-groups:
+  - { name: Route, type: select, proxies: [Relay] }
+"#;
+    let value = parse(yaml).unwrap();
+    assert!(validate(&value).unwrap_err().to_string().contains("cyclic"));
 }
 
 /// Runtime settings belong to the receiving client. Router defaults are opt-in output.
