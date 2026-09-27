@@ -51,15 +51,9 @@ durable receipts. Duplicate restart requests are not replayed. A restart interru
 before confirmation is unknown, not success. Delay measurements run outside the
 control loop. No shell execution or arbitrary HTTP forwarding is exposed.
 
-Local controls require the `local-admin-key` from the Agent data directory and
-same-origin CSRF checks. On routers it is normally read with:
-
-```sh
-cat /jffs/camofy/config/local-admin-key
-```
-
-Sessions are memory-only, HttpOnly, SameSite=Strict and last twelve hours. Use a
-trusted LAN or SSH tunnel for HTTP access. Mihomo's controller stays loopback-only.
+Local controls are available to anyone who can access the router's LAN console.
+State-changing requests retain same-origin CSRF checks. Use a trusted LAN or SSH
+tunnel for HTTP access. Mihomo's controller stays loopback-only.
 
 ## Graceful shutdown and upgrades
 

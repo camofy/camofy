@@ -32,10 +32,9 @@ async function status() {
     $("version").textContent = data.agent_version
       ? "v" + data.agent_version
       : "";
-    available = !!data.bound && !!data.authorized;
+    available = !!data.bound;
     $("binding").hidden = !!data.bound;
     $("dashboard").hidden = !available;
-    $("unlock").hidden = !data.bound || !!data.authorized;
     if (data.bound) {
       $("title").textContent = "设备控制台";
       $("intro").textContent = "配置自动同步，运行由你掌控。";
@@ -175,11 +174,3 @@ $("confirm-dialog").addEventListener("close", async () => {
 });
 void status();
 setInterval(status, 2500);
-async function localApi(path,body){
-  const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json","X-Camofy-CSRF":document.querySelector('meta[name="csrf"]').content},body:JSON.stringify(body)});
-  if(!r.ok)throw Error((await r.json()).error||"操作失败");
-  return r.status===204?null:r.json();
-}
-$("unlock-form").addEventListener("submit",async e=>{
-  e.preventDefault();try{await localApi("/api/local/login",{key:$("admin-key").value});$("admin-key").value="";$("unlock-error").textContent="";void status();}catch(e){$("unlock-error").textContent=e.message;}
-});
