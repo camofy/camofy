@@ -5,7 +5,7 @@ import {
   useParams,
   useSearchParams,
 } from "react-router-dom";
-import { api, displayTime, type CapabilityBinding, type Resource, type VariableBinding } from "./model";
+import { api, displayTime, type Resource, type VariableBinding } from "./model";
 import { useWorkspace } from "./context";
 import { Editor } from "./Forms";
 import { ManagedProfile, ManagedSource } from "./Store";
@@ -876,13 +876,6 @@ function History({ r }: { r: Resource }) {
 function Composition({ r }: { r: Resource }) {
   const { resources, busy, save } = useWorkspace();
   const bindings = r.data.profiles ?? [];
-  const describe = (choice?: CapabilityBinding) => {
-    if (!choice || choice.source === "default") return "身份默认出口";
-    if (choice.source === "literal") return `手动指定 · ${choice.value}`;
-    const provider = resources.find((p) => p.id === choice.profile_id);
-    const outlet = (provider?.data._exports ?? provider?.data.exports ?? []).find((e) => e.key === choice.key);
-    return `${provider?.data.name ?? "已移除的 Profile"} / ${outlet?.label ?? choice.key}${outlet ? ` → ${outlet.target}` : ""}`;
-  };
   const describeVariable = (choice?: VariableBinding) => {
     if (!choice) return "未绑定（使用声明的默认值）";
     if (choice.source === "literal") return "身份内直接填写";
@@ -934,16 +927,12 @@ function Composition({ r }: { r: Resource }) {
                         {p?.data.type === "source" &&
                           ` · ${b.source_filter?.include.length ? `仅${b.source_filter.include.map((field) => field === "proxies" ? "代理" : "代理组").join("、")}` : "全部配置"}`}
                         {p?.data.store &&
-                          ` · 商店 ${p.data._package?.version} · ${b.parameters?.policy || p.data._package?.manifest.default_policy || "未选择策略"}`}
+                          ` · 商店 ${p.data._package?.version} · ${b.variable_bindings?.policy ? "身份策略已绑定" : p.data._package?.manifest.default_policy || "未选择策略"}`}
                       </small>
                       {(p?.data.variables ?? []).map((input) => (
                         <small key={input.key}>{input.label}：{describeVariable(b.variable_bindings?.[input.key])}</small>
                       ))}
                       {p?.data.store && b.variable_bindings?.policy && <small>访问策略：{describeVariable(b.variable_bindings.policy)}</small>}
-                      {(p?.data.inputs ?? []).map((input) => <small key={input.key}>{input.label}（旧版绑定）：{describe(b.capability_bindings?.[input.key])}</small>)}
-                      {p?.data.store && b.capability_bindings?.policy && (
-                        <small>访问策略：{describe(b.capability_bindings.policy)}</small>
-                      )}
                     </div>
                     <label className="switch">
                       <input
@@ -1007,14 +996,6 @@ function Composition({ r }: { r: Resource }) {
             <PanelBody>{Object.entries(r.data.identity_values).map(([key, item]) => <p key={key}><strong>{key}</strong> <span className="muted">({item.type})</span> · {describeVariable(item.binding)}</p>)}</PanelBody>
           </Panel>
         )}
-        {(r.data.default_outbound || bindings.some((b) => Object.keys(b.capability_bindings ?? {}).length > 0)) && (
-          <Panel title="旧版出口绑定" description="旧配置仍可运行；新配置请改用身份变量与输入绑定。">
-            <PanelBody>
-              {r.data.default_outbound && <p>旧版默认出口：{describe(r.data.default_outbound)}</p>}
-              <p className="muted">最终名称与依赖可在「编辑身份 → 合并预览」中核对。</p>
-            </PanelBody>
-          </Panel>
-        )}
         <section className="panel">
           <div className="panel-heading">
             <h2>下发渠道 · 绑定设备</h2>
@@ -1046,15 +1027,12 @@ function Composition({ r }: { r: Resource }) {
 function ProfileContracts({ r }: { r: Resource }) {
   const provided = r.data.provides ?? [];
   const needed = r.data.variables ?? [];
-  const legacyExports = r.data.exports ?? [];
-  const legacyInputs = r.data.inputs ?? [];
-  if (!provided.length && !needed.length && !legacyExports.length && !legacyInputs.length) return null;
+  if (!provided.length && !needed.length) return null;
   return (
     <Panel title="Profile 能力" description="YAML 的值位置由作者声明变量；订阅源的导出映射由当前工作区维护，上游无需配合。">
       <PanelBody>
         {provided.map((item) => <p key={item.key}>提供 · {item.label} <span className="muted">({item.key} · {item.type})</span> · {item.selector.source === "named" ? `${item.selector.section} / ${String(item.selector.match_value)}` : item.selector.source === "pointer" ? item.selector.path : "固定值"}</p>)}
         {needed.map((item) => <p key={item.key}>需要 · {item.label} <span className="muted">({item.key} · {item.type})</span> → <code>{`{{camofy.${item.key}}}`}</code></p>)}
-        {(legacyExports.length > 0 || legacyInputs.length > 0) && <p className="muted">此 Profile 仍含旧版出口声明；迁移前继续按旧规则运行。</p>}
         {needed.length > 0 && <p className="muted">每个身份的实际值以合并预览为准；未绑定的必填值阻止发布。</p>}
       </PanelBody>
     </Panel>

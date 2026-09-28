@@ -12,6 +12,262 @@ pub struct Resource {
     pub data: Value,
 }
 
+/// One-time data migration. This changes stored bindings, not published revisions;
+/// the next successful compilation still controls when devices receive new YAML.
+fn migrate_policy_data(kind: &str, data: &mut Value) -> anyhow::Result<bool> {
+    let object = data
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("resource data must be an object"))?;
+    let mut changed = false;
+    if kind == "profile" {
+        for field in ["inputs", "exports"] {
+            if let Some(old) = object.remove(field) {
+                anyhow::ensure!(
+                    old.is_null() || old.as_array().is_some_and(Vec::is_empty),
+                    "obsolete {field} declaration needs manual migration"
+                );
+                changed = true;
+            }
+        }
+    }
+    if kind != "bundle" {
+        return Ok(changed);
+    }
+    if let Some(old) = object.remove("default_outbound") {
+        anyhow::ensure!(
+            old.is_null(),
+            "obsolete default outbound needs manual migration"
+        );
+        changed = true;
+    }
+    for item in object
+        .get_mut("profiles")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        let fields = item
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("invalid Profile binding"))?;
+        if let Some(old) = fields.remove("capability_bindings") {
+            anyhow::ensure!(
+                old.is_null() || old.as_object().is_some_and(serde_json::Map::is_empty),
+                "obsolete outbound binding needs manual migration"
+            );
+            changed = true;
+        }
+        let Some(old) = fields.remove("parameters") else {
+            continue;
+        };
+        changed = true;
+        if old.is_null() {
+            continue;
+        }
+        let params = old
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("invalid package parameters"))?;
+        anyhow::ensure!(
+            params.keys().all(|key| key == "policy"),
+            "unknown package parameter needs manual migration"
+        );
+        let Some(policy) = params.get("policy") else {
+            continue;
+        };
+        let policy = policy
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("invalid package policy"))?;
+        let bindings = fields
+            .entry("variable_bindings")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("invalid variable bindings"))?;
+        let replacement = json!({"source":"literal","value":policy});
+        if let Some(current) = bindings.get("policy") {
+            anyhow::ensure!(current == &replacement, "package policy binding conflict");
+        } else {
+            bindings.insert("policy".into(), replacement);
+        }
+    }
+    Ok(changed)
+}
+
+pub async fn migrate_policy_bindings(app: &App) -> anyhow::Result<usize> {
+    const KEY: &str = "profile-variable-bindings-v1";
+    let mut tx = app.db.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(835213, 1)")
+        .execute(&mut *tx)
+        .await?;
+    // Keep the marker in an existing table so the previous binary can start
+    // unchanged if this release needs to roll back.
+    let done: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM admin_audit_events WHERE action=$1)")
+            .bind(KEY)
+            .fetch_one(&mut *tx)
+            .await?;
+    if done {
+        tx.commit().await?;
+        return Ok(0);
+    }
+    sqlx::query("LOCK TABLE resources IN SHARE ROW EXCLUSIVE MODE")
+        .execute(&mut *tx)
+        .await?;
+    let rows = sqlx::query("SELECT id,kind,version,data FROM resources WHERE kind IN ('profile','bundle') ORDER BY id FOR UPDATE")
+        .fetch_all(&mut *tx).await?;
+    let mut migrated = 0;
+    for row in rows {
+        let id: Uuid = row.get("id");
+        let kind: String = row.get("kind");
+        let version: i64 = row.get("version");
+        let mut data = app.vault.open(row.get("data"))?;
+        if !migrate_policy_data(&kind, &mut data)? {
+            continue;
+        }
+        let updated = sqlx::query("UPDATE resources SET data=$2,version=version+1,updated_at=now() WHERE id=$1 AND version=$3")
+            .bind(id).bind(app.vault.seal(&data)?).bind(version).execute(&mut *tx).await?;
+        anyhow::ensure!(
+            updated.rows_affected() == 1,
+            "concurrent resource edit during policy migration"
+        );
+        migrated += 1;
+    }
+    sqlx::query("INSERT INTO admin_audit_events(action) VALUES($1)")
+        .bind(KEY)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(migrated)
+}
+
+#[cfg(test)]
+mod policy_migration_tests {
+    use super::*;
+    use crate::security::Vault;
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use sqlx::postgres::PgPoolOptions;
+    use std::sync::Arc;
+    use tokio::sync::Semaphore;
+
+    #[test]
+    fn package_policy_moves_to_the_only_binding_model() {
+        let mut data = json!({"name":"identity","published_revision":"unchanged",
+            "profiles":[{"profile_id":Uuid::new_v4(),"enabled":true,
+                "parameters":{"policy":"DIRECT"}}]});
+        assert!(migrate_policy_data("bundle", &mut data).unwrap());
+        assert_eq!(
+            data["profiles"][0]["variable_bindings"]["policy"],
+            json!({"source":"literal","value":"DIRECT"})
+        );
+        assert!(data["profiles"][0].get("parameters").is_none());
+        assert_eq!(data["published_revision"], "unchanged");
+        assert!(!migrate_policy_data("bundle", &mut data).unwrap());
+    }
+
+    #[test]
+    fn unknown_obsolete_bindings_abort_without_persisting_partial_changes() {
+        let mut data = json!({"profiles":[{"profile_id":Uuid::new_v4(),"enabled":true,
+            "parameters":{"policy":"DIRECT"},
+            "capability_bindings":{"hop":{"source":"literal","value":"A"}}}]});
+        assert!(migrate_policy_data("bundle", &mut data).is_err());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL pointing to a disposable PostgreSQL"]
+    async fn encrypted_policy_migration_is_atomic_idempotent_and_keeps_revisions() {
+        let db = PgPoolOptions::new()
+            .max_connections(3)
+            .connect(&std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required"))
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        let app = App {
+            db: db.clone(),
+            vault: Vault::new(&STANDARD.encode([42; 32])).unwrap(),
+            origin: "https://cloud.example".into(),
+            legacy_origins: vec![],
+            secure: false,
+            registration: false,
+            private_egress: false,
+            workers: 1,
+            captcha: None,
+            topics: Default::default(),
+            hash_slots: Arc::new(Semaphore::new(1)),
+        };
+        let user = Uuid::new_v4();
+        sqlx::query("INSERT INTO users(id,email,password) VALUES($1,$2,'unused')")
+            .bind(user)
+            .bind(format!("{user}@example.test"))
+            .execute(&db)
+            .await
+            .unwrap();
+        let base = Uuid::new_v4().as_u128();
+        let good = Uuid::from_u128(base & !1);
+        let bad = Uuid::from_u128(base | 1);
+        let original = json!({"name":"identity","published_revision":"do-not-rebuild",
+            "profiles":[{"profile_id":Uuid::new_v4(),"enabled":true,
+                "parameters":{"policy":"DIRECT"}}]});
+        let invalid = json!({"name":"other","profiles":[{"profile_id":Uuid::new_v4(),
+            "capability_bindings":{"unknown":{"source":"literal","value":"X"}}}]});
+        for (id, data) in [(good, &original), (bad, &invalid)] {
+            sqlx::query(
+                "INSERT INTO resources(id,user_id,kind,data,version) VALUES($1,$2,'bundle',$3,1)",
+            )
+            .bind(id)
+            .bind(user)
+            .bind(app.vault.seal(data).unwrap())
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+        assert!(migrate_policy_bindings(&app).await.is_err());
+        let marked: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM admin_audit_events WHERE action='profile-variable-bindings-v1')",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert!(!marked);
+        let row = sqlx::query("SELECT data,version FROM resources WHERE id=$1")
+            .bind(good)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(row.get::<i64, _>("version"), 1);
+        assert_eq!(app.vault.open(row.get("data")).unwrap(), original);
+        sqlx::query("DELETE FROM resources WHERE id=$1")
+            .bind(bad)
+            .execute(&db)
+            .await
+            .unwrap();
+        assert_eq!(migrate_policy_bindings(&app).await.unwrap(), 1);
+        let row = sqlx::query("SELECT data,version FROM resources WHERE id=$1")
+            .bind(good)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(row.get::<i64, _>("version"), 2);
+        let migrated = app.vault.open(row.get("data")).unwrap();
+        assert_eq!(migrated["published_revision"], "do-not-rebuild");
+        assert_eq!(
+            migrated["profiles"][0]["variable_bindings"]["policy"]["value"],
+            "DIRECT"
+        );
+        let marked: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM admin_audit_events WHERE action='profile-variable-bindings-v1')",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert!(marked);
+        assert_eq!(migrate_policy_bindings(&app).await.unwrap(), 0);
+        sqlx::query("DELETE FROM users WHERE id=$1")
+            .bind(user)
+            .execute(&db)
+            .await
+            .unwrap();
+    }
+}
+
 /// Lazy, lossless upgrade of old identity links. No credential rotation or revision rebuild.
 /// Subsequent writes persist the canonical form; old consumers keep their working alias.
 fn canonical_data(mut data: Value, origin: &str) -> Value {
@@ -77,7 +333,6 @@ pub async fn list(app: &App, conn: &mut PgConnection, user: Uuid) -> Result<Vec<
     crate::catalog::hydrate(conn, &mut records).await?;
     for r in &mut records {
         if r.kind == "profile" {
-            r.data["_exports"] = crate::capabilities::available_exports(&r.data);
             r.data["_candidates"] = crate::variables::candidates(&r.data);
         }
     }
@@ -103,7 +358,6 @@ pub async fn get(
     };
     crate::catalog::hydrate(conn, std::slice::from_mut(&mut record)).await?;
     if record.kind == "profile" {
-        record.data["_exports"] = crate::capabilities::available_exports(&record.data);
         record.data["_candidates"] = crate::variables::candidates(&record.data);
     }
     Ok(record)
@@ -116,7 +370,6 @@ pub async fn put(
 ) -> Result<(), Error> {
     let mut data = r.data.clone();
     data.as_object_mut().unwrap().remove("_package");
-    data.as_object_mut().unwrap().remove("_exports");
     data.as_object_mut().unwrap().remove("_candidates");
     sqlx::query("INSERT INTO resources(id,user_id,kind,data,version) VALUES($1,$2,$3,$4,$5) ON CONFLICT(id) DO UPDATE SET data=EXCLUDED.data,version=EXCLUDED.version,updated_at=now() WHERE resources.user_id=EXCLUDED.user_id")
         .bind(r.id).bind(user).bind(&r.kind).bind(app.vault.seal(&data)?).bind(r.version).execute(conn).await?;
@@ -162,32 +415,25 @@ pub async fn rebuild_selected(
                 let catalog_lock = crate::catalog::lock_manifest(&resources, &bundle.data);
                 let source_filter_lock = source_filter_lock(&resources, &bundle.data)?;
                 let effective = effective_resources(&resources, &bundle.data)?;
-                let legacy_lock = crate::capabilities::dependency_lock(&effective, &bundle.data)?;
                 let variable_lock = if crate::variables::active(&effective, &bundle.data) {
                     crate::variables::Resolver::new(&effective, &bundle.data)?.lock()?
                 } else {
                     json!([])
                 };
-                let capability_lock = if variable_lock.as_array().is_some_and(Vec::is_empty) {
-                    legacy_lock
-                } else {
-                    json!({"legacy":legacy_lock,"variables":variable_lock})
-                };
-                // Preserve existing fingerprints when no source filter is active.
                 let filtered = !source_filter_lock.as_array().is_some_and(Vec::is_empty);
-                let capable = !capability_lock.as_array().is_some_and(Vec::is_empty);
+                let capable = !variable_lock.as_array().is_some_and(Vec::is_empty);
                 let hash_input = if filtered && capable {
                     json!([
                         &artifacts,
                         &selections,
                         &catalog_lock,
-                        &capability_lock,
+                        &variable_lock,
                         &source_filter_lock
                     ])
                 } else if filtered {
                     json!([&artifacts, &selections, &catalog_lock, &source_filter_lock])
                 } else if capable {
-                    json!([&artifacts, &selections, &catalog_lock, &capability_lock])
+                    json!([&artifacts, &selections, &catalog_lock, &variable_lock])
                 } else if catalog_lock.as_array().is_some_and(Vec::is_empty) {
                     json!([&artifacts, &selections])
                 } else {
@@ -223,7 +469,7 @@ pub async fn rebuild_selected(
                     continue;
                 }
                 let revision = Uuid::new_v4();
-                sqlx::query("INSERT INTO revisions(id,user_id,bundle_id,artifacts,selections,usage_sources,catalog_lock,capability_lock,source_filter_lock) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)").bind(revision).bind(user).bind(bundle.id).bind(app.vault.seal(&artifacts)?).bind(selections).bind(usage_sources).bind(catalog_lock).bind(capability_lock).bind(source_filter_lock).execute(&mut *conn).await?;
+                sqlx::query("INSERT INTO revisions(id,user_id,bundle_id,artifacts,selections,usage_sources,catalog_lock,capability_lock,source_filter_lock) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)").bind(revision).bind(user).bind(bundle.id).bind(app.vault.seal(&artifacts)?).bind(selections).bind(usage_sources).bind(catalog_lock).bind(variable_lock).bind(source_filter_lock).execute(&mut *conn).await?;
                 changed = true;
                 tracing::info!(bundle_id = %bundle.id, %revision,
                     "bundle configuration revision staged");
@@ -326,9 +572,9 @@ pub fn effective_resources(resources: &[Resource], data: &Value) -> anyhow::Resu
         if binding["enabled"] != true {
             continue;
         }
-        let Some((nodes, groups)) = source_filter(binding)? else {
+        if source_filter(binding)?.is_none() {
             continue;
-        };
+        }
         let Some(profile) = effective.iter_mut().find(|r| {
             r.kind == "profile"
                 && r.data["type"] == "source"
@@ -343,14 +589,6 @@ pub fn effective_resources(resources: &[Resource], data: &Value) -> anyhow::Resu
             )
         })?;
         profile.data["content"] = json!(filtered_source_content(content, binding)?);
-        if let Some(exports) = profile.data["exports"].as_array_mut() {
-            exports.retain(|entry| match entry["kind"].as_str() {
-                Some("proxy") => nodes,
-                Some("group") => groups,
-                _ => true,
-            });
-        }
-        profile.data["_exports"] = crate::capabilities::available_exports(&profile.data);
     }
     Ok(effective)
 }
@@ -453,7 +691,6 @@ pub fn render_bundle(
     let effective = effective_resources(resources, data)?;
     // Validate every declared reference, including an unused explicit default,
     // before considering this revision publishable.
-    crate::capabilities::dependency_lock(&effective, data)?;
     let variable_resolver = crate::variables::active(&effective, data)
         .then(|| crate::variables::Resolver::new(&effective, data))
         .transpose()?;
@@ -465,9 +702,6 @@ pub fn render_bundle(
         .ok_or_else(|| anyhow::anyhow!("identity requires ordered profile bindings"))?;
     let mut profiles = Vec::new();
     let mut rendered_profiles = Vec::new();
-    let resolver = crate::capabilities::active_contracts(&effective, data)
-        .then(|| crate::capabilities::Resolver::new(&effective, data))
-        .transpose()?;
     for binding in bindings {
         if binding["enabled"] != true {
             continue;
@@ -481,27 +715,16 @@ pub fn render_bundle(
             .ok_or_else(|| anyhow::anyhow!("profile binding not found"))?;
         let content = if let Some(resolver) = &variable_resolver {
             resolver.compile(p)?
-        } else if p.data["store"].is_object() {
-            let mut resolved = binding.clone();
-            if let Some(choice) = binding["capability_bindings"].get("policy") {
-                let (policy, _) = resolver.as_ref().unwrap().resolve(Some(choice))?;
-                resolved["parameters"]["policy"] = json!(policy);
-            }
-            crate::catalog::compile(p, &resolved)?
         } else {
-            if let Some(resolver) = &resolver {
-                resolver.compile(p, binding)?.0
-            } else {
-                p.data["content"]
-                    .as_str()
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "profile {} has no successfully fetched content",
-                            p.data["name"]
-                        )
-                    })?
-                    .to_string()
-            }
+            p.data["content"]
+                .as_str()
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "profile {} has no successfully fetched content",
+                        p.data["name"]
+                    )
+                })?
+                .to_string()
         };
         rendered_profiles.push((p.id, content.clone()));
         profiles.push(content);

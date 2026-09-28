@@ -132,7 +132,6 @@ async fn save(
         .as_object_mut()
         .ok_or_else(|| Error::bad("data must be an object"))?;
     object.remove("_package");
-    object.remove("_exports");
     object.remove("_candidates");
     if new && (object.contains_key("store") || object.get("origin").is_some_and(|v| v == "store")) {
         return Err(Error::bad("install managed profiles through the store"));
@@ -142,8 +141,6 @@ async fn save(
             if data["content"] != old.data["content"]
                 || data["store"] != old.data["store"]
                 || data["type"] != old.data["type"]
-                || data["inputs"] != old.data["inputs"]
-                || data["exports"] != old.data["exports"]
                 || data["variables"] != old.data["variables"]
                 || data["provides"] != old.data["provides"]
             {
@@ -201,8 +198,9 @@ async fn save(
             // Validated and provisioned above, outside the tenant transaction.
         }
         "profile" => {
-            crate::capabilities::validate_profile(&data).map_err(|e| Error::bad(e.to_string()))?;
-            crate::variables::validate_profile(&data).map_err(|e| Error::bad(e.to_string()))?;
+            if data.get("inputs").is_some() || data.get("exports").is_some() {
+                return Err(Error::bad("obsolete Profile contracts are unsupported"));
+            }
             if data.get("enabled").is_some() || data.get("is_active").is_some() {
                 return Err(Error::bad(
                     "profile activation belongs to an identity binding",
@@ -305,15 +303,23 @@ async fn save(
             } else {
                 return Err(Error::bad("profile type must be source or overlay"));
             }
+            crate::variables::validate_profile(&data).map_err(|e| Error::bad(e.to_string()))?;
         }
         "bundle" => {
-            crate::capabilities::validate_bindings(&data).map_err(|e| Error::bad(e.to_string()))?;
+            if data.get("default_outbound").is_some() {
+                return Err(Error::bad("obsolete identity outbound is unsupported"));
+            }
             crate::variables::validate_identity(&data).map_err(|e| Error::bad(e.to_string()))?;
             let bindings = data["profiles"].as_array().ok_or_else(|| {
                 Error::bad("profiles must be ordered {profile_id, enabled} bindings")
             })?;
             let mut seen = std::collections::HashSet::new();
             for binding in bindings {
+                if binding.get("capability_bindings").is_some()
+                    || binding.get("parameters").is_some()
+                {
+                    return Err(Error::bad("obsolete Profile binding is unsupported"));
+                }
                 let p = &binding["profile_id"];
                 reference(p, "profile")?;
                 if !seen.insert(p.to_string()) {
@@ -410,20 +416,7 @@ async fn save(
     }
     store::put(&app, &mut tx, user, &r).await?;
     // A managed identity edit must be valid before its association can be committed.
-    if r.kind == "bundle"
-        && (crate::variables::active(&records, &r.data)
-            || r.data["default_outbound"].is_object()
-            || r.data["profiles"].as_array().is_some_and(|bs| {
-                bs.iter().any(|b| {
-                    b["enabled"] == true
-                        && (b["capability_bindings"].is_object()
-                            || records.iter().any(|p| {
-                                p.id.to_string() == b["profile_id"].as_str().unwrap_or("")
-                                    && (p.data["store"].is_object() || p.data["inputs"].is_array())
-                            }))
-                })
-            }))
-    {
+    if r.kind == "bundle" && crate::variables::active(&records, &r.data) {
         store::render_bundle(&records, &r.data, &app.origin)
             .map_err(|e| Error::bad(e.to_string()))?;
     }
@@ -461,8 +454,6 @@ async fn save(
     let configuration_changed = match r.kind.as_str() {
         "profile" => old.as_ref().is_some_and(|o| {
             (r.data["type"] == "overlay" && o.data["content"] != r.data["content"])
-                || o.data["exports"] != r.data["exports"]
-                || o.data["inputs"] != r.data["inputs"]
                 || o.data["variables"] != r.data["variables"]
                 || o.data["provides"] != r.data["provides"]
         }),
@@ -470,7 +461,6 @@ async fn save(
             new || old.as_ref().is_some_and(|o| {
                 o.data["profiles"] != r.data["profiles"]
                     || o.data["selections"] != r.data["selections"]
-                    || o.data["default_outbound"] != r.data["default_outbound"]
                     || o.data["identity_values"] != r.data["identity_values"]
             })
         }

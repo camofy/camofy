@@ -1110,7 +1110,7 @@ p {
 .capability-picker { display: grid; gap: 10px; min-width: 0; }
 .capability-editor .section-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
 .capability-editor .section-heading button { flex: none; }
-.variable-contract-row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; align-items: end; gap: 12px; min-width: 0; padding: 16px 0; border-top: 1px solid var(--line); }
+.variable-contract-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: end; gap: 12px; min-width: 0; padding: 16px 0; border-top: 1px solid var(--line); }
 .variable-contract-row > label, .variable-contract-row .variable-binding, .identity-variable-row { min-width: 0; }
 .variable-contract-row > .check { align-self: center; }
 .variable-contract-row > button { justify-self: start; }

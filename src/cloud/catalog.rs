@@ -175,24 +175,12 @@ pub async fn hydrate(conn: &mut PgConnection, resources: &mut [Resource]) -> Res
     }
     Ok(())
 }
-pub fn compile(r: &Resource, binding: &Value) -> anyhow::Result<String> {
+pub fn compile(r: &Resource, policy: Option<&str>) -> anyhow::Result<String> {
     let p = &r.data["_package"];
     let m: Manifest = serde_json::from_value(p["manifest"].clone())?;
     let rules: Vec<Rule> = serde_json::from_value(p["rules"].clone())?;
     validate_rules(&rules)?;
-    if let Some(params) = binding.get("parameters") {
-        anyhow::ensure!(
-            params
-                .as_object()
-                .is_some_and(|m| m.keys().all(|k| k == "policy")),
-            "unsupported package parameters"
-        );
-        if let Some(v) = params.get("policy") {
-            anyhow::ensure!(v.is_string(), "policy must be a string");
-        }
-    }
-    let policy = binding["parameters"]["policy"]
-        .as_str()
+    let policy = policy
         .filter(|s| !s.is_empty())
         .or(m.default_policy.as_deref())
         .ok_or_else(|| anyhow::anyhow!("{}: select a policy in this identity", m.name))?;
@@ -218,7 +206,7 @@ pub fn lock_manifest(resources: &[Resource], data: &Value) -> Value {
     json!(data["profiles"].as_array().into_iter().flatten().filter_map(|b| {
         let p=resources.iter().find(|r| Some(r.id.to_string()).as_deref()==b["profile_id"].as_str())?;
         if !p.data["store"].is_object() {return None;}
-        Some(json!({"profile_id":p.id,"enabled":b["enabled"],"parameters":b["parameters"],"version_id":p.data["store"]["version_id"],"artifact_hash":p.data["_package"]["hash"]}))
+        Some(json!({"profile_id":p.id,"enabled":b["enabled"],"version_id":p.data["store"]["version_id"],"artifact_hash":p.data["_package"]["hash"]}))
     }).collect::<Vec<_>>())
 }
 /// Carry notices into redistributed rule-bearing configurations, not just the store UI.
@@ -622,7 +610,7 @@ pub async fn source_preview(
         .filter(|s| !s.is_empty())
         .or(r.data["_package"]["manifest"]["default_policy"].as_str())
         .unwrap_or("<身份策略>");
-    let content = compile(&r, &json!({"parameters":{"policy":policy}})).map_err(bad)?;
+    let content = compile(&r, Some(policy)).map_err(bad)?;
     let notice = notices(
         std::slice::from_ref(&r),
         &json!({"profiles":[{"profile_id":id,"enabled":true}]}),
@@ -651,7 +639,7 @@ pub async fn fork(
     if !old.data["store"].is_object() || old.version != f.version {
         return Err(bad("managed profile version mismatch"));
     }
-    let content = compile(&old, &json!({"parameters":{"policy":f.policy}})).map_err(bad)?;
+    let content = compile(&old, Some(&f.policy)).map_err(bad)?;
     let r = Resource {
         id: Uuid::new_v4(),
         kind: "profile".into(),
@@ -698,6 +686,6 @@ pub async fn identity_preview(
         json!([])
     };
     Ok(Json(
-        json!({"artifacts":a,"warnings":warnings,"policies":policies,"lock":lock_manifest(&records,&c.data),"capability_lock":crate::capabilities::dependency_lock(&effective,&c.data)?,"variable_resolutions":variable_resolutions}),
+        json!({"artifacts":a,"warnings":warnings,"policies":policies,"lock":lock_manifest(&records,&c.data),"variable_resolutions":variable_resolutions}),
     ))
 }

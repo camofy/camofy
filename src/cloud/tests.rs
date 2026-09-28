@@ -1,27 +1,30 @@
 use super::*;
 use serde_json::Value;
 #[test]
-fn identity_compiles_generic_outbound_contracts_into_client_yaml() {
+fn identity_compiles_explicit_profile_exports_into_client_yaml() {
     let provider = store::Resource {
         id: Uuid::new_v4(),
         kind: "profile".into(),
         version: 1,
-        data: json!({"type":"source","name":"Transit","content":"proxy-groups: [{name: Gateway, type: select, proxies: [DIRECT]}]","exports":[{"key":"main","label":"Main","kind":"group","target":"Gateway"}]}),
+        data: json!({"type":"source","name":"Transit","content":"proxy-groups: [{name: Gateway, type: select, proxies: [DIRECT]}]","provides":[{"key":"main","label":"Main","type":"outbound","selector":{"source":"named","section":"proxy-groups","match_field":"name","match_value":"Gateway","value_field":"name"}}]}),
     };
     let consumer = store::Resource {
         id: Uuid::new_v4(),
         kind: "profile".into(),
         version: 1,
-        data: json!({"type":"overlay","name":"Relay","content":"prepend-proxies: [{name: Exit, type: socks5, server: example.org, port: 1080}]","inputs":[{"key":"upstream","label":"Upstream","kind":"outbound","section":"prepend-proxies","name":"Exit","field":"dialer-proxy"}]}),
+        data: json!({"type":"overlay","name":"Relay","content":"prepend-proxies: [{name: Exit, type: socks5, server: example.org, port: 1080, dialer-proxy: '{{camofy.upstream}}'}]","variables":[{"key":"upstream","label":"Upstream","type":"outbound","required":true}]}),
     };
-    let identity = json!({"profiles":[{"profile_id":consumer.id,"enabled":true},{"profile_id":provider.id,"enabled":true}],"default_outbound":{"source":"export","profile_id":provider.id,"key":"main"}});
+    let identity = json!({"profiles":[{"profile_id":consumer.id,"enabled":true,"variable_bindings":{"upstream":{"source":"export","profile_id":provider.id,"key":"main"}}},{"profile_id":provider.id,"enabled":true}]});
     let resources = [consumer.clone(), provider.clone()];
     let (artifacts, _) =
         store::render_bundle(&resources, &identity, "https://cloud.example").unwrap();
     let yaml = camofy::engine::parse(artifacts["clash"]["content"].as_str().unwrap()).unwrap();
     assert_eq!(yaml["proxies"][0]["dialer-proxy"], "Gateway");
     assert_eq!(
-        capabilities::dependency_lock(&resources, &identity).unwrap()[0]["source"]["profile_id"],
+        variables::Resolver::new(&resources, &identity)
+            .unwrap()
+            .explain()
+            .unwrap()[0]["binding"]["profile_id"],
         provider.id.to_string()
     );
 
@@ -35,22 +38,74 @@ fn identity_compiles_generic_outbound_contracts_into_client_yaml() {
 }
 
 #[test]
-fn new_variables_can_coexist_with_a_legacy_profile_during_migration() {
+fn source_exports_bind_to_generic_template_values_without_shared_names() {
+    let first = store::Resource {
+        id: Uuid::new_v4(),
+        kind: "profile".into(),
+        version: 1,
+        data: json!({"type":"source","name":"First source",
+            "content":"proxy-groups: [{name: Proxies, type: select, proxies: [DIRECT]}]",
+            "provides":[{"key":"main_group","label":"Main group","type":"string",
+                "selector":{"source":"literal","value":"Proxies"}}]}),
+    };
+    let second = store::Resource {
+        id: Uuid::new_v4(),
+        kind: "profile".into(),
+        version: 1,
+        data: json!({"type":"source","name":"Second source",
+            "content":"proxy-groups: [{name: 节点选择, type: select, proxies: [DIRECT]}]",
+            "provides":[{"key":"selection","label":"Selection","type":"string",
+                "selector":{"source":"literal","value":"节点选择"}}]}),
+    };
+    let addition = store::Resource {
+        id: Uuid::new_v4(),
+        kind: "profile".into(),
+        version: 1,
+        data: json!({"type":"overlay","name":"Additional nodes",
+            "content":"prepend-proxies: [{name: Added, type: ss, server: example.org, port: 443, cipher: aes-256-gcm, password: sample}]\nproxy-group-patches: [{name: '{{camofy.position}}', append-proxies: [Added]}]",
+            "variables":[{"key":"position","label":"Insertion target","type":"string","required":true}]}),
+    };
+    let resources = [first.clone(), second.clone(), addition.clone()];
+    let mut identity = json!({"profiles":[
+        {"profile_id":first.id,"enabled":true},
+        {"profile_id":second.id,"enabled":false},
+        {"profile_id":addition.id,"enabled":true,"variable_bindings":{"position":
+            {"source":"export","profile_id":first.id,"key":"main_group"}}}
+    ]});
+    for (index, expected) in ["Proxies", "节点选择"].into_iter().enumerate() {
+        let (artifacts, _) =
+            store::render_bundle(&resources, &identity, "https://cloud.example").unwrap();
+        let config =
+            camofy::engine::parse(artifacts["clash"]["content"].as_str().unwrap()).unwrap();
+        assert_eq!(config["proxy-groups"][0]["name"], expected);
+        assert_eq!(config["proxy-groups"][0]["proxies"][1], "Added");
+        if index == 0 {
+            identity["profiles"][0]["enabled"] = json!(false);
+            identity["profiles"][1]["enabled"] = json!(true);
+            identity["profiles"][2]["variable_bindings"]["position"] =
+                json!({"source":"export","profile_id":second.id,"key":"selection"});
+        }
+    }
+    identity["profiles"][2]["variable_bindings"] = json!({});
+    assert!(store::render_bundle(&resources, &identity, "https://cloud.example").is_err());
+}
+
+#[test]
+fn variable_profiles_compose_with_plain_profiles() {
     let provider = store::Resource {
         id: Uuid::new_v4(),
         kind: "profile".into(),
         version: 1,
         data: json!({"type":"source","name":"Provider",
             "content":"proxy-groups: [{name: Gateway, type: select, proxies: [DIRECT]}]",
-            "exports":[{"key":"main","label":"Main","kind":"group","target":"Gateway"}]}),
+            "provides":[{"key":"main","label":"Main","type":"outbound","selector":{"source":"literal","value":"Gateway"}}]}),
     };
     let old = store::Resource {
         id: Uuid::new_v4(),
         kind: "profile".into(),
         version: 1,
         data: json!({"type":"overlay","name":"Old",
-            "content":"prepend-proxies: [{name: OldRelay, type: socks5, server: example.org, port: 1080}]",
-            "inputs":[{"key":"hop","label":"Hop","kind":"outbound","section":"prepend-proxies","name":"OldRelay","field":"dialer-proxy"}]}),
+            "content":"prepend-proxies: [{name: OldRelay, type: socks5, server: example.org, port: 1080}]"}),
     };
     let new = store::Resource {
         id: Uuid::new_v4(),
@@ -64,12 +119,12 @@ fn new_variables_can_coexist_with_a_legacy_profile_during_migration() {
         {"profile_id":old.id,"enabled":true},
         {"profile_id":new.id,"enabled":true,"variable_bindings":{"port":{"source":"literal","value":7897}}},
         {"profile_id":provider.id,"enabled":true}],
-        "default_outbound":{"source":"export","profile_id":provider.id,"key":"main"}});
+    });
     let (artifacts, _) =
         store::render_bundle(&[old, new, provider], &identity, "https://cloud.example").unwrap();
     let yaml = camofy::engine::parse(artifacts["router"]["content"].as_str().unwrap()).unwrap();
     assert_eq!(yaml["mixed-port"].as_i64(), Some(7897));
-    assert_eq!(yaml["proxies"][0]["dialer-proxy"], "Gateway");
+    assert_eq!(yaml["proxies"][0]["name"], "OldRelay");
 }
 
 #[test]
@@ -79,7 +134,7 @@ fn one_profile_can_bind_multiple_inputs_to_different_providers() {
         kind: "profile".into(),
         version: 1,
         data: json!({"type":"source","name":name,"content":format!("proxy-groups: [{{name: {group}, type: select, proxies: [DIRECT]}}]"),
-            "exports":[{"key":"out","label":"Outbound","kind":"group","target":group}]}),
+            "provides":[{"key":"out","label":"Outbound","type":"outbound","selector":{"source":"literal","value":group}}]}),
     };
     let first = make_provider("First", "East");
     let second = make_provider("Second", "West");
@@ -87,14 +142,14 @@ fn one_profile_can_bind_multiple_inputs_to_different_providers() {
         id: Uuid::new_v4(),
         kind: "profile".into(),
         version: 1,
-        data: json!({"type":"overlay","name":"Two relays","content":"prepend-proxies: [{name: Alpha, type: socks5, server: alpha.example, port: 1080}, {name: Beta, type: socks5, server: beta.example, port: 1080}]",
-        "inputs":[
-            {"key":"alpha","label":"Alpha hop","kind":"outbound","section":"prepend-proxies","name":"Alpha","field":"dialer-proxy"},
-            {"key":"beta","label":"Beta hop","kind":"outbound","section":"prepend-proxies","name":"Beta","field":"dialer-proxy"}
+        data: json!({"type":"overlay","name":"Two relays","content":"prepend-proxies: [{name: Alpha, type: socks5, server: alpha.example, port: 1080, dialer-proxy: '{{camofy.alpha}}'}, {name: Beta, type: socks5, server: beta.example, port: 1080, dialer-proxy: '{{camofy.beta}}'}]",
+        "variables":[
+            {"key":"alpha","label":"Alpha hop","type":"outbound","required":true},
+            {"key":"beta","label":"Beta hop","type":"outbound","required":true}
         ]}),
     };
     let identity = json!({"profiles":[
-        {"profile_id":consumer.id,"enabled":true,"capability_bindings":{
+        {"profile_id":consumer.id,"enabled":true,"variable_bindings":{
             "alpha":{"source":"export","profile_id":first.id,"key":"out"},
             "beta":{"source":"export","profile_id":second.id,"key":"out"}}},
         {"profile_id":second.id,"enabled":true},
@@ -298,52 +353,6 @@ fn source_filter_rejects_unknown_fields_and_warns_about_full_source_collisions()
             .unwrap()
             .is_empty()
     );
-}
-
-#[test]
-fn filtered_sources_only_export_outbounds_they_actually_contribute() {
-    let source = store::Resource {
-        id: Uuid::new_v4(),
-        kind: "profile".into(),
-        version: 1,
-        data: json!({
-            "type":"source","name":"upstream",
-            "content":"proxies: [{name: alpha, type: ss, server: example.net, port: 443, cipher: aes-256-gcm, password: test}]\nproxy-groups: [{name: Transit, type: select, proxies: [alpha]}]",
-            "exports":[{"key":"transit","label":"Transit","kind":"group","target":"Transit"}]
-        }),
-    };
-    let consumer = store::Resource {
-        id: Uuid::new_v4(),
-        kind: "profile".into(),
-        version: 1,
-        data: json!({
-            "type":"overlay","name":"consumer",
-            "content":"prepend-proxies: [{name: webshare, type: socks5, server: example.org, port: 1080}]",
-            "inputs":[{"key":"upstream","label":"前置代理","kind":"outbound","section":"prepend-proxies","name":"webshare","field":"dialer-proxy"}]
-        }),
-    };
-    let resources = [source.clone(), consumer.clone()];
-    let mut identity = json!({"profiles":[
-        {"profile_id":source.id,"enabled":true,"source_filter":{"include":["proxies","proxy-groups"]}},
-        {"profile_id":consumer.id,"enabled":true,"capability_bindings":{"upstream":{"source":"export","profile_id":source.id,"key":"transit"}}}
-    ]});
-    let (artifacts, _) =
-        store::render_bundle(&resources, &identity, "https://cloud.example").unwrap();
-    let config = camofy::engine::parse(artifacts["clash"]["content"].as_str().unwrap()).unwrap();
-    assert!(
-        config["proxies"]
-            .as_sequence()
-            .unwrap()
-            .iter()
-            .any(|proxy| proxy["name"] == "webshare" && proxy["dialer-proxy"] == "Transit")
-    );
-
-    identity["profiles"][0]["source_filter"] = json!({"include":["proxies"]});
-    let effective = store::effective_resources(&resources, &identity).unwrap();
-    assert!(effective[0].data["exports"].as_array().unwrap().is_empty());
-    assert!(store::render_bundle(&resources, &identity, "https://cloud.example").is_err());
-    let source_only = json!({"profiles":[identity["profiles"][0].clone()]});
-    assert!(store::render_bundle(&resources, &source_only, "https://cloud.example").is_ok());
 }
 
 #[test]
@@ -839,6 +848,87 @@ async fn cloud_end_to_end() {
         hits.load(Ordering::SeqCst),
         1,
         "preview must not trigger upstream requests"
+    );
+    let resources = request(
+        &client,
+        &origin,
+        &alice,
+        "GET",
+        "/resources",
+        json!(null),
+        200,
+    )
+    .await;
+    let source_record = resources
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"] == src["id"])
+        .unwrap();
+    let mut source_data = source_record["data"].clone();
+    source_data["provides"] = json!([{"key":"route_name","label":"Route","type":"string",
+        "selector":{"source":"literal","value":"route"}}]);
+    let updated_source = request(
+        &client,
+        &origin,
+        &alice,
+        "PUT",
+        &format!("/resources/{sid}"),
+        json!({"kind":"profile","version":source_record["version"],"data":source_data}),
+        200,
+    )
+    .await;
+    assert_eq!(
+        updated_source["data"]["provides"][0]["selector"]["value"],
+        "route"
+    );
+    let mut invalid_source = updated_source["data"].clone();
+    invalid_source["provides"][0]["selector"] = json!({"source":"named","section":"proxy-groups",
+        "match_field":"name","match_value":"missing","value_field":"name"});
+    request(
+        &client,
+        &origin,
+        &alice,
+        "PUT",
+        &format!("/resources/{sid}"),
+        json!({"kind":"profile","version":updated_source["version"],"data":invalid_source}),
+        400,
+    )
+    .await;
+    let consumer = request(&client, &origin, &alice, "POST", "/resources",
+        json!({"kind":"profile","data":{"name":"Generic consumer","type":"overlay",
+            "content":"prepend-proxies: [{name: Added, type: ss, server: example.org, port: 443, cipher: aes-256-gcm, password: sample, dialer-proxy: '{{camofy.upstream}}'}]",
+            "variables":[{"key":"upstream","label":"Upstream","type":"string","required":true}]}}), 200).await;
+    let bound = request(
+        &client,
+        &origin,
+        &alice,
+        "POST",
+        "/resources",
+        json!({"kind":"bundle","data":{"name":"Bound source export","profiles":[
+            {"profile_id":src["id"],"enabled":true},
+            {"profile_id":consumer["id"],"enabled":true,"variable_bindings":{"upstream":
+                {"source":"export","profile_id":src["id"],"key":"route_name"}}}]}}),
+        200,
+    )
+    .await;
+    let bound_preview = request(
+        &client,
+        &origin,
+        &alice,
+        "GET",
+        &format!("/bundles/{}/preview/clash", bound["id"].as_str().unwrap()),
+        json!(null),
+        200,
+    )
+    .await;
+    let bound_yaml = camofy::engine::parse(bound_preview["content"].as_str().unwrap()).unwrap();
+    assert!(
+        bound_yaml["proxies"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .any(|item| item["name"] == "Added" && item["dialer-proxy"] == "route")
     );
     let overlay=request(&client,&origin,&alice,"POST","/resources",json!({"kind":"profile","data":{"name":"Work","type":"overlay","content":"prepend-rules: ['DOMAIN,work.example,DIRECT']"}}),200).await;
     for (profile_id, filter) in [

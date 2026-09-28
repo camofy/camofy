@@ -27,13 +27,12 @@ fn strict_rule_parameters_and_dependency_checks() {
         version: 1,
         data: json!({"store":{},"_package":publication("test","1.0.0",false)}),
     };
-    assert!(compile(&p, &json!({})).is_err());
-    assert!(compile(&p, &json!({"parameters":{"policy":"DIRECT\nMATCH,REJECT"}})).is_err());
-    assert!(compile(&p, &json!({"parameters":{"policy":"DIRECT","script":"x"}})).is_err());
-    let yaml = compile(&p, &json!({"parameters":{"policy":"DIRECT"}})).unwrap();
+    assert!(compile(&p, None).is_err());
+    assert!(compile(&p, Some("DIRECT\nMATCH,REJECT")).is_err());
+    let yaml = compile(&p, Some("DIRECT")).unwrap();
     assert!(yaml.contains("DOMAIN-SUFFIX,video.example,DIRECT"));
     p.data["_package"]["manifest"]["default_policy"] = json!("REJECT");
-    assert!(compile(&p, &json!({})).unwrap().contains("REJECT"));
+    assert!(compile(&p, None).unwrap().contains("REJECT"));
     assert!(
         camofy::engine::compose_profiles(
             &["rules: ['RULE-SET,missing,DIRECT']".into()],
@@ -367,7 +366,7 @@ async fn catalog_end_to_end() {
     assert!(!raw.to_string().contains("_package"));
     req(&client,&origin,bob,"POST","/resources",json!({"kind":"profile","data":{"name":"fake","type":"overlay","origin":"store","store":{"version_id":p1["id"]}}}),400).await;
     let base = req(&client,&origin,bob,"POST","/resources",json!({"kind":"profile","data":{"name":"Base","type":"overlay","content":"proxies: [{name: test, type: ss, server: example.com, port: 443, cipher: aes-256-gcm, password: sample-only}]\nproxy-groups: [{name: Route, type: select, proxies: [test, DIRECT]}]\nrules: ['MATCH,Route']\n"}}),200).await;
-    let data = json!({"name":"Test identity","profiles":[{"profile_id":base["id"],"enabled":true},{"profile_id":pid,"enabled":true,"parameters":{"policy":"DIRECT"}}]});
+    let data = json!({"name":"Test identity","profiles":[{"profile_id":base["id"],"enabled":true},{"profile_id":pid,"enabled":true,"variable_bindings":{"policy":{"source":"literal","value":"DIRECT"}}}]});
     let preview = req(
         &client,
         &origin,
@@ -397,7 +396,7 @@ async fn catalog_end_to_end() {
     .await;
     let bid = bundle["id"].as_str().unwrap();
     let mut invalid = data.clone();
-    invalid["profiles"][1]["parameters"]["policy"] = json!("MissingGroup");
+    invalid["profiles"][1]["variable_bindings"]["policy"]["value"] = json!("MissingGroup");
     req(
         &client,
         &origin,
@@ -409,7 +408,7 @@ async fn catalog_end_to_end() {
     )
     .await;
     let mut second = data.clone();
-    second["profiles"][1]["parameters"]["policy"] = json!("REJECT");
+    second["profiles"][1]["variable_bindings"]["policy"]["value"] = json!("REJECT");
     let second = req(
         &client,
         &origin,

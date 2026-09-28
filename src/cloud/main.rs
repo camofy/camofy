@@ -2,9 +2,6 @@ mod admin;
 mod api;
 mod assistant;
 mod auth;
-mod capabilities;
-#[cfg(test)]
-mod capability_tests;
 mod captcha;
 mod catalog;
 mod control;
@@ -300,6 +297,10 @@ async fn main() -> anyhow::Result<()> {
         topics: Default::default(),
         hash_slots: Arc::new(Semaphore::new(4)),
     };
+    let migrated = store::migrate_policy_bindings(&app).await?;
+    if migrated > 0 {
+        tracing::info!(resources = migrated, "Profile policy bindings migrated");
+    }
     tracing::info!(
         workers = app.workers,
         registration = app.registration,

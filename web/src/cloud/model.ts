@@ -3,10 +3,6 @@ export type Data = {
   provides?: VariableExport[];
   _candidates?: ExportCandidate[];
   identity_values?: Record<string, IdentityValue>;
-  exports?: OutboundExport[];
-  _exports?: OutboundExport[];
-  inputs?: OutboundInput[];
-  default_outbound?: CapabilityBinding;
   origin?: string;
   store?: { slug: string; version_id: string; update_policy: string };
   _package?: { version: string; manifest: import("./Store").PackageManifest };
@@ -48,8 +44,6 @@ export type Data = {
   profiles?: {
     profile_id: string;
     enabled: boolean;
-    parameters?: { policy?: string };
-    capability_bindings?: Record<string, CapabilityBinding>;
     source_filter?: { include: ("proxies" | "proxy-groups")[] };
     variable_bindings?: Record<string, VariableBinding>;
   }[];
@@ -87,24 +81,6 @@ export type VariableBinding =
   | { source: "export"; profile_id: string; key: string }
   | { source: "identity"; key: string };
 export type IdentityValue = { type: VariableType; binding: VariableBinding };
-export type OutboundExport = {
-  key: string;
-  label: string;
-  kind: "group" | "proxy";
-  target: string;
-};
-export type OutboundInput = {
-  key: string;
-  label: string;
-  kind: "outbound";
-  section: "proxies" | "prepend-proxies" | "append-proxies";
-  name: string;
-  field: "dialer-proxy";
-};
-export type CapabilityBinding =
-  | { source: "default" }
-  | { source: "export"; profile_id: string; key: string }
-  | { source: "literal"; value: string };
 export type Resource = {
   id: string;
   kind: string;

@@ -80,23 +80,24 @@ export function ProvideEditor({ value, candidates, onChange }: { value: Variable
     onChange([...value, { key: `value_${n}`, label: candidate.label, type: candidate.type, selector: candidate.selector }]);
   };
   return <section className="capability-editor">
-    <div className="section-heading"><div><h3>提供的值</h3><p className="muted">只列出候选，不自动判断用途。选择后由你命名并保存；上游 YAML 无需提供 Camofy 元数据。</p></div></div>
-    {candidates.length > 0 && <label>从当前配置选择
-      <select aria-label="从 YAML 选择值" value="" onChange={(e) => { const candidate = candidates[Number(e.target.value)]; if (candidate) addCandidate(candidate); }}>
-        <option value="">选择一个候选值…</option>
+    <div className="section-heading"><div><h3>导出变量</h3><p className="muted">此 Profile 向身份提供的值。订阅源的变量由你在 Camofy 中定义，上游无需配合。</p></div>
+      <button type="button" onClick={() => onChange([...value, { key: "", label: "", type: "string", selector: { source: "literal", value: "" } }])}>添加固定值</button>
+    </div>
+    {candidates.length > 0 && <label>或从当前 YAML 提取
+      <select aria-label="从 YAML 提取导出值" value="" onChange={(e) => { const candidate = candidates[Number(e.target.value)]; if (candidate) addCandidate(candidate); }}>
+        <option value="">选择一个字段或名称…</option>
         {candidates.map((candidate, index) => <option key={`${candidate.label}-${index}`} value={index}>{candidate.label}</option>)}
       </select>
     </label>}
-    <button type="button" onClick={() => onChange([...value, { key: "", label: "", type: "string", selector: { source: "pointer", path: "/" } }])}>手动声明导出</button>
     {value.map((item, index) => <div className="variable-contract-row" key={index}>
-      <label>稳定标识<input required pattern="(?:[A-Za-z0-9_]|-){1,64}" maxLength={64} value={item.key} onChange={(e) => update(index, { key: e.target.value })} placeholder="例如 primary" /></label>
+      <label>变量名<input required pattern="(?:[A-Za-z0-9_]|-){1,64}" maxLength={64} value={item.key} onChange={(e) => update(index, { key: e.target.value })} placeholder="例如 main_group" /></label>
       <label>显示名称<input required maxLength={120} value={item.label} onChange={(e) => update(index, { label: e.target.value })} /></label>
       <label>类型<TypeSelect value={item.type} onChange={(type) => update(index, { type })} /></label>
-      <label>选择方式<select aria-label="选择方式" value={item.selector.source} onChange={(e) => {
+      <label>值的来源<select aria-label="值的来源" value={item.selector.source} onChange={(e) => {
         const source = e.target.value;
         const named = candidates.find((candidate) => candidate.selector.source === "named");
         update(index, { selector: source === "literal" ? { source: "literal", value: "" } : source === "named" && named ? named.selector : { source: "pointer", path: "/" } });
-      }}><option value="pointer">YAML 路径</option><option value="named">按名称定位</option><option value="literal">固定值</option></select></label>
+      }}><option value="literal">直接填写</option><option value="named">从 YAML 中按名称提取</option><option value="pointer">从 YAML 路径提取</option></select></label>
       {item.selector.source === "pointer" && <label>JSON Pointer<input required value={item.selector.path} onChange={(e) => update(index, { selector: { ...item.selector, path: e.target.value } as VariableSelector })} placeholder="/字段/子字段" /></label>}
       {item.selector.source === "named" && <label>已选目标<select aria-label="已选目标" value={selectorKey(item.selector)} onChange={(e) => {
         const candidate = candidates.find((c) => selectorKey(c.selector) === e.target.value);
@@ -104,7 +105,7 @@ export function ProvideEditor({ value, candidates, onChange }: { value: Variable
       }}><option value={selectorKey(item.selector)}>{item.selector.section} / {String(item.selector.match_value)}</option>
         {candidates.filter((c) => c.selector.source === "named" && selectorKey(c.selector) !== selectorKey(item.selector)).map((c) => <option key={selectorKey(c.selector)} value={selectorKey(c.selector)}>{c.label}</option>)}
       </select></label>}
-      {item.selector.source === "literal" && <label>固定值<LiteralInput key={`${index}-${item.type}`} type={item.type} value={item.selector.value} onChange={(v) => update(index, { selector: { source: "literal", value: v } })} /></label>}
+      {item.selector.source === "literal" && <label>提供的值<LiteralInput key={`${index}-${item.type}`} type={item.type} value={item.selector.value} onChange={(v) => update(index, { selector: { source: "literal", value: v } })} /></label>}
       <button type="button" className="danger" onClick={() => onChange(value.filter((_, i) => i !== index))}>移除</button>
     </div>)}
   </section>;
@@ -117,31 +118,30 @@ export function BindingPicker({ value, type, providers, aliases, onChange }: {
     .filter((provided) => provided.type === type || (type === "string" && provided.type === "outbound"))
     .map((provided) => ({ profile, provided })));
   const compatibleAliases = Object.entries(aliases).filter(([, alias]) => alias.type === type || (type === "string" && alias.type === "outbound"));
-  const mode = value?.source ?? "unset";
+  const selected = value?.source === "export" ? `export:${value.profile_id}/${value.key}`
+    : value?.source === "identity" ? `identity:${value.key}`
+      : value?.source === "literal" ? "literal" : "unset";
   return <div className="variable-binding">
-    <select aria-label="变量来源" value={mode} onChange={(e) => {
+    <select aria-label="变量来源" value={selected} onChange={(e) => {
       const source = e.target.value;
       if (source === "literal") onChange({ source: "literal", value: type === "boolean" ? false : type === "integer" || type === "number" ? 0 : type === "list" ? [] : type === "object" ? {} : "" });
-      else if (source === "export" && compatibleExports[0]) onChange({ source: "export", profile_id: compatibleExports[0].profile.id, key: compatibleExports[0].provided.key });
-      else if (source === "identity" && compatibleAliases[0]) onChange({ source: "identity", key: compatibleAliases[0][0] });
+      else if (source.startsWith("export:")) {
+        const found = compatibleExports.find(({ profile, provided }) => `export:${profile.id}/${provided.key}` === source);
+        if (found) onChange({ source: "export", profile_id: found.profile.id, key: found.provided.key });
+      } else if (source.startsWith("identity:")) onChange({ source: "identity", key: source.slice(9) });
       else onChange(undefined);
     }}>
       <option value="unset">未绑定（使用声明的默认值）</option>
       <option value="literal">直接填写</option>
-      {compatibleExports.length > 0 && <option value="export">引用 Profile 提供的值</option>}
-      {compatibleAliases.length > 0 && <option value="identity">引用身份变量</option>}
+      {value?.source === "export" && !compatibleExports.some(({ profile, provided }) => profile.id === value.profile_id && provided.key === value.key) && <option value={selected}>已失效的 Profile 导出</option>}
+      {compatibleExports.length > 0 && <optgroup label="已启用 Profile 提供的值">{compatibleExports.map(({ profile, provided }) =>
+        <option key={`${profile.id}/${provided.key}`} value={`export:${profile.id}/${provided.key}`}>
+          {profile.data.name} / {provided.label}{provided.selector.source === "literal" && typeof provided.selector.value === "string" ? ` · ${provided.selector.value.slice(0, 60)}` : ""}
+        </option>)}</optgroup>}
+      {value?.source === "identity" && !compatibleAliases.some(([key]) => key === value.key) && <option value={selected}>已失效的身份变量</option>}
+      {compatibleAliases.length > 0 && <optgroup label="身份变量">{compatibleAliases.map(([key]) => <option key={key} value={`identity:${key}`}>{key}</option>)}</optgroup>}
     </select>
     {value?.source === "literal" && <LiteralInput key={type} type={type} value={value.value} onChange={(v) => onChange({ source: "literal", value: v })} />}
-    {value?.source === "export" && <select aria-label="Profile 导出" value={`${value.profile_id}/${value.key}`} onChange={(e) => {
-      const found = compatibleExports.find(({ profile, provided }) => `${profile.id}/${provided.key}` === e.target.value);
-      if (found) onChange({ source: "export", profile_id: found.profile.id, key: found.provided.key });
-    }}><option value={`${value.profile_id}/${value.key}`} hidden>已失效的导出</option>
-      {compatibleExports.map(({ profile, provided }) => <option key={`${profile.id}/${provided.key}`} value={`${profile.id}/${provided.key}`}>{profile.data.name} / {provided.label}</option>)}
-    </select>}
-    {value?.source === "identity" && <select aria-label="身份变量" value={value.key} onChange={(e) => onChange({ source: "identity", key: e.target.value })}>
-      <option value={value.key} hidden>已失效的身份变量</option>
-      {compatibleAliases.map(([key]) => <option key={key} value={key}>{key}</option>)}
-    </select>}
   </div>;
 }
 

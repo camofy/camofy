@@ -404,7 +404,6 @@ fn substitute(value: &mut serde_yaml::Value, values: &BTreeMap<String, Value>) -
 
 pub struct Resolver<'a> {
     identity: &'a Value,
-    resources: &'a [Resource],
     enabled: BTreeMap<Uuid, &'a Resource>,
 }
 
@@ -426,11 +425,7 @@ impl<'a> Resolver<'a> {
                 .context("profile not found")?;
             enabled.insert(id, profile);
         }
-        Ok(Self {
-            identity,
-            resources,
-            enabled,
-        })
+        Ok(Self { identity, enabled })
     }
 
     fn binding(&self, id: Uuid) -> Result<&Value> {
@@ -494,36 +489,20 @@ impl<'a> Resolver<'a> {
     }
 
     fn render(&self, profile: &Resource, stack: &mut Vec<String>) -> Result<String> {
-        let content = if profile.data["store"].is_object() {
-            let binding = self.binding(profile.id)?;
-            let mut legacy = binding.clone();
-            if let Some(choice) = binding["capability_bindings"].get("policy") {
-                let resolver = crate::capabilities::Resolver::new(self.resources, self.identity)?;
-                legacy["parameters"]["policy"] = json!(resolver.resolve(Some(choice))?.0);
-            }
-            if binding["variable_bindings"]["policy"].is_object() {
-                legacy["parameters"]["policy"] = json!("{{camofy.policy}}");
-            } else if legacy["parameters"]["policy"]
-                .as_str()
-                .is_none_or(str::is_empty)
-            {
-                // The immutable package's own default is still applied by catalog::compile.
-            }
-            crate::catalog::compile(profile, &legacy)?
-        } else if crate::capabilities::active_contracts(self.resources, self.identity) {
-            let resolver = crate::capabilities::Resolver::new(self.resources, self.identity)?;
-            resolver.compile(profile, self.binding(profile.id)?)?.0
-        } else {
-            profile.data["content"]
+        if profile.data["type"] == "source" {
+            return Ok(profile.data["content"]
                 .as_str()
                 .context("profile has no YAML content")?
-                .to_string()
-        };
-        if profile.data["type"] == "source" {
-            return Ok(content);
+                .to_string());
         }
-        let mut yaml = camofy::engine::parse(&content)?;
         let values = self.values(profile, stack)?;
+        if profile.data["store"].is_object() {
+            return crate::catalog::compile(profile, values.get("policy").and_then(Value::as_str));
+        }
+        let content = profile.data["content"]
+            .as_str()
+            .context("profile has no YAML content")?;
+        let mut yaml = camofy::engine::parse(&content)?;
         substitute(&mut yaml, &values)?;
         Ok(serde_yaml::to_string(&yaml)?)
     }
@@ -546,13 +525,6 @@ impl<'a> Resolver<'a> {
             let value = if let Some(choice) = bindings.and_then(|m| m.get(&item.key)) {
                 let choice: Binding = serde_json::from_value(choice.clone())?;
                 self.resolve_binding(&choice, stack)?
-            } else if profile.data["store"].is_object()
-                && item.key == "policy"
-                && binding["parameters"]["policy"]
-                    .as_str()
-                    .is_some_and(|s| !s.is_empty())
-            {
-                binding["parameters"]["policy"].clone()
             } else if let Some(default) = &item.default {
                 default.clone()
             } else if item.required {
@@ -608,10 +580,6 @@ impl<'a> Resolver<'a> {
             for (key, value) in values {
                 let source = if !binding["variable_bindings"][&key].is_null() {
                     binding["variable_bindings"][&key].clone()
-                } else if profile.data["store"].is_object()
-                    && !binding["parameters"]["policy"].is_null()
-                {
-                    json!({"source":"legacy_package_parameter"})
                 } else {
                     json!({"source":"declared_default"})
                 };
@@ -735,7 +703,8 @@ pub fn active(resources: &[Resource], identity: &Value) -> bool {
                     && (item["variable_bindings"].is_object()
                         || resources.iter().any(|profile| {
                             profile.id.to_string() == item["profile_id"]
-                                && profile.data["variables"].is_array()
+                                && (profile.data["variables"].is_array()
+                                    || profile.data["store"].is_object())
                         }))
             })
         })
