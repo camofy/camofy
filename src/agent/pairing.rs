@@ -540,17 +540,33 @@ mod tests {
             std::env::temp_dir().join(format!("camofy-pairing-test-{}", uuid::Uuid::new_v4()));
         tokio::fs::create_dir_all(&dir).await.unwrap();
         let path = dir.join("agent.json");
-        let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = probe.local_addr().unwrap();
-        drop(probe);
-        let original = json!({"mihomo":"not-needed-before-binding","data_dir":dir,"web_listen":address.to_string(),"dns_redirect":false,"custom":"preserved"});
-        tokio::fs::write(&path, serde_json::to_vec(&original).unwrap())
-            .await
-            .unwrap();
-        let settings: Settings = serde_json::from_value(original.clone()).unwrap();
-        let _rx = start(&settings, path.clone(), super::super::control::channel().0)
-            .await
-            .unwrap();
+        // The OS can reuse a released ephemeral port before start binds it.
+        // Retry only that race, rather than making this test depend on a fixed port.
+        let mut attempts = 0;
+        let (address, original, _rx) = loop {
+            attempts += 1;
+            let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = probe.local_addr().unwrap();
+            drop(probe);
+            let original = json!({"mihomo":"not-needed-before-binding","data_dir":dir,"web_listen":address.to_string(),"dns_redirect":false,"custom":"preserved"});
+            tokio::fs::write(&path, serde_json::to_vec(&original).unwrap())
+                .await
+                .unwrap();
+            let settings: Settings = serde_json::from_value(original.clone()).unwrap();
+            match start(&settings, path.clone(), super::super::control::channel().0).await {
+                Ok(rx) => break (address, original, rx),
+                Err(error)
+                    if error
+                        .root_cause()
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|cause| cause.kind() == std::io::ErrorKind::AddrInUse)
+                        && attempts < 8 =>
+                {
+                    continue;
+                }
+                Err(error) => panic!("cannot start local pairing UI: {error:#}"),
+            }
+        };
         let base = format!("http://{address}");
         let http = reqwest::Client::builder()
             .no_proxy()
