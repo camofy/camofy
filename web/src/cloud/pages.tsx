@@ -53,7 +53,6 @@ function Heading({
   return (
     <header className="page-heading">
       <div>
-        <div className="eyebrow">{section.toUpperCase()}</div>
         <h1>{title ?? meta(section).name}</h1>
         <p>{description ?? meta(section).sub}</p>
       </div>
@@ -196,14 +195,11 @@ export function CollectionPage({ section }: { section: Section }) {
           {rows.map((r) => (
             <article className="identity-card" key={r.id}>
               <div className="card-top">
-                <span className="resource-icon">
-                  <Icon name="layers" size={22} />
-                </span>
+                <h2>
+                  <Link to={resourcePath(r)}>{r.data.name}</Link>
+                </h2>
                 <Status r={r} />
               </div>
-              <h2>
-                <Link to={resourcePath(r)}>{r.data.name}</Link>
-              </h2>
               <p className="muted">
                 {r.data.profiles?.filter((p) => p.enabled).length ?? 0}{" "}
                 项启用配置 <span className="dot-separator">·</span>{" "}
@@ -282,9 +278,6 @@ export function CollectionPage({ section }: { section: Section }) {
                 <tr key={r.id}>
                   <td>
                     <Link className="row-title" to={resourcePath(r)}>
-                      <span className="small-resource-icon">
-                        <Icon name={meta(section).icon} />
-                      </span>
                       {r.data.name}
                     </Link>
                     <small className="row-subtitle">
@@ -556,10 +549,7 @@ function Distribution({ r }: { r: Resource }) {
     : "";
   return (
     <section className="panel distribution">
-      <span className="resource-icon">
-        <Icon name="radio" />
-      </span>
-      <h2>下发渠道 · 订阅链接</h2>
+      <h2>订阅链接</h2>
       <p className="muted">
         复制到 Clash Verge Rev 或 Shadowrocket。路由器请通过设备绑定接入。
       </p>
@@ -911,11 +901,6 @@ function Composition({ r }: { r: Resource }) {
                   >
                     <span className="step-number">
                       {String(i + 1).padStart(2, "0")}
-                    </span>
-                    <span className="small-resource-icon">
-                      <Icon
-                        name={p?.data.type === "source" ? "radio" : "code"}
-                      />
                     </span>
                     <div className="composition-name">
                       <ResourceLink r={p} />
@@ -1362,8 +1347,7 @@ export function DetailPage({ section }: { section: Section }) {
               <References r={r} />
             )}
           </div>
-          <aside className="panel guidance">
-            <Icon name={meta(section).icon} size={24} />
+          <aside className="guidance">
             <h2>
               {isSource
                 ? "上游内容，独立管理"
@@ -1527,8 +1511,7 @@ export function EditPage({
           onSaved={(r) => navigate(resourcePath(r))}
           onClose={() => navigate(back)}
         />
-        <aside className="panel guidance">
-          <span className="eyebrow">GOOD TO KNOW</span>
+        <aside className="guidance">
           <h2>
             {section === "identities" ? "先组合，再分发" : "保持配置职责清晰"}
           </h2>

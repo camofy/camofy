@@ -95,7 +95,6 @@ export function StorePage() {
     <>
       <header className="page-heading">
         <div>
-          <div className="eyebrow">PROFILE STORE</div>
           <h1>Profile 商店</h1>
           <p>发现并安装可复用的配置。</p>
         </div>
@@ -104,7 +103,6 @@ export function StorePage() {
         </Link>
       </header>
       <section className="store-intro">
-        <Icon name="layers" size={32} />
         <div>
           <h2>安装到配置库，按需关联身份。</h2>
           <p>
@@ -155,16 +153,6 @@ export function StorePage() {
             .map((p) => (
               <Link className="store-card" key={p.slug} to={`/store/${p.slug}`}>
                 <div className="store-card-top">
-                  <span className="store-symbol">
-                    <Icon
-                      name={
-                        p.manifest.default_policy === "DIRECT"
-                          ? "route"
-                          : "shield"
-                      }
-                      size={24}
-                    />
-                  </span>
                   <span className="chip">{p.manifest.category}</span>
                 </div>
                 <h2>{p.manifest.name}</h2>
@@ -250,7 +238,6 @@ export function StoreDetail() {
       </Link>
       <header className="page-heading">
         <div>
-          <div className="eyebrow">PROFILE STORE</div>
           <h1>{selected.manifest.name}</h1>
           <p>{selected.manifest.summary}</p>
           <div className="package-byline">
@@ -746,7 +733,6 @@ export function AccountPage({
     <>
       <header className="page-heading">
         <div>
-          <div className="eyebrow">YOUR ACCOUNT</div>
           <h1>个人资料</h1>
           <p>选择对外展示的名字。登录邮箱不会出现在商店商品上。</p>
         </div>

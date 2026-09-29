@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from "react";
-import brandMark from "../assets/flower.png";
+import brandMark from "../assets/mark.svg";
 import { useBlocker, useBeforeUnload } from "react-router-dom";
 import { api, type Data, type PanelService, type Resource, type User } from "./model";
 import { Modal, ConfigPreview, Icon } from "./ui";
@@ -19,9 +19,9 @@ export function Login({ onLogin }: { onLogin: (u: User) => void }) {
       <section>
         <span className="brand">
           <img className="brand-symbol" src={brandMark} alt="" />
-          camofy<span>cloud</span>
+          camofy<span className="brand-edition">Cloud</span>
         </span>
-        <h1>{register ? "创建你的工作区" : "欢迎回来。"}</h1>
+        <h1>{register ? "创建你的工作区" : "欢迎回来"}</h1>
         <p className="muted">
           {register ? "从一份配置开始。" : "登录你的 Camofy 工作区。"}
         </p>
@@ -91,17 +91,22 @@ export function Login({ onLogin }: { onLogin: (u: User) => void }) {
               {error}
             </p>
           )}
-          <button className="primary" disabled={busy}>
+          <button className="primary full-width" disabled={busy}>
             {busy ? "请稍候…" : register ? "创建账号" : "登录"}
           </button>
         </form>
-        <button onClick={() => setRegister(!register)}>
-          {register ? "已有账号？登录" : "首次使用？注册账号"}
-        </button>
-        <p className="footnote">账号与数据保存在当前实例。</p>
-        <a className="home-link" href={import.meta.env.DEV && import.meta.env.MODE === "design" ? "http://127.0.0.1:18741/" : "https://camofy.app/"}>
-          返回官网 ↗
-        </a>
+        <p className="login-switch">
+          {register ? "已有账号？" : "首次使用？"}
+          <button type="button" className="link-button" onClick={() => setRegister(!register)}>
+            {register ? "登录" : "注册账号"}
+          </button>
+        </p>
+        <footer className="login-foot">
+          <span>账号与数据保存在当前实例</span>
+          <a href={import.meta.env.DEV && import.meta.env.MODE === "design" ? "http://127.0.0.1:18741/" : "https://camofy.app/"}>
+            返回官网
+          </a>
+        </footer>
       </section>
     </div>
   );

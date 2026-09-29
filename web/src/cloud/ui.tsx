@@ -37,6 +37,20 @@ export function Icon({ name, size = 18 }: { name: string; size?: number }) {
       </>
     ),
     plus: <path d="M12 5v14M5 12h14" />,
+    store: (
+      <>
+        <path d="M4 9h16l-1 11H5L4 9Z" />
+        <path d="M9 9V7a3 3 0 0 1 6 0v2" />
+      </>
+    ),
+    external: <path d="M8 16 16 8m-6 0h6v6" />,
+    chevron: <path d="m10 7 5 5-5 5" />,
+    logout: (
+      <>
+        <path d="M14 5V4a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-1" />
+        <path d="M10 12h10m-3-3 3 3-3 3" />
+      </>
+    ),
     arrow: <path d="M5 12h14m-5-5 5 5-5 5" />,
     back: <path d="M19 12H5m5-5-5 5 5 5" />,
     search: (
@@ -190,7 +204,7 @@ export function Empty({
   return (
     <div className="empty">
       <span className="empty-icon">
-        <Icon name="layers" size={28} />
+        <Icon name="layers" size={22} />
       </span>
       <h3>{title}</h3>
       <p>{text}</p>

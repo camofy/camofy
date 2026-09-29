@@ -188,10 +188,74 @@ export function designPreview(): Plugin {
       category,
       notes: "虚构的本地设计预览条目，不包含实际第三方规则。",
       default_policy: "DIRECT",
-      sources: [],
+      sources: [
+        {
+          url: "https://example.invalid/rules/" + slug + ".list",
+          revision: "0f3c9a1d2b7e4c58a6d0e1f2a3b4c5d6e7f80912",
+          license: "CC0-1.0",
+          license_text:
+            "本地设计预览的虚构许可文本。\n正式目录中，这里展示来源仓库随版本固定的许可全文。",
+          attribution: "Camofy 本地演示",
+          sha256:
+            "9b2f3c6e1d8a7f40b5c2e9d1a6f3b8c4e7d2a5f9c1b6e3d8a4f7c2b9e5d1a6f3",
+        },
+      ],
     },
     rules: [{ kind: "DOMAIN-SUFFIX", value: "example.org", no_resolve: false }],
   }));
+  resources.splice(7, 0, {
+    id: "store-daily-direct",
+    kind: "profile",
+    version: 1,
+    data: {
+      name: "日常直连",
+      type: "overlay",
+      origin: "store",
+      content: "",
+      store: {
+        slug: "daily-direct",
+        version_id: "demo-daily-direct",
+        update_policy: "manual",
+      },
+      _package: { version: "1.0.0", manifest: packages[0].manifest },
+    },
+  });
+  const nodes = [
+    "香港 01", "香港 02", "日本 东京 01", "日本 大阪 02", "新加坡 01",
+    "美国 洛杉矶 01", "美国 圣何塞 02", "台湾 01", "英国 伦敦 01",
+  ];
+  const proxyView = (id: string) => {
+    const device = resources.find((r) => r.id === id)?.kind === "device";
+    return {
+      identity_id: device ? "home" : id,
+      identity_name: device ? "家里的网络" : "日常网络",
+      version: 3,
+      groups: [
+        { name: "节点选择", kind: "Selector", members: ["自动选择", ...nodes], now: "香港 01", dynamic: false },
+        { name: "自动选择", kind: "URLTest", members: nodes, now: "日本 东京 01", dynamic: true },
+        { name: "流媒体", kind: "Selector", members: ["节点选择", ...nodes.slice(2, 7)], now: "新加坡 01", dynamic: false },
+        { name: "开发工具", kind: "Selector", members: ["DIRECT", "节点选择"], now: "节点选择", dynamic: false },
+      ],
+      selections: { 节点选择: "香港 01", 流媒体: "新加坡 01" },
+      overrides: device ? { 流媒体: "日本 大阪 02" } : {},
+      state: { status: "applied", received_at: now - 40, sampled_at: now - 45, selection_version: 3 },
+      reported: device ? { protocol: 2, core_state: "running" } : undefined,
+      jobs: device
+        ? nodes.slice(0, 5).map((name, i) => ({
+            id: "job-" + i, method: "proxies.delay", status: i === 3 ? "failed" : "succeeded",
+            created_at: now - 300, params: { name },
+            result: i === 3 ? { error: "timeout" } : { value: { name, delay: 48 + i * 37, sampled_at: now - 290 } },
+          }))
+        : [],
+      events: [
+        { id: "ev-2", created_at: now - 600, group: "流媒体", from: "日本 东京 01", to: "新加坡 01", source: "cloud", status: "applied" },
+        { id: "ev-1", created_at: now - 7200, group: "节点选择", from: "自动选择", to: "香港 01", source: "cloud", status: "applied" },
+      ],
+      devices: device
+        ? undefined
+        : [{ id: "study-router", name: "书房路由器", reported: { proxy_state: { status: "applied", received_at: now - 40 } } }],
+    };
+  };
   return {
     name: "camofy-local-design-preview",
     apply: "serve",
@@ -332,6 +396,23 @@ export function designPreview(): Plugin {
             resources.push(item);
             return send(item);
           }
+          if (path.startsWith("/oauth/requests/"))
+            return send({
+              device_name: "客厅路由器",
+              return_uri: "http://192.0.2.1:3000/cloud/callback",
+              scope: "sync",
+            });
+          if (path.endsWith("/source-preview"))
+            return send({
+              content:
+                "# 日常直连 v1.0.0 · 本地演示\nprepend-rules:\n  - DOMAIN-SUFFIX,example.org," +
+                (draft.policy || "DIRECT") +
+                "\n",
+              policy: draft.policy || "DIRECT",
+              parameterized: false,
+            });
+          if (path.endsWith("/proxies") && path.startsWith("/resources/"))
+            return send(proxyView(path.split("/")[2]));
           const resourceId = path.split("/")[2];
           const current = resources.find((r) => r.id === resourceId);
           if (path.startsWith("/admin/proxies/") && current) {

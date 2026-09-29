@@ -32,7 +32,7 @@ export function UsagePanel({ r }: { r: Resource }) {
   const complete = u && ["ok", "stale"].includes(u.status);
   const known = u && u.known_pools > 0 && u.status !== "overflow";
   return <section className="panel usage-panel" aria-label={identity ? "套餐额度汇总" : "订阅使用量"}>
-    <div className="panel-heading"><div><span className="eyebrow">SUBSCRIPTION USAGE</span><h2>{identity ? "套餐额度汇总" : "订阅使用量"}</h2></div><span className={`chip ${complete ? "" : "disabled"}`}>{states[u?.status ?? "unavailable"]}</span></div>
+    <div className="panel-heading"><div><h2>{identity ? "套餐额度汇总" : "订阅使用量"}</h2></div><span className={`chip ${complete ? "" : "disabled"}`}>{states[u?.status ?? "unavailable"]}</span></div>
     <div className="usage-headline"><div><span className="muted">{complete ? "已用流量" : "已知小计"}</span><div className="usage-value">{known ? bytes(used(u)) : "—"}<small>/ {known ? bytes(u.total) : "—"}</small></div></div><div className="usage-coverage"><strong>{u?.known_pools ?? 0}<span> / {u?.total_pools ?? 0}</span></strong><small>套餐有可用数据</small></div></div>
     {known && <Meter amount={used(u)} total={u.total} />}
     <dl className="usage-metrics">

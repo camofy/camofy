@@ -63,7 +63,7 @@ export function VariableEditor({ value, onChange }: { value: TemplateVariable[];
       <label className="check"><input type="checkbox" checked={item.required} onChange={(e) => update(index, { required: e.target.checked })} />必填</label>
       <label className="check"><input type="checkbox" checked={item.default !== undefined} onChange={(e) => update(index, { default: e.target.checked ? item.type === "boolean" ? false : item.type === "integer" || item.type === "number" ? 0 : item.type === "list" ? [] : item.type === "object" ? {} : "" : undefined })} />提供默认值</label>
       {item.default !== undefined && <label>默认值<LiteralInput key={`${index}-${item.type}`} type={item.type} value={item.default} onChange={(defaultValue) => update(index, { default: defaultValue })} /></label>}
-      <button type="button" className="danger" onClick={() => onChange(value.filter((_, i) => i !== index))}>移除</button>
+      <button type="button" className="danger-text" onClick={() => onChange(value.filter((_, i) => i !== index))}>移除</button>
       <small className="variable-contract-hint">YAML 写法：<code>{item.key ? `{{camofy.${item.key}}}` : "{{camofy.变量名}}"}</code>。未绑定时，必填变量阻止发布。</small>
     </div>)}
   </section>;
@@ -106,7 +106,7 @@ export function ProvideEditor({ value, candidates, onChange }: { value: Variable
         {candidates.filter((c) => c.selector.source === "named" && selectorKey(c.selector) !== selectorKey(item.selector)).map((c) => <option key={selectorKey(c.selector)} value={selectorKey(c.selector)}>{c.label}</option>)}
       </select></label>}
       {item.selector.source === "literal" && <label>提供的值<LiteralInput key={`${index}-${item.type}`} type={item.type} value={item.selector.value} onChange={(v) => update(index, { selector: { source: "literal", value: v } })} /></label>}
-      <button type="button" className="danger" onClick={() => onChange(value.filter((_, i) => i !== index))}>移除</button>
+      <button type="button" className="danger-text" onClick={() => onChange(value.filter((_, i) => i !== index))}>移除</button>
     </div>)}
   </section>;
 }
@@ -163,7 +163,7 @@ export function IdentityValuesEditor({ value, providers, onChange }: { value: Re
       <label>变量名<input required pattern="(?:[A-Za-z0-9_]|-){1,64}" maxLength={64} value={key} onChange={(e) => replace(key, e.target.value, item)} /></label>
       <label>类型<TypeSelect value={item.type} onChange={(type) => replace(key, key, { type, binding: { source: "literal", value: type === "boolean" ? false : type === "integer" || type === "number" ? 0 : type === "list" ? [] : type === "object" ? {} : "" } })} /></label>
       <BindingPicker type={item.type} value={item.binding} providers={providers} aliases={Object.fromEntries(entries.filter(([other]) => other !== key))} onChange={(binding) => { if (binding) replace(key, key, { ...item, binding }); }} />
-      <button type="button" className="danger" onClick={() => { const result = { ...value }; delete result[key]; onChange(result); }}>移除</button>
+      <button type="button" className="danger-text" onClick={() => { const result = { ...value }; delete result[key]; onChange(result); }}>移除</button>
     </div>)}
   </section>;
 }

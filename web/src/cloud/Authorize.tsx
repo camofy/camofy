@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import brandMark from "../assets/flower.png";
+import brandMark from "../assets/mark.svg";
 import { useSearchParams, Link } from "react-router-dom";
 import { api, type Resource, type User } from "./model";
 import { Icon } from "./ui";
@@ -74,7 +74,7 @@ export default function Authorize({
       <section className="authorize-card">
         <Link className="authorize-brand" to="/identities">
           <img className="brand-symbol" src={brandMark} alt="" />
-          camofy <small>CLOUD</small>
+          camofy<span className="brand-edition">Cloud</span>
         </Link>
         <div className="authorize-account">
           <span>当前账号</span>
@@ -83,9 +83,6 @@ export default function Authorize({
             切换账号
           </button>
         </div>
-        <span className="resource-icon">
-          <Icon name="monitor" size={24} />
-        </span>
         <h1>连接你的设备</h1>
         <p className="muted">
           确认这是你刚刚从设备页面发起的请求。授权后，该设备只能同步所选身份，不能管理你的账号。

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import brandMark from "./assets/flower.png";
+import brandMark from "./assets/mark.svg";
 import {
   createBrowserRouter,
   RouterProvider,
@@ -140,10 +140,7 @@ function CloudWorkspace() {
   if (!ready)
     return (
       <div className="loading">
-        <span className="brand">
-          <img className="brand-symbol" src={brandMark} alt="" />
-          camofy<span>cloud</span>
-        </span>
+        <img className="brand-symbol" src={brandMark} alt="" />
         <p>正在连接工作区…</p>
       </div>
     );
@@ -203,30 +200,9 @@ function CloudWorkspace() {
             onClick={() => setMobile(false)}
           >
             <img className="brand-symbol" src={brandMark} alt="" />
-            camofy<span className="brand-edition">CLOUD</span>
+            camofy<span className="brand-edition">Cloud</span>
           </Link>
-          <div className="workspace-switch">
-            <span className="workspace-avatar">
-              {user.email[0].toUpperCase()}
-            </span>
-            <div>
-              <strong>个人工作区</strong>
-              <small>{user.nickname || user.email}</small>
-            </div>
-            <Icon name="shield" size={16} />
-          </div>
-          <div className="nav-caption">配置管理</div>
           <nav aria-label="主导航">
-            <NavLink
-              to="/store"
-              className={({ isActive }) =>
-                `nav-item ${isActive ? "active" : ""}`
-              }
-              onClick={() => setMobile(false)}
-            >
-              <Icon name="layers" />
-              <span>Profile 商店</span>
-            </NavLink>
             {sections
               .filter((s) => s.key !== "proxies")
               .map((s) => (
@@ -238,16 +214,27 @@ function CloudWorkspace() {
                     `nav-item ${isActive ? "active" : ""}`
                   }
                 >
-                  <Icon name={s.icon} />
+                  <Icon name={s.icon} size={17} />
                   <span>{s.name}</span>
                   <small>
                     {resources.filter((r) => sectionOf(r) === s.key).length}
                   </small>
                 </NavLink>
               ))}
+            <div className="nav-caption">发现</div>
+            <NavLink
+              to="/store"
+              className={({ isActive }) =>
+                `nav-item ${isActive ? "active" : ""}`
+              }
+              onClick={() => setMobile(false)}
+            >
+              <Icon name="store" size={17} />
+              <span>Profile 商店</span>
+            </NavLink>
             {user.role === "admin" && (
               <>
-                <div className="nav-caption">系统管理</div>
+                <div className="nav-caption">平台管理</div>
                 <NavLink
                   to="/proxies"
                   className={({ isActive }) =>
@@ -255,14 +242,15 @@ function CloudWorkspace() {
                   }
                   onClick={() => setMobile(false)}
                 >
-                  <Icon name="route" />
+                  <Icon name="route" size={17} />
                   <span>订阅出口</span>
                 </NavLink>
               </>
             )}
           </nav>
-          <div className="sidebar-note">
+          <div className="sidebar-foot">
             <a
+              className="sidebar-link"
               href={
                 import.meta.env.DEV && import.meta.env.MODE === "design"
                   ? "http://127.0.0.1:18741/"
@@ -271,34 +259,40 @@ function CloudWorkspace() {
               target="_blank"
               rel="noreferrer"
             >
-              Camofy 官网 <Icon name="arrow" size={14} />
+              Camofy 官网
+              <Icon name="external" size={13} />
             </a>
-          </div>
-          <div className="sidebar-account">
-            <span className="account-avatar">
-              {user.email[0].toUpperCase()}
-            </span>
-            <Link
-              to="/account"
-              title="个人资料"
-              onClick={() => setMobile(false)}
-            >
-              {user.nickname || "个人资料"}
-            </Link>
-            <button
-              className="icon-button"
-              aria-label="退出登录"
-              onClick={() => {
-                void api("/auth/logout", "POST")
-                  .then(() => {
-                    setUser(null);
-                    setResources([]);
-                  })
-                  .catch((e) => setError(e.message));
-              }}
-            >
-              <Icon name="arrow" size={16} />
-            </button>
+            <div className="sidebar-account">
+              <Link
+                to="/account"
+                title="个人资料"
+                className="account-link"
+                onClick={() => setMobile(false)}
+              >
+                <span className="account-avatar">
+                  {(user.nickname || user.email)[0].toUpperCase()}
+                </span>
+                <span className="account-name">
+                  <strong>{user.nickname || "个人资料"}</strong>
+                  <small>{user.email}</small>
+                </span>
+              </Link>
+              <button
+                className="icon-button"
+                aria-label="退出登录"
+                title="退出登录"
+                onClick={() => {
+                  void api("/auth/logout", "POST")
+                    .then(() => {
+                      setUser(null);
+                      setResources([]);
+                    })
+                    .catch((e) => setError(e.message));
+                }}
+              >
+                <Icon name="logout" size={16} />
+              </button>
+            </div>
           </div>
         </aside>
         <div className="main-column">
@@ -311,21 +305,29 @@ function CloudWorkspace() {
               <Icon name="menu" />
             </button>
             <div className="topbar-breadcrumb">
-              工作区<span>/</span>
-              {current?.name ??
-                (location.pathname.startsWith("/store")
-                  ? "Profile 商店"
-                  : location.pathname === "/account"
-                    ? "个人资料"
-                    : "页面")}
+              <span>工作区</span>
+              <Icon name="chevron" size={14} />
+              <strong>
+                {current?.name ??
+                  (location.pathname.startsWith("/store")
+                    ? "Profile 商店"
+                    : location.pathname === "/account"
+                      ? "个人资料"
+                      : "页面")}
+              </strong>
             </div>
-            <div className={`live-indicator ${connected ? "connected" : ""}`}>
+            <div
+              className={`live-indicator ${connected ? "connected" : ""}`}
+              title={
+                connected ? "云端变更会实时推送" : "每 15 秒自动同步一次"
+              }
+            >
               <i />
               {import.meta.env.DEV && import.meta.env.MODE === "design"
-                ? "本地演示 · 无线上连接"
+                ? "本地演示"
                 : connected
-                  ? "变更推送已连接"
-                  : "等待连接 · 定时同步可用"}
+                  ? "实时同步"
+                  : "定时同步"}
             </div>
           </div>
           <main className="workspace-content">
@@ -393,9 +395,6 @@ function CloudWorkspace() {
                 <Route path="*" element={<NotFound />} />
               </Routes>
             )}
-            <footer className="workspace-footer">
-              <span>CAMOFY CLOUD</span>为你的所有设备，组织同一份网络配置。
-            </footer>
           </main>
         </div>
         {notice && (
