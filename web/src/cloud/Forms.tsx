@@ -914,9 +914,8 @@ export function Editor({
                       return alias ? `身份变量 ${choice.key} → ${trail(alias.binding, depth + 1)}` : `失效的身份变量 ${choice.key}`;
                     }
                     if (choice.source === "export") {
-                      const provider = all.find((profile) => profile.id === choice.profile_id);
-                      const provided = provider?.data.provides?.find((candidate) => candidate.key === choice.key);
-                      return `${provider?.data.name ?? "已移除的 Profile"} / ${provided?.label ?? choice.key}`;
+                      const providers = enabledProviders.filter((profile) => profile.data.provides?.some((candidate) => candidate.key === choice.key));
+                      return `导出变量 ${choice.key}${providers.length === 1 ? ` → ${providers[0].data.name}` : providers.length > 1 ? " → 多个提供方（冲突）" : " → 无提供方"}`;
                     }
                     if (choice.source === "literal") return "身份内直接填写";
                     return "Profile 声明的默认值";

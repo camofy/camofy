@@ -63,9 +63,23 @@ pub struct Export {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Binding {
-    Literal { value: Value },
-    Export { profile_id: Uuid, key: String },
-    Identity { key: String },
+    Literal {
+        value: Value,
+    },
+    Export {
+        key: String,
+        // Read-only rollout tolerance for bindings saved by the previous release.
+        // Resolution is always by the identity's enabled export key, never this ID.
+        #[serde(
+            default,
+            rename = "profile_id",
+            skip_serializing_if = "Option::is_none"
+        )]
+        legacy_profile_id: Option<Uuid>,
+    },
+    Identity {
+        key: String,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -321,6 +335,42 @@ pub fn validate_identity(data: &Value) -> Result<()> {
     Ok(())
 }
 
+/// New identity writes never retain the previous provider-specific export ID.
+pub fn canonicalize_identity(data: &mut Value) {
+    fn clean(choice: &mut Value) {
+        if choice["source"] == "export" {
+            if let Some(object) = choice.as_object_mut() {
+                object.remove("profile_id");
+            }
+        }
+    }
+    for item in data
+        .get_mut("profiles")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        for choice in item
+            .get_mut("variable_bindings")
+            .and_then(Value::as_object_mut)
+            .into_iter()
+            .flat_map(|map| map.values_mut())
+        {
+            clean(choice);
+        }
+    }
+    for item in data
+        .get_mut("identity_values")
+        .and_then(Value::as_object_mut)
+        .into_iter()
+        .flat_map(|map| map.values_mut())
+    {
+        if let Some(choice) = item.get_mut("binding") {
+            clean(choice);
+        }
+    }
+}
+
 fn select(config: &Value, selector: &Selector) -> Result<Value> {
     match selector {
         Selector::Literal { value } => Ok(value.clone()),
@@ -437,6 +487,23 @@ impl<'a> Resolver<'a> {
             .context("profile not enabled in identity")
     }
 
+    fn export_provider(&self, key: &str) -> Result<(Uuid, &'a Resource, Export)> {
+        ensure!(identifier(key), "invalid export variable name");
+        let mut matches = Vec::new();
+        for (id, profile) in &self.enabled {
+            for item in exports(&profile.data)? {
+                if item.key == key {
+                    matches.push((*id, *profile, item));
+                }
+            }
+        }
+        match matches.len() {
+            0 => bail!("no enabled Profile exports variable {key}"),
+            1 => Ok(matches.remove(0)),
+            _ => bail!("multiple enabled Profiles export variable {key}"),
+        }
+    }
+
     fn resolve_binding(&self, choice: &Binding, stack: &mut Vec<String>) -> Result<Value> {
         match choice {
             Binding::Literal { value } => Ok(value.clone()),
@@ -457,20 +524,13 @@ impl<'a> Resolver<'a> {
                 );
                 Ok(value)
             }
-            Binding::Export { profile_id, key } => {
-                let marker = format!("export:{profile_id}:{key}");
+            Binding::Export { key, .. } => {
+                let marker = format!("export:{key}");
                 ensure!(
                     !stack.contains(&marker),
                     "Profile variable dependency cycle"
                 );
-                let profile = self
-                    .enabled
-                    .get(profile_id)
-                    .context("export provider is not enabled in this identity")?;
-                let item = exports(&profile.data)?
-                    .into_iter()
-                    .find(|item| item.key == *key)
-                    .context("export not declared by provider")?;
+                let (_, profile, item) = self.export_provider(key)?;
                 stack.push(marker);
                 let result = (|| {
                     let content = self.render(profile, stack)?;
@@ -680,7 +740,7 @@ impl<'a> Resolver<'a> {
 
     fn provider_of(&self, choice: &Binding, stack: &mut Vec<String>) -> Result<Option<Uuid>> {
         match choice {
-            Binding::Export { profile_id, .. } => Ok(Some(*profile_id)),
+            Binding::Export { key, .. } => Ok(Some(self.export_provider(key)?.0)),
             Binding::Identity { key } => {
                 ensure!(!stack.contains(key), "identity value cycle");
                 let item: IdentityValue =
@@ -759,7 +819,7 @@ mod tests {
                 "route":{"source":"identity","key":"main"}}},
             {"profile_id":provider.id,"enabled":true}],
             "identity_values":{"main":{"type":"outbound","binding":{
-                "source":"export","profile_id":provider.id,"key":"egress"}}}});
+                "source":"export","key":"egress"}}}});
         let resources = [consumer.clone(), provider];
         let resolver = Resolver::new(&resources, &identity).unwrap();
         let rendered = camofy::engine::parse(&resolver.compile(&consumer).unwrap()).unwrap();
@@ -851,7 +911,7 @@ mod tests {
     }
 
     #[test]
-    fn outbound_references_preserve_provider_identity_across_merge_order() {
+    fn outbound_export_keys_preserve_provider_identity_across_merge_order() {
         let source = profile(
             "airport",
             json!({"type":"source",
@@ -866,7 +926,7 @@ mod tests {
             "variables":[{"key":"upstream","label":"Transit","type":"outbound","required":true}]}),
         );
         let identity = json!({"profiles":[
-            {"profile_id":consumer.id,"enabled":true,"variable_bindings":{"upstream":{"source":"export","profile_id":source.id,"key":"main"}}},
+            {"profile_id":consumer.id,"enabled":true,"variable_bindings":{"upstream":{"source":"export","key":"main"}}},
             {"profile_id":source.id,"enabled":true}]});
         let resources = [consumer.clone(), source.clone()];
         let resolver = Resolver::new(&resources, &identity).unwrap();
@@ -928,11 +988,89 @@ mod tests {
             "rules":[{"kind":"DOMAIN","value":"example.org","no_resolve":false}]}}),
         );
         let identity = json!({"profiles":[{"profile_id":package.id,"enabled":true,
-            "variable_bindings":{"policy":{"source":"export","profile_id":provider.id,"key":"route"}}},
+            "variable_bindings":{"policy":{"source":"export","key":"route"}}},
             {"profile_id":provider.id,"enabled":true}]});
         let resources = [package.clone(), provider];
         let resolver = Resolver::new(&resources, &identity).unwrap();
         let content = resolver.compile(&package).unwrap();
         assert!(content.contains("DOMAIN,example.org,Route"));
+    }
+
+    #[test]
+    fn identity_binding_resolves_same_export_key_after_provider_change() {
+        let first = profile(
+            "first",
+            json!({"type":"source",
+                "content":"proxy-groups: [{name: Gateway, type: select, proxies: [DIRECT]}]",
+                "provides":[{"key":"selected_group","label":"Main group","type":"string",
+                    "selector":{"source":"literal","value":"Gateway"}}]}),
+        );
+        let second = profile(
+            "second",
+            json!({"type":"source",
+                "content":"proxy-groups: [{name: 节点选择, type: select, proxies: [DIRECT]}]",
+                "provides":[{"key":"selected_group","label":"Chosen group","type":"string",
+                    "selector":{"source":"literal","value":"节点选择"}}]}),
+        );
+        let consumer = profile(
+            "custom",
+            json!({"type":"overlay",
+                "content":"proxy-group-patches: [{name: '{{camofy.position}}', append-proxies: [DIRECT]}]",
+                "variables":[{"key":"position","label":"Position","type":"string","required":true}]}),
+        );
+        let resources = [first.clone(), second.clone(), consumer.clone()];
+        let mut identity = json!({"profiles":[
+            {"profile_id":first.id,"enabled":true},
+            {"profile_id":second.id,"enabled":false},
+            {"profile_id":consumer.id,"enabled":true,"variable_bindings":{
+                "position":{"source":"export","key":"selected_group"}}}]});
+        let first = Resolver::new(&resources, &identity).unwrap();
+        assert!(first.compile(&consumer).unwrap().contains("name: Gateway"));
+        identity["profiles"][0]["enabled"] = json!(false);
+        identity["profiles"][1]["enabled"] = json!(true);
+        let second = Resolver::new(&resources, &identity).unwrap();
+        assert!(
+            second
+                .compile(&consumer)
+                .unwrap()
+                .contains("name: 节点选择")
+        );
+        identity["profiles"][0]["enabled"] = json!(true);
+        let ambiguous = Resolver::new(&resources, &identity).unwrap();
+        assert!(
+            ambiguous
+                .compile(&consumer)
+                .unwrap_err()
+                .to_string()
+                .contains("multiple enabled")
+        );
+        identity["profiles"][0]["enabled"] = json!(false);
+        identity["profiles"][1]["enabled"] = json!(false);
+        let absent = Resolver::new(&resources, &identity).unwrap();
+        assert!(
+            absent
+                .compile(&consumer)
+                .unwrap_err()
+                .to_string()
+                .contains("no enabled")
+        );
+    }
+
+    #[test]
+    fn saved_identity_bindings_drop_the_obsolete_provider_id() {
+        let provider = Uuid::new_v4();
+        let mut identity = json!({"profiles":[{"profile_id":Uuid::new_v4(),"enabled":true,
+            "variable_bindings":{"position":{"source":"export","profile_id":provider,"key":"target"}}}],
+            "identity_values":{"shared":{"type":"string","binding":{
+                "source":"export","profile_id":provider,"key":"target"}}}});
+        canonicalize_identity(&mut identity);
+        assert_eq!(
+            identity["profiles"][0]["variable_bindings"]["position"],
+            json!({"source":"export","key":"target"})
+        );
+        assert_eq!(
+            identity["identity_values"]["shared"]["binding"],
+            json!({"source":"export","key":"target"})
+        );
     }
 }

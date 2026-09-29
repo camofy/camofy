@@ -2,6 +2,7 @@ use crate::{App, Error};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{PgConnection, Row};
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -137,6 +138,475 @@ pub async fn migrate_policy_bindings(app: &App) -> anyhow::Result<usize> {
         .await?;
     tx.commit().await?;
     Ok(migrated)
+}
+
+fn old_export_reference(value: &Value) -> anyhow::Result<Option<(Uuid, String)>> {
+    if value["source"] != "export" || value.get("profile_id").is_none() {
+        return Ok(None);
+    }
+    let id: Uuid = value["profile_id"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("invalid old export provider ID"))?
+        .parse()?;
+    let key = value["key"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("invalid old export key"))?;
+    Ok(Some((id, key.to_owned())))
+}
+
+fn identity_choices(data: &Value) -> Vec<&Value> {
+    let mut out = Vec::new();
+    for item in data["profiles"].as_array().into_iter().flatten() {
+        out.extend(
+            item["variable_bindings"]
+                .as_object()
+                .into_iter()
+                .flat_map(|m| m.values()),
+        );
+    }
+    for item in data["identity_values"]
+        .as_object()
+        .into_iter()
+        .flat_map(|m| m.values())
+    {
+        if let Some(binding) = item.get("binding") {
+            out.push(binding);
+        }
+    }
+    out
+}
+
+fn rewrite_old_export(
+    value: &mut Value,
+    aliases: &BTreeMap<(Uuid, String), String>,
+) -> anyhow::Result<bool> {
+    let Some(pair) = old_export_reference(value)? else {
+        return Ok(false);
+    };
+    let Some(alias) = aliases.get(&pair) else {
+        return Ok(false);
+    };
+    value["key"] = json!(alias);
+    // Keep the old ID as inert data for a bounded image rollback. The new
+    // resolver ignores it and all newly created bindings omit it.
+    Ok(true)
+}
+
+/// Provider-specific bindings that would change meaning under key resolution
+/// receive a unique export key. Non-ambiguous bindings already resolve by key
+/// and retain their human-readable names. No provider-ID resolver branch remains.
+fn migrate_export_data(resources: &mut [Resource]) -> anyhow::Result<BTreeSet<Uuid>> {
+    let mut pairs = BTreeSet::new();
+    let mut used = BTreeSet::new();
+    for resource in resources.iter() {
+        if resource.kind == "profile" {
+            for item in resource.data["provides"].as_array().into_iter().flatten() {
+                if let Some(key) = item["key"].as_str() {
+                    used.insert(key.to_owned());
+                }
+            }
+        }
+    }
+    for identity in resources.iter().filter(|r| r.kind == "bundle") {
+        let enabled: BTreeSet<Uuid> = identity.data["profiles"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|item| item["enabled"] == true)
+            .filter_map(|item| item["profile_id"].as_str().and_then(|id| id.parse().ok()))
+            .collect();
+        for choice in identity_choices(&identity.data) {
+            let Some((provider, key)) = old_export_reference(choice)? else {
+                continue;
+            };
+            let matching: Vec<Uuid> = resources
+                .iter()
+                .filter(|r| r.kind == "profile" && enabled.contains(&r.id))
+                .filter(|r| {
+                    r.data["provides"]
+                        .as_array()
+                        .is_some_and(|items| items.iter().any(|item| item["key"] == key))
+                })
+                .map(|r| r.id)
+                .collect();
+            if matching.len() != 1 || matching[0] != provider {
+                pairs.insert((provider, key));
+            }
+        }
+    }
+    let mut aliases = BTreeMap::new();
+    for (provider, key) in pairs {
+        let base = format!(
+            "bound_{}_{}",
+            provider.simple(),
+            &camofy::digest(&key)[..12]
+        );
+        let mut alias = base.clone();
+        let mut suffix = 0;
+        while used.contains(&alias) {
+            suffix += 1;
+            alias = format!("{base}_{suffix}");
+        }
+        anyhow::ensure!(alias.len() <= 64, "export alias too long");
+        used.insert(alias.clone());
+        aliases.insert((provider, key), alias);
+    }
+    if aliases.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let mut changed = BTreeSet::new();
+    for resource in resources.iter_mut() {
+        if resource.kind == "profile" {
+            for item in resource
+                .data
+                .get_mut("provides")
+                .and_then(Value::as_array_mut)
+                .into_iter()
+                .flatten()
+            {
+                let Some(key) = item["key"].as_str() else {
+                    continue;
+                };
+                if let Some(alias) = aliases.get(&(resource.id, key.to_owned())) {
+                    item["key"] = json!(alias);
+                    changed.insert(resource.id);
+                }
+            }
+        } else if resource.kind == "bundle" {
+            let mut modified = false;
+            for item in resource
+                .data
+                .get_mut("profiles")
+                .and_then(Value::as_array_mut)
+                .into_iter()
+                .flatten()
+            {
+                for choice in item
+                    .get_mut("variable_bindings")
+                    .and_then(Value::as_object_mut)
+                    .into_iter()
+                    .flat_map(|m| m.values_mut())
+                {
+                    modified |= rewrite_old_export(choice, &aliases)?;
+                }
+            }
+            for item in resource
+                .data
+                .get_mut("identity_values")
+                .and_then(Value::as_object_mut)
+                .into_iter()
+                .flat_map(|m| m.values_mut())
+            {
+                if let Some(choice) = item.get_mut("binding") {
+                    modified |= rewrite_old_export(choice, &aliases)?;
+                }
+            }
+            if modified {
+                changed.insert(resource.id);
+            }
+        }
+    }
+    Ok(changed)
+}
+
+pub async fn migrate_export_bindings(app: &App) -> anyhow::Result<usize> {
+    const KEY: &str = "profile-export-variables-v2";
+    let mut tx = app.db.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(835213, 1)")
+        .execute(&mut *tx)
+        .await?;
+    let done: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM admin_audit_events WHERE action=$1)")
+            .bind(KEY)
+            .fetch_one(&mut *tx)
+            .await?;
+    if done {
+        tx.commit().await?;
+        return Ok(0);
+    }
+    sqlx::query("LOCK TABLE resources IN SHARE ROW EXCLUSIVE MODE")
+        .execute(&mut *tx)
+        .await?;
+    let rows = sqlx::query("SELECT id,user_id,kind,version,data FROM resources WHERE kind IN ('profile','bundle') ORDER BY user_id,id FOR UPDATE")
+        .fetch_all(&mut *tx).await?;
+    let mut tenants: BTreeMap<Uuid, Vec<Resource>> = BTreeMap::new();
+    for row in rows {
+        let user: Uuid = row.get("user_id");
+        tenants.entry(user).or_default().push(Resource {
+            id: row.get("id"),
+            kind: row.get("kind"),
+            version: row.get("version"),
+            data: app.vault.open(row.get("data"))?,
+        });
+    }
+    let mut migrated = 0;
+    for resources in tenants.values_mut() {
+        let changed = migrate_export_data(resources)?;
+        for resource in resources.iter().filter(|r| changed.contains(&r.id)) {
+            let updated = sqlx::query("UPDATE resources SET data=$2,version=version+1,updated_at=now() WHERE id=$1 AND version=$3")
+                .bind(resource.id).bind(app.vault.seal(&resource.data)?).bind(resource.version)
+                .execute(&mut *tx).await?;
+            anyhow::ensure!(
+                updated.rows_affected() == 1,
+                "concurrent resource edit during export migration"
+            );
+            migrated += 1;
+        }
+    }
+    sqlx::query("INSERT INTO admin_audit_events(action) VALUES($1)")
+        .bind(KEY)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(migrated)
+}
+
+#[cfg(test)]
+mod export_migration_tests {
+    use super::*;
+    use crate::security::Vault;
+    use crate::variables::Resolver;
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use sqlx::postgres::PgPoolOptions;
+    use std::sync::Arc;
+    use tokio::sync::Semaphore;
+
+    fn profile(id: Uuid, name: &str, key: &str, value: &str) -> Resource {
+        Resource {
+            id,
+            kind: "profile".into(),
+            version: 1,
+            data: json!({"name":name,"type":"source","content":"{}",
+                "provides":[{"key":key,"label":"Group","type":"string",
+                    "selector":{"source":"literal","value":value}}]}),
+        }
+    }
+
+    fn consumer(id: Uuid) -> Resource {
+        Resource {
+            id,
+            kind: "profile".into(),
+            version: 1,
+            data: json!({"name":"consumer","type":"overlay",
+                "content":"first: '{{camofy.first}}'\nsecond: '{{camofy.second}}'",
+                "variables":[{"key":"first","label":"First","type":"string","required":true},
+                    {"key":"second","label":"Second","type":"string","required":true}]}),
+        }
+    }
+
+    #[test]
+    fn ambiguous_old_bindings_receive_unique_keys_without_changing_values() {
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let c = Uuid::new_v4();
+        let i = Uuid::new_v4();
+        let mut resources = vec![
+            profile(a, "a", "route", "A"),
+            profile(b, "b", "route", "B"),
+            consumer(c),
+            Resource {
+                id: i,
+                kind: "bundle".into(),
+                version: 1,
+                data: json!({"published_revision":"unchanged","profiles":[
+                    {"profile_id":a,"enabled":true}, {"profile_id":b,"enabled":true},
+                    {"profile_id":c,"enabled":true,"variable_bindings":{
+                        "first":{"source":"export","profile_id":a,"key":"route"},
+                        "second":{"source":"export","profile_id":b,"key":"route"}}}]}),
+            },
+        ];
+        let changed = migrate_export_data(&mut resources).unwrap();
+        assert_eq!(changed, BTreeSet::from([a, b, i]));
+        let first = resources[0].data["provides"][0]["key"].as_str().unwrap();
+        let second = resources[1].data["provides"][0]["key"].as_str().unwrap();
+        assert_ne!(first, second);
+        assert_eq!(
+            resources[3].data["profiles"][2]["variable_bindings"]["first"]["key"],
+            first
+        );
+        assert_eq!(
+            resources[3].data["profiles"][2]["variable_bindings"]["second"]["key"],
+            second
+        );
+        assert_eq!(resources[3].data["published_revision"], "unchanged");
+        let resolver = Resolver::new(&resources, &resources[3].data).unwrap();
+        let rendered = resolver.compile(&resources[2]).unwrap();
+        assert!(rendered.contains("first: A") && rendered.contains("second: B"));
+    }
+
+    #[test]
+    fn safe_old_binding_needs_no_alias_and_can_follow_enabled_provider() {
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let c = Uuid::new_v4();
+        let mut resources = vec![
+            profile(a, "a", "route", "A"),
+            profile(b, "b", "route", "B"),
+            consumer(c),
+            Resource {
+                id: Uuid::new_v4(),
+                kind: "bundle".into(),
+                version: 1,
+                data: json!({"profiles":[{"profile_id":a,"enabled":true},
+                    {"profile_id":b,"enabled":false},
+                    {"profile_id":c,"enabled":true,"variable_bindings":{
+                        "first":{"source":"export","profile_id":a,"key":"route"},
+                        "second":{"source":"literal","value":"constant"}}}]}),
+            },
+        ];
+        assert!(migrate_export_data(&mut resources).unwrap().is_empty());
+        resources[3].data["profiles"][0]["enabled"] = json!(false);
+        resources[3].data["profiles"][1]["enabled"] = json!(true);
+        let resolver = Resolver::new(&resources, &resources[3].data).unwrap();
+        assert!(
+            resolver
+                .compile(&resources[2])
+                .unwrap()
+                .contains("first: B")
+        );
+    }
+
+    #[test]
+    fn disabled_old_provider_cannot_silently_rebind_to_another_export() {
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let c = Uuid::new_v4();
+        let mut resources = vec![
+            profile(a, "a", "route", "A"),
+            profile(b, "b", "route", "B"),
+            consumer(c),
+            Resource {
+                id: Uuid::new_v4(),
+                kind: "bundle".into(),
+                version: 1,
+                data: json!({"profiles":[{"profile_id":a,"enabled":false},
+                    {"profile_id":b,"enabled":true},
+                    {"profile_id":c,"enabled":true,"variable_bindings":{
+                        "first":{"source":"export","profile_id":a,"key":"route"},
+                        "second":{"source":"literal","value":"constant"}}}]}),
+            },
+        ];
+        let changed = migrate_export_data(&mut resources).unwrap();
+        assert_eq!(changed, BTreeSet::from([a, resources[3].id]));
+        let resolver = Resolver::new(&resources, &resources[3].data).unwrap();
+        assert!(
+            resolver
+                .compile(&resources[2])
+                .unwrap_err()
+                .to_string()
+                .contains("no enabled")
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL pointing to a disposable PostgreSQL"]
+    async fn encrypted_export_migration_is_atomic_idempotent_and_keeps_revisions() {
+        let db = PgPoolOptions::new()
+            .max_connections(3)
+            .connect(&std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required"))
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        let app = App {
+            db: db.clone(),
+            vault: Vault::new(&STANDARD.encode([47; 32])).unwrap(),
+            origin: "https://cloud.example".into(),
+            legacy_origins: vec![],
+            secure: false,
+            registration: false,
+            private_egress: false,
+            workers: 1,
+            captcha: None,
+            topics: Default::default(),
+            hash_slots: Arc::new(Semaphore::new(1)),
+        };
+        let user = Uuid::new_v4();
+        sqlx::query("INSERT INTO users(id,email,password) VALUES($1,$2,'unused')")
+            .bind(user)
+            .bind(format!("{user}@example.test"))
+            .execute(&db)
+            .await
+            .unwrap();
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        let identity = Uuid::new_v4();
+        let invalid = Uuid::new_v4();
+        let data = [
+            (first, "profile", profile(first, "first", "route", "A").data),
+            (
+                second,
+                "profile",
+                profile(second, "second", "route", "B").data,
+            ),
+            (
+                identity,
+                "bundle",
+                json!({"name":"identity","published_revision":"keep-revision",
+                "profiles":[{"profile_id":first,"enabled":true},{"profile_id":second,"enabled":true,
+                    "variable_bindings":{"route":{"source":"export","profile_id":first,"key":"route"}}}]}),
+            ),
+            (
+                invalid,
+                "bundle",
+                json!({"name":"invalid","profiles":[{"profile_id":second,"enabled":true,
+                "variable_bindings":{"route":{"source":"export","profile_id":"not-a-uuid","key":"route"}}}]}),
+            ),
+        ];
+        for (id, kind, data) in &data {
+            sqlx::query(
+                "INSERT INTO resources(id,user_id,kind,data,version) VALUES($1,$2,$3,$4,1)",
+            )
+            .bind(id)
+            .bind(user)
+            .bind(kind)
+            .bind(app.vault.seal(data).unwrap())
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+        assert!(migrate_export_bindings(&app).await.is_err());
+        let unchanged = sqlx::query("SELECT data,version FROM resources WHERE id=$1")
+            .bind(first)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(unchanged.get::<i64, _>("version"), 1);
+        assert_eq!(app.vault.open(unchanged.get("data")).unwrap(), data[0].2);
+        sqlx::query("DELETE FROM resources WHERE id=$1")
+            .bind(invalid)
+            .execute(&db)
+            .await
+            .unwrap();
+        assert_eq!(migrate_export_bindings(&app).await.unwrap(), 2);
+        let source = sqlx::query("SELECT data,version FROM resources WHERE id=$1")
+            .bind(first)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        let new_key = app.vault.open(source.get("data")).unwrap()["provides"][0]["key"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_ne!(new_key, "route");
+        assert_eq!(source.get::<i64, _>("version"), 2);
+        let saved_identity: Value = sqlx::query_scalar("SELECT data FROM resources WHERE id=$1")
+            .bind(identity)
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        let saved_identity = app.vault.open(saved_identity).unwrap();
+        assert_eq!(
+            saved_identity["profiles"][1]["variable_bindings"]["route"]["key"],
+            new_key
+        );
+        assert_eq!(saved_identity["published_revision"], "keep-revision");
+        assert_eq!(migrate_export_bindings(&app).await.unwrap(), 0);
+        sqlx::query("DELETE FROM users WHERE id=$1")
+            .bind(user)
+            .execute(&db)
+            .await
+            .unwrap();
+    }
 }
 
 #[cfg(test)]

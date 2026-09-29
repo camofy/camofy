@@ -80,7 +80,7 @@ export function ProvideEditor({ value, candidates, onChange }: { value: Variable
     onChange([...value, { key: `value_${n}`, label: candidate.label, type: candidate.type, selector: candidate.selector }]);
   };
   return <section className="capability-editor">
-    <div className="section-heading"><div><h3>导出变量</h3><p className="muted">此 Profile 向身份提供的值。订阅源的变量由你在 Camofy 中定义，上游无需配合。</p></div>
+    <div className="section-heading"><div><h3>导出变量</h3><p className="muted">此 Profile 向身份提供的值，由你在 Camofy 中定义，上游无需配合。可让不同 Profile 使用同一个导出变量名，切换启用关系时沿用身份绑定。</p></div>
       <button type="button" onClick={() => onChange([...value, { key: "", label: "", type: "string", selector: { source: "literal", value: "" } }])}>添加固定值</button>
     </div>
     {candidates.length > 0 && <label>或从当前 YAML 提取
@@ -114,11 +114,16 @@ export function ProvideEditor({ value, candidates, onChange }: { value: Variable
 export function BindingPicker({ value, type, providers, aliases, onChange }: {
   value?: VariableBinding; type: VariableType; providers: Resource[]; aliases: Record<string, IdentityValue>; onChange: (value?: VariableBinding) => void;
 }) {
-  const compatibleExports = providers.flatMap((profile) => (profile.data.provides ?? [])
-    .filter((provided) => provided.type === type || (type === "string" && provided.type === "outbound"))
-    .map((provided) => ({ profile, provided })));
+  const exportedKeys = new Map<string, VariableExport[]>();
+  for (const profile of providers) for (const provided of profile.data.provides ?? []) {
+    const entries = exportedKeys.get(provided.key) ?? [];
+    entries.push(provided);
+    exportedKeys.set(provided.key, entries);
+  }
+  const compatibleExports = [...exportedKeys].filter(([, entries]) =>
+    entries.every((provided) => provided.type === type || (type === "string" && provided.type === "outbound")));
   const compatibleAliases = Object.entries(aliases).filter(([, alias]) => alias.type === type || (type === "string" && alias.type === "outbound"));
-  const selected = value?.source === "export" ? `export:${value.profile_id}/${value.key}`
+  const selected = value?.source === "export" ? `export:${value.key}`
     : value?.source === "identity" ? `identity:${value.key}`
       : value?.source === "literal" ? "literal" : "unset";
   return <div className="variable-binding">
@@ -126,21 +131,20 @@ export function BindingPicker({ value, type, providers, aliases, onChange }: {
       const source = e.target.value;
       if (source === "literal") onChange({ source: "literal", value: type === "boolean" ? false : type === "integer" || type === "number" ? 0 : type === "list" ? [] : type === "object" ? {} : "" });
       else if (source.startsWith("export:")) {
-        const found = compatibleExports.find(({ profile, provided }) => `export:${profile.id}/${provided.key}` === source);
-        if (found) onChange({ source: "export", profile_id: found.profile.id, key: found.provided.key });
+        const key = source.slice("export:".length);
+        if (compatibleExports.some(([candidate]) => candidate === key)) onChange({ source: "export", key });
       } else if (source.startsWith("identity:")) onChange({ source: "identity", key: source.slice(9) });
       else onChange(undefined);
     }}>
       <option value="unset">未绑定（使用声明的默认值）</option>
       <option value="literal">直接填写</option>
-      {value?.source === "export" && !compatibleExports.some(({ profile, provided }) => profile.id === value.profile_id && provided.key === value.key) && <option value={selected}>已失效的 Profile 导出</option>}
-      {compatibleExports.length > 0 && <optgroup label="已启用 Profile 提供的值">{compatibleExports.map(({ profile, provided }) =>
-        <option key={`${profile.id}/${provided.key}`} value={`export:${profile.id}/${provided.key}`}>
-          {profile.data.name} / {provided.label}{provided.selector.source === "literal" && typeof provided.selector.value === "string" ? ` · ${provided.selector.value.slice(0, 60)}` : ""}
-        </option>)}</optgroup>}
+      {value?.source === "export" && !compatibleExports.some(([key]) => key === value.key) && <option value={selected}>当前不可用的导出变量 · {value.key}</option>}
+      {compatibleExports.length > 0 && <optgroup label="已启用 Profile 导出的变量">{compatibleExports.map(([key, entries]) =>
+        <option key={key} value={`export:${key}`}>{key}{entries.length > 1 ? " · 多个提供方，预览将报冲突" : ""}</option>)}</optgroup>}
       {value?.source === "identity" && !compatibleAliases.some(([key]) => key === value.key) && <option value={selected}>已失效的身份变量</option>}
       {compatibleAliases.length > 0 && <optgroup label="身份变量">{compatibleAliases.map(([key]) => <option key={key} value={`identity:${key}`}>{key}</option>)}</optgroup>}
     </select>
+    {value?.source === "export" && <small className="variable-contract-hint">绑定变量 <code>{value.key}</code>；由当前身份中唯一启用的提供方赋值。</small>}
     {value?.source === "literal" && <LiteralInput key={type} type={type} value={value.value} onChange={(v) => onChange({ source: "literal", value: v })} />}
   </div>;
 }
@@ -153,7 +157,7 @@ export function IdentityValuesEditor({ value, providers, onChange }: { value: Re
     result[newKey] = next;
     onChange(result);
   };
-  return <section className="capability-editor"><div className="section-heading"><div><h3>身份变量</h3><p className="muted">在这个身份内命名可复用的值。只有明确绑定才会被使用；不会猜“默认出口”。</p></div>
+  return <section className="capability-editor"><div className="section-heading"><div><h3>身份变量</h3><p className="muted">在这个身份内命名可复用的值。输入名与导出变量名可以不同，必须明确绑定；同名导出同时启用会报冲突。</p></div>
     <button type="button" onClick={() => { let i = 1; while (value[`value_${i}`]) i++; onChange({ ...value, [`value_${i}`]: { type: "string", binding: { source: "literal", value: "" } } }); }}>添加身份变量</button></div>
     {entries.map(([key, item]) => <div className="variable-contract-row" key={key}>
       <label>变量名<input required pattern="(?:[A-Za-z0-9_]|-){1,64}" maxLength={64} value={key} onChange={(e) => replace(key, e.target.value, item)} /></label>

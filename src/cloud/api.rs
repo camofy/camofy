@@ -309,6 +309,7 @@ async fn save(
             if data.get("default_outbound").is_some() {
                 return Err(Error::bad("obsolete identity outbound is unsupported"));
             }
+            crate::variables::canonicalize_identity(&mut data);
             crate::variables::validate_identity(&data).map_err(|e| Error::bad(e.to_string()))?;
             let bindings = data["profiles"].as_array().ok_or_else(|| {
                 Error::bad("profiles must be ordered {profile_id, enabled} bindings")

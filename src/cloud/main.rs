@@ -301,6 +301,10 @@ async fn main() -> anyhow::Result<()> {
     if migrated > 0 {
         tracing::info!(resources = migrated, "Profile policy bindings migrated");
     }
+    let migrated = store::migrate_export_bindings(&app).await?;
+    if migrated > 0 {
+        tracing::info!(resources = migrated, "Profile export bindings migrated");
+    }
     tracing::info!(
         workers = app.workers,
         registration = app.registration,

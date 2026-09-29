@@ -880,9 +880,7 @@ function Composition({ r }: { r: Resource }) {
     if (!choice) return "未绑定（使用声明的默认值）";
     if (choice.source === "literal") return "身份内直接填写";
     if (choice.source === "identity") return `身份变量 · ${choice.key}`;
-    const provider = resources.find((profile) => profile.id === choice.profile_id);
-    const provided = provider?.data.provides?.find((item) => item.key === choice.key);
-    return `${provider?.data.name ?? "已移除的 Profile"} / ${provided?.label ?? choice.key}`;
+    return `导出变量 · ${choice.key}`;
   };
   return (
     <div className="detail-columns">

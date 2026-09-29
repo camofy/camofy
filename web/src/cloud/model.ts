@@ -78,7 +78,7 @@ export type VariableExport = { key: string; label: string; type: VariableType; s
 export type ExportCandidate = { label: string; type: VariableType; selector: VariableSelector };
 export type VariableBinding =
   | { source: "literal"; value: unknown }
-  | { source: "export"; profile_id: string; key: string }
+  | { source: "export"; key: string }
   | { source: "identity"; key: string };
 export type IdentityValue = { type: VariableType; binding: VariableBinding };
 export type Resource = {

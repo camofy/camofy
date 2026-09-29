@@ -14,7 +14,7 @@ fn identity_compiles_explicit_profile_exports_into_client_yaml() {
         version: 1,
         data: json!({"type":"overlay","name":"Relay","content":"prepend-proxies: [{name: Exit, type: socks5, server: example.org, port: 1080, dialer-proxy: '{{camofy.upstream}}'}]","variables":[{"key":"upstream","label":"Upstream","type":"outbound","required":true}]}),
     };
-    let identity = json!({"profiles":[{"profile_id":consumer.id,"enabled":true,"variable_bindings":{"upstream":{"source":"export","profile_id":provider.id,"key":"main"}}},{"profile_id":provider.id,"enabled":true}]});
+    let identity = json!({"profiles":[{"profile_id":consumer.id,"enabled":true,"variable_bindings":{"upstream":{"source":"export","key":"main"}}},{"profile_id":provider.id,"enabled":true}]});
     let resources = [consumer.clone(), provider.clone()];
     let (artifacts, _) =
         store::render_bundle(&resources, &identity, "https://cloud.example").unwrap();
@@ -24,8 +24,8 @@ fn identity_compiles_explicit_profile_exports_into_client_yaml() {
         variables::Resolver::new(&resources, &identity)
             .unwrap()
             .explain()
-            .unwrap()[0]["binding"]["profile_id"],
-        provider.id.to_string()
+            .unwrap()[0]["binding"]["key"],
+        "main"
     );
 
     let mut missing = resources.clone();
@@ -45,7 +45,7 @@ fn source_exports_bind_to_generic_template_values_without_shared_names() {
         version: 1,
         data: json!({"type":"source","name":"First source",
             "content":"proxy-groups: [{name: Proxies, type: select, proxies: [DIRECT]}]",
-            "provides":[{"key":"main_group","label":"Main group","type":"string",
+            "provides":[{"key":"target_group","label":"Main group","type":"string",
                 "selector":{"source":"literal","value":"Proxies"}}]}),
     };
     let second = store::Resource {
@@ -54,7 +54,7 @@ fn source_exports_bind_to_generic_template_values_without_shared_names() {
         version: 1,
         data: json!({"type":"source","name":"Second source",
             "content":"proxy-groups: [{name: 节点选择, type: select, proxies: [DIRECT]}]",
-            "provides":[{"key":"selection","label":"Selection","type":"string",
+            "provides":[{"key":"target_group","label":"Selection","type":"string",
                 "selector":{"source":"literal","value":"节点选择"}}]}),
     };
     let addition = store::Resource {
@@ -70,7 +70,7 @@ fn source_exports_bind_to_generic_template_values_without_shared_names() {
         {"profile_id":first.id,"enabled":true},
         {"profile_id":second.id,"enabled":false},
         {"profile_id":addition.id,"enabled":true,"variable_bindings":{"position":
-            {"source":"export","profile_id":first.id,"key":"main_group"}}}
+            {"source":"export","key":"target_group"}}}
     ]});
     for (index, expected) in ["Proxies", "节点选择"].into_iter().enumerate() {
         let (artifacts, _) =
@@ -82,10 +82,11 @@ fn source_exports_bind_to_generic_template_values_without_shared_names() {
         if index == 0 {
             identity["profiles"][0]["enabled"] = json!(false);
             identity["profiles"][1]["enabled"] = json!(true);
-            identity["profiles"][2]["variable_bindings"]["position"] =
-                json!({"source":"export","profile_id":second.id,"key":"selection"});
         }
     }
+    identity["profiles"][0]["enabled"] = json!(true);
+    assert!(store::render_bundle(&resources, &identity, "https://cloud.example").is_err());
+    identity["profiles"][0]["enabled"] = json!(false);
     identity["profiles"][2]["variable_bindings"] = json!({});
     assert!(store::render_bundle(&resources, &identity, "https://cloud.example").is_err());
 }
@@ -128,16 +129,16 @@ fn variable_profiles_compose_with_plain_profiles() {
 }
 
 #[test]
-fn one_profile_can_bind_multiple_inputs_to_different_providers() {
-    let make_provider = |name: &str, group: &str| store::Resource {
+fn one_profile_can_bind_multiple_inputs_to_different_export_keys() {
+    let make_provider = |name: &str, group: &str, key: &str| store::Resource {
         id: Uuid::new_v4(),
         kind: "profile".into(),
         version: 1,
         data: json!({"type":"source","name":name,"content":format!("proxy-groups: [{{name: {group}, type: select, proxies: [DIRECT]}}]"),
-            "provides":[{"key":"out","label":"Outbound","type":"outbound","selector":{"source":"literal","value":group}}]}),
+            "provides":[{"key":key,"label":"Outbound","type":"outbound","selector":{"source":"literal","value":group}}]}),
     };
-    let first = make_provider("First", "East");
-    let second = make_provider("Second", "West");
+    let first = make_provider("First", "East", "east_route");
+    let second = make_provider("Second", "West", "west_route");
     let consumer = store::Resource {
         id: Uuid::new_v4(),
         kind: "profile".into(),
@@ -150,8 +151,8 @@ fn one_profile_can_bind_multiple_inputs_to_different_providers() {
     };
     let identity = json!({"profiles":[
         {"profile_id":consumer.id,"enabled":true,"variable_bindings":{
-            "alpha":{"source":"export","profile_id":first.id,"key":"out"},
-            "beta":{"source":"export","profile_id":second.id,"key":"out"}}},
+            "alpha":{"source":"export","key":"east_route"},
+            "beta":{"source":"export","key":"west_route"}}},
         {"profile_id":second.id,"enabled":true},
         {"profile_id":first.id,"enabled":true}]});
     let (artifacts, _) = store::render_bundle(
@@ -381,7 +382,7 @@ fn filtered_source_exports_feed_generic_variables_only_when_retained() {
     let resources = [source.clone(), consumer.clone()];
     let mut identity = json!({"profiles":[
         {"profile_id":source.id,"enabled":true,"source_filter":{"include":["proxies","proxy-groups"]}},
-        {"profile_id":consumer.id,"enabled":true,"variable_bindings":{"upstream":{"source":"export","profile_id":source.id,"key":"transit"}}}
+        {"profile_id":consumer.id,"enabled":true,"variable_bindings":{"upstream":{"source":"export","key":"transit"}}}
     ]});
     let (artifacts, _) =
         store::render_bundle(&resources, &identity, "https://cloud.example").unwrap();
@@ -908,7 +909,7 @@ async fn cloud_end_to_end() {
         json!({"kind":"bundle","data":{"name":"Bound source export","profiles":[
             {"profile_id":src["id"],"enabled":true},
             {"profile_id":consumer["id"],"enabled":true,"variable_bindings":{"upstream":
-                {"source":"export","profile_id":src["id"],"key":"route_name"}}}]}}),
+                {"source":"export","key":"route_name"}}}]}}),
         200,
     )
     .await;
