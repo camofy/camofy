@@ -2,6 +2,7 @@ name: Build cloud and headless agent
 on:
   push:
     tags: ["v*"]
+    branches: [main, master]
   workflow_dispatch:
     inputs:
       include_probe:
@@ -33,14 +34,14 @@ jobs:
       - run: cargo install cross --locked
       - run: cross build --release --locked --no-default-features --features ${{ matrix.features }} --bin ${{ matrix.binary }} --target ${{ matrix.target }}
       - name: Build optional proxy probe
-        if: inputs.include_probe && matrix.binary == 'camofy-agent'
+        if: matrix.binary == 'camofy-agent' && (inputs.include_probe || matrix.target == 'armv7-unknown-linux-musleabihf')
         run: |
           cross build --release --locked --no-default-features --features agent --example proxy-probe --target ${{ matrix.target }}
           mkdir -p probe
           cp target/${{ matrix.target }}/release/examples/proxy-probe probe/
           cd probe && sha256sum proxy-probe > proxy-probe.sha256
       - uses: actions/upload-artifact@v4
-        if: inputs.include_probe && matrix.binary == 'camofy-agent'
+        if: matrix.binary == 'camofy-agent' && (inputs.include_probe || matrix.target == 'armv7-unknown-linux-musleabihf')
         with:
           name: proxy-probe-${{ matrix.target }}
           path: probe/
