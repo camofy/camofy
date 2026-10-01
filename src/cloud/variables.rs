@@ -577,9 +577,17 @@ impl<'a> Resolver<'a> {
         let binding = self.binding(profile.id)?;
         let bindings = binding["variable_bindings"].as_object();
         let allowed: BTreeSet<_> = variables.iter().map(|v| v.key.as_str()).collect();
+        let undeclared: Vec<_> = bindings
+            .into_iter()
+            .flat_map(|m| m.keys())
+            .filter(|key| !allowed.contains(key.as_str()))
+            .map(String::as_str)
+            .collect();
         ensure!(
-            bindings.is_none_or(|m| m.keys().all(|key| allowed.contains(key.as_str()))),
-            "binding names an undeclared variable"
+            undeclared.is_empty(),
+            "Profile {} contains bindings for undeclared variables: {}",
+            profile.data["name"].as_str().unwrap_or("unnamed"),
+            undeclared.join(", ")
         );
         for item in variables {
             let value = if let Some(choice) = bindings.and_then(|m| m.get(&item.key)) {
@@ -861,6 +869,45 @@ mod tests {
                 .compile(&consumer)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn renamed_input_bindings_report_stale_keys_and_recover_without_reassociation() {
+        let consumer = profile(
+            "Renamed routing",
+            json!({"content":"rules: ['MATCH,{{camofy.route}}']\nallow-lan: '{{camofy.lan}}'",
+            "variables":[
+                {"key":"route","label":"Route","type":"outbound","required":true},
+                {"key":"lan","label":"LAN","type":"boolean","required":true}
+            ]}),
+        );
+        let resources = [consumer.clone()];
+        let mut identity = json!({"profiles":[{"profile_id":consumer.id,"enabled":true,
+        "variable_bindings":{
+            "old_route":{"source":"literal","value":"private-example-value"},
+            "route":{"source":"literal","value":"DIRECT"},
+            "lan":{"source":"literal","value":false}
+        }}]});
+        let error = Resolver::new(&resources, &identity)
+            .unwrap()
+            .compile(&consumer)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            error,
+            "Profile Renamed routing contains bindings for undeclared variables: old_route"
+        );
+        identity["profiles"][0]["variable_bindings"]
+            .as_object_mut()
+            .unwrap()
+            .remove("old_route");
+        let content = Resolver::new(&resources, &identity)
+            .unwrap()
+            .compile(&consumer)
+            .unwrap();
+        let yaml = camofy::engine::parse(&content).unwrap();
+        assert_eq!(yaml["rules"][0].as_str(), Some("MATCH,DIRECT"));
+        assert_eq!(yaml["allow-lan"].as_bool(), Some(false));
     }
 
     #[test]

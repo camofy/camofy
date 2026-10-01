@@ -2,7 +2,7 @@ import { useState, useRef, useCallback } from "react";
 import brandMark from "../assets/mark.svg";
 import { useBlocker, useBeforeUnload } from "react-router-dom";
 import { api, type Data, type PanelService, type Resource, type User } from "./model";
-import { Modal, ConfigPreview, Icon } from "./ui";
+import { Modal, ConfigPreview, FieldActionRow, Icon } from "./ui";
 import { type IdentityPreview } from "./Store";
 import { BindingPicker, IdentityValuesEditor, ProvideEditor, VariableEditor } from "./Variables";
 import type { TemplateVariable, VariableBinding } from "./model";
@@ -229,6 +229,24 @@ export function Editor({
     const ids = [...(data.profiles ?? [])];
     [ids[i], ids[i + delta]] = [ids[i + delta], ids[i]];
     set("profiles", ids);
+  };
+  const setVariableBinding = (
+    profileId: string,
+    key: string,
+    value?: VariableBinding,
+  ) => {
+    setData((current) => ({
+      ...current,
+      profiles: current.profiles?.map((binding) => {
+        if (binding.profile_id !== profileId) return binding;
+        const variable_bindings = { ...binding.variable_bindings };
+        if (value) variable_bindings[key] = value;
+        else delete variable_bindings[key];
+        return { ...binding, variable_bindings };
+      }),
+    }));
+    setError("");
+    setPreview(null);
   };
   const toggleSourceFilter = (
     index: number,
@@ -782,25 +800,38 @@ export function Editor({
                   const variables: TemplateVariable[] = profile?.data.store
                     ? [{ key: "policy", label: "访问策略", type: "outbound", required: !profile.data._package?.manifest.default_policy }]
                     : profile?.data.variables ?? [];
-                  return variables.map((variable) => <div className="identity-variable-row" key={variable.key}>
-                    <label>{variable.label} <small><code>{variable.key}</code> · {variable.type}{variable.required ? " · 必填" : ""}</small></label>
-                    <BindingPicker
-                      type={variable.type}
-                      value={binding.variable_bindings?.[variable.key]}
-                      providers={enabledProviders}
-                      aliases={data.identity_values ?? {}}
-                      onChange={(value?: VariableBinding) => {
-                        set("profiles", data.profiles?.map((x, index) => {
-                          if (index !== i) return x;
-                          const next = { ...x.variable_bindings };
-                          if (value) next[variable.key] = value;
-                          else delete next[variable.key];
-                          return { ...x, variable_bindings: next };
-                        }));
-                        setPreview(null);
-                      }}
-                    />
-                  </div>);
+                  const declared = new Set(variables.map((variable) => variable.key));
+                  const obsolete = profile
+                    ? Object.keys(binding.variable_bindings ?? {}).filter((key) => !declared.has(key))
+                    : [];
+                  return <>
+                    {obsolete.map((key) => <div className="identity-variable-row" key={`obsolete:${key}`}>
+                      <FieldActionRow>
+                        <p className="inline-error" role="alert">
+                          输入绑定 <code>{key}</code> 已失效：此 Profile 已删除或更名该输入。请移除旧绑定后重新预览。
+                        </p>
+                        <button
+                          type="button"
+                          className="danger-text"
+                          aria-label={`${profile?.data.name} · 移除失效绑定 ${key}`}
+                          disabled={busy || previewBusy}
+                          onClick={() => setVariableBinding(binding.profile_id, key)}
+                        >
+                          移除失效绑定
+                        </button>
+                      </FieldActionRow>
+                    </div>)}
+                    {variables.map((variable) => <div className="identity-variable-row" key={variable.key}>
+                      <label>{variable.label} <small><code>{variable.key}</code> · {variable.type}{variable.required ? " · 必填" : ""}</small></label>
+                      <BindingPicker
+                        type={variable.type}
+                        value={binding.variable_bindings?.[variable.key]}
+                        providers={enabledProviders}
+                        aliases={data.identity_values ?? {}}
+                        onChange={(value?: VariableBinding) => setVariableBinding(binding.profile_id, variable.key, value)}
+                      />
+                    </div>)}
+                  </>;
                 })()}
                 {all.find((r) => r.id === binding.profile_id)?.data.type === "source" && (
                   <div className="source-filter" role="group"

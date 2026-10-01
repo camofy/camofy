@@ -1969,6 +1969,10 @@ div.inline-error {
   color: var(--faint);
   font-weight: 400;
 }
+.identity-variable-row .field-action-row > p {
+  min-width: min(220px, 100%);
+  overflow-wrap: anywhere;
+}
 
 /* ==========================================================================
    Usage
