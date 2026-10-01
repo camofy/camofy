@@ -233,6 +233,225 @@ fn artifact_response(
     );
     Ok(r)
 }
+const RUNTIME_REPORT_FIELDS: &[&str] = &[
+    "revision",
+    "last_successful_revision",
+    "attempted_revision",
+    "status",
+    "message",
+    "diagnostic",
+    "retry",
+    "core_state",
+    "core_state_seen_at",
+];
+
+/// Normalize old agents before merging telemetry. In the old protocol a failed
+/// report's `revision` names the candidate, never evidence of a successful apply.
+fn report_state(body: &Value, previous: &Value, now: u64) -> Result<Value, Error> {
+    let mut report = json!({"seen_at":now});
+    for key in RUNTIME_REPORT_FIELDS.iter().copied().chain([
+        "delays",
+        "command_id",
+        "command_error",
+        "protocol",
+    ]) {
+        if key != "core_state_seen_at"
+            && let Some(value) = body.get(key)
+        {
+            report[key] = value.clone();
+        }
+    }
+    if !["applied", "failed", "online"].contains(&report["status"].as_str().unwrap_or("")) {
+        return Err(Error::bad("invalid report status"));
+    }
+    if !report["message"].is_null()
+        && !report["message"]
+            .as_str()
+            .is_some_and(|value| value.len() <= 500)
+    {
+        return Err(Error::bad("invalid status message"));
+    }
+    for key in ["revision", "last_successful_revision", "attempted_revision"] {
+        if !report[key].is_null()
+            && !report[key]
+                .as_str()
+                .is_some_and(|value| Uuid::parse_str(value).is_ok())
+        {
+            return Err(Error::bad("invalid revision"));
+        }
+    }
+    if let Some(diagnostic) = report.get("diagnostic").filter(|value| !value.is_null()) {
+        if !diagnostic.is_object()
+            || !["stage", "kind", "message"].into_iter().all(|key| {
+                diagnostic[key]
+                    .as_str()
+                    .is_some_and(|value| value.len() <= if key == "message" { 500 } else { 64 })
+            })
+            || !["exit_code", "signal"].into_iter().all(|key| {
+                diagnostic[key].is_null()
+                    || diagnostic[key]
+                        .as_i64()
+                        .is_some_and(|value| i32::try_from(value).is_ok())
+            })
+            || !diagnostic["output_truncated"].is_boolean()
+        {
+            return Err(Error::bad("invalid diagnostic"));
+        }
+        report["diagnostic"] = json!({
+            "stage": diagnostic["stage"], "kind": diagnostic["kind"],
+            "message": diagnostic["message"], "exit_code": diagnostic["exit_code"],
+            "signal": diagnostic["signal"], "output_truncated": diagnostic["output_truncated"],
+        });
+    }
+    if let Some(retry) = report.get("retry").filter(|value| !value.is_null()) {
+        if !retry.is_object()
+            || !retry["failures"]
+                .as_u64()
+                .is_some_and(|value| value > 0 && u32::try_from(value).is_ok())
+            || !retry["next_retry_at"]
+                .as_u64()
+                .is_some_and(|value| value <= i64::MAX as u64)
+            || !retry["delay_seconds"]
+                .as_u64()
+                .is_some_and(|value| value > 0 && value <= 86_400)
+        {
+            return Err(Error::bad("invalid retry state"));
+        }
+        report["retry"] = json!({"failures":retry["failures"], "next_retry_at":retry["next_retry_at"], "delay_seconds":retry["delay_seconds"]});
+    }
+
+    let last_success = if body.get("last_successful_revision").is_some() {
+        body["last_successful_revision"].clone()
+    } else if (body["status"] == "applied" || body["status"] == "online")
+        && body["revision"].is_string()
+    {
+        body["revision"].clone()
+    } else if previous.get("last_successful_revision").is_some() {
+        previous["last_successful_revision"].clone()
+    } else if previous["status"] == "applied" || previous["status"] == "online" {
+        previous["revision"].clone()
+    } else {
+        Value::Null
+    };
+    report["attempted_revision"] = body
+        .get("attempted_revision")
+        .cloned()
+        .unwrap_or_else(|| body["revision"].clone());
+    report["revision"] = last_success.clone();
+    report["last_successful_revision"] = last_success;
+
+    if report["core_state"].is_null() {
+        if let Some(core) = previous.get("core_state") {
+            report["core_state"] = core.clone();
+            report["core_state_seen_at"] = previous
+                .get("core_state_seen_at")
+                .unwrap_or(&previous["seen_at"])
+                .clone();
+        }
+    } else {
+        if !["running", "stopping", "stopped", "unavailable", "unbound"]
+            .contains(&report["core_state"].as_str().unwrap_or(""))
+        {
+            return Err(Error::bad("invalid core state"));
+        }
+        report["core_state_seen_at"] = json!(now);
+    }
+    Ok(report)
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_failure_preserves_success_and_timestamped_core_state() {
+        let successful = Uuid::new_v4().to_string();
+        let candidate = Uuid::new_v4().to_string();
+        let previous = json!({"status":"applied", "revision":successful, "core_state":"running", "seen_at":100});
+        let failed = report_state(
+            &json!({"status":"failed", "revision":candidate}),
+            &previous,
+            200,
+        )
+        .unwrap();
+        assert_eq!(failed["revision"], successful);
+        assert_eq!(failed["last_successful_revision"], successful);
+        assert_eq!(failed["attempted_revision"], candidate);
+        assert_eq!(failed["core_state"], "running");
+        assert_eq!(failed["core_state_seen_at"], 100);
+        assert_eq!(failed["seen_at"], 200);
+        let repeated = report_state(
+            &json!({"status":"failed", "revision":candidate}),
+            &failed,
+            300,
+        )
+        .unwrap();
+        assert_eq!(repeated["last_successful_revision"], successful);
+        assert_eq!(repeated["core_state_seen_at"], 100);
+
+        let unknown = report_state(
+            &json!({"status":"failed", "revision":candidate}),
+            &Value::Null,
+            200,
+        )
+        .unwrap();
+        assert!(unknown["last_successful_revision"].is_null());
+        assert!(unknown["revision"].is_null());
+        let still_unknown = report_state(
+            &json!({"status":"failed", "revision":candidate}),
+            &json!({"status":"failed", "revision":candidate}),
+            300,
+        )
+        .unwrap();
+        assert!(still_unknown["last_successful_revision"].is_null());
+    }
+
+    #[test]
+    fn modern_failure_keeps_bounded_diagnostics_and_clears_on_recovery() {
+        let candidate = Uuid::new_v4().to_string();
+        let failed = report_state(&json!({
+            "status":"failed", "revision":null, "last_successful_revision":null, "attempted_revision":candidate,
+            "core_state":"unavailable", "core_state_seen_at":1,
+            "diagnostic":{"stage":"validation", "kind":"out_of_memory", "message":"Mihomo ran out of memory", "exit_code":2, "signal":null, "output_truncated":true, "logs":"private output"},
+            "retry":{"failures":3,"next_retry_at":320,"delay_seconds":120,"extra":"private output"},
+            "logs":"private output"
+        }), &Value::Null, 200).unwrap();
+        assert_eq!(failed["core_state_seen_at"], 200);
+        assert_eq!(failed["diagnostic"]["kind"], "out_of_memory");
+        assert_eq!(failed["retry"]["failures"], 3);
+        assert!(!failed.to_string().contains("private output"));
+        let recovered = report_state(&json!({"status":"applied", "revision":candidate, "last_successful_revision":candidate,"attempted_revision":candidate,"core_state":"running","diagnostic":null,"retry":null}), &failed, 400).unwrap();
+        assert_eq!(recovered["last_successful_revision"], candidate);
+        assert_eq!(recovered["core_state_seen_at"], 400);
+        assert!(recovered["diagnostic"].is_null());
+        assert!(recovered["retry"].is_null());
+
+        let mut invalid = failed;
+        invalid["retry"]["failures"] = json!(-1);
+        assert!(report_state(&invalid, &Value::Null, 300).is_err());
+        invalid["retry"] = Value::Null;
+        invalid["diagnostic"]["message"] = json!("x".repeat(501));
+        assert!(report_state(&invalid, &Value::Null, 300).is_err());
+        invalid["diagnostic"] = Value::Null;
+        invalid["attempted_revision"] = json!("not-a-revision");
+        assert!(report_state(&invalid, &Value::Null, 300).is_err());
+    }
+
+    #[test]
+    fn legacy_control_report_without_revision_retains_known_success() {
+        let revision = Uuid::new_v4().to_string();
+        let report = report_state(
+            &json!({"status":"online","revision":null,"core_state":"stopped"}),
+            &json!({"status":"applied","revision":revision,"core_state":"running","seen_at":100}),
+            200,
+        )
+        .unwrap();
+        assert_eq!(report["last_successful_revision"], revision);
+        assert_eq!(report["core_state"], "stopped");
+        assert_eq!(report["core_state_seen_at"], 200);
+    }
+}
+
 pub async fn report(
     State(app): State<App>,
     h: HeaderMap,
@@ -246,38 +465,29 @@ pub async fn report(
     let mut tx = app.db.begin().await?;
     store::lock(&mut tx, a.user).await?;
     let mut d = store::get(&app, &mut tx, a.user, id).await?;
-    let mut sanitized = json!({"seen_at":crate::now()});
-    for k in [
-        "revision",
-        "status",
-        "message",
-        "delays",
-        "command_id",
-        "core_state",
-        "command_error",
-        "protocol",
-    ] {
-        if let Some(v) = body.get(k) {
-            sanitized[k] = v.clone();
+    let mut sanitized = report_state(&body, &d.data["reported"], crate::now())?;
+    let mut checked = std::collections::HashSet::new();
+    for key in ["revision", "last_successful_revision", "attempted_revision"] {
+        let Some(s) = sanitized[key].as_str() else {
+            continue;
+        };
+        if !checked.insert(s.to_owned()) {
+            continue;
         }
-    }
-    if !["applied", "failed", "online"].contains(&sanitized["status"].as_str().unwrap_or("")) {
-        return Err(Error::bad("invalid report status"));
-    }
-    if sanitized["message"].as_str().is_some_and(|s| s.len() > 500) {
-        return Err(Error::bad("status message too long"));
-    }
-    if let Some(s) = sanitized["revision"].as_str() {
         let revision = Uuid::parse_str(s).map_err(|_| Error::bad("invalid revision"))?;
-        let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM revisions WHERE id=$1 AND user_id=$2 AND bundle_id=$3)",
-        )
-        .bind(revision)
-        .bind(a.user)
-        .bind(a.bundle)
-        .fetch_one(&mut *tx)
-        .await?;
-        if !exists {
+        let owner_matches: Option<bool> =
+            sqlx::query_scalar("SELECT user_id=$2 AND bundle_id=$3 FROM revisions WHERE id=$1")
+                .bind(revision)
+                .bind(a.user)
+                .bind(a.bundle)
+                .fetch_optional(&mut *tx)
+                .await?;
+        // Revision artifacts are pruned independently of a device's last good
+        // configuration. An absent historical success is device-reported metadata,
+        // not permission to read an artifact. Existing foreign revisions remain
+        // forbidden, and a new candidate must still belong to this identity.
+        if owner_matches == Some(false) || (owner_matches.is_none() && key == "attempted_revision")
+        {
             return Err(Error::bad("revision does not belong to device bundle"));
         }
     }
@@ -286,12 +496,24 @@ pub async fn report(
             tracing::info!(device_id = %id, "stale device command report ignored");
             return Ok(StatusCode::NO_CONTENT); // Stale measurement from a replaced command.
         }
-        if d.data["command"]["type"] == "test_delays" {
+        if d.data["command"]["type"] == "test_delays" && d.data["reported"]["status"].is_string() {
             // A background latency result cannot overwrite runtime state.
-            for k in ["revision", "status", "message", "core_state"] {
-                if let Some(value) = d.data["reported"].get(k) {
-                    sanitized[k] = value.clone();
+            let previous = report_state(
+                &d.data["reported"],
+                &Value::Null,
+                d.data["reported"]["seen_at"]
+                    .as_u64()
+                    .unwrap_or(crate::now()),
+            )?;
+            for &key in RUNTIME_REPORT_FIELDS {
+                if let Some(value) = previous.get(key) {
+                    sanitized[key] = value.clone();
+                } else {
+                    sanitized.as_object_mut().unwrap().remove(key);
                 }
+            }
+            if let Some(at) = d.data["reported"].get("core_state_seen_at") {
+                sanitized["core_state_seen_at"] = at.clone();
             }
         }
         d.data["command"] = Value::Null;
@@ -315,7 +537,9 @@ pub async fn report(
     tx.commit().await?;
     if d.data["reported"]["status"] == "failed" {
         tracing::warn!(device_id = %id, bundle_id = %a.bundle,
-            revision = ?d.data["reported"]["revision"].as_str(), "device reported configuration failure");
+            revision = ?d.data["reported"]["attempted_revision"].as_str(),
+            failure_kind = ?d.data["reported"]["diagnostic"]["kind"].as_str(),
+            "device reported configuration failure");
     }
     Ok(StatusCode::NO_CONTENT)
 }

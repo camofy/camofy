@@ -5,6 +5,10 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 
 pub(super) enum Request {
     Core(String),
+    DelayReport {
+        id: String,
+        delays: Value,
+    },
     Proxy {
         method: String,
         params: Value,

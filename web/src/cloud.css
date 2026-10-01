@@ -1134,6 +1134,11 @@ div.inline-error {
   color: var(--ink);
   overflow-wrap: anywhere;
 }
+.fact-detail {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+}
 
 /* Reference lists */
 .reference-list {

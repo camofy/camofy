@@ -1,4 +1,36 @@
-# Identity-owned proxy selection (v0.1.5)
+# Agent configuration and identity-owned proxy selection
+
+## Application reliability (v0.1.6)
+
+Devices report the last successfully saved/applied revision separately from the
+most recently attempted candidate. A rejected candidate never advances the former.
+While the core is deliberately stopped, a validated and durably saved configuration
+counts as applied; the independent core state remains `stopped`.
+
+Failures include a stage, credential-safe reason, exit code/signal when available,
+and retry time. Validation drains stdout/stderr concurrently with a bounded 32 KiB
+tail per stream, recognizes memory-allocation failures even when their text falls
+outside the tail, and never sends raw program output or subscription secrets to
+the cloud. Unknown errors retain their stage and process status without arbitrary
+configuration text. The cloud also normalizes older agents' failed reports so the
+failed candidate is not shown as the last successful revision. A retained core
+state includes its own confirmation time.
+
+Repeated failures use persistent exponential backoff: 30, 60, 120 seconds, up to
+30 minutes. `apply-state.json` retains at most eight failed input fingerprints.
+The fingerprint includes configuration content, local overlay, core/rule-file
+metadata and relevant runtime settings; a revision-only change does not launch
+another validator. Changed inputs and explicit start/restart can retry immediately.
+The ten-second watchdog checks pending retries while controls remain available.
+The last-good cache is retained and restored independently on Agent restart.
+
+For a router whose GeoSite index construction exceeds its memory budget, copy
+`examples/router-low-memory.yaml` to a persistent device-local path and set
+`local_overlay` in that device's `agent.json` to that path. It fixes
+`geosite-matcher: mph` for this device without editing shared identity profiles.
+Validate both cold startup and live updates on the actual device: live validation
+runs alongside the existing core. This is a measured device choice, not a universal
+domain-count threshold or an automatic algorithm selector.
 
 An identity is the single authority for manual proxy-group choices. Every bound
 Agent follows it. Device pages are read-only previews with actual selections,

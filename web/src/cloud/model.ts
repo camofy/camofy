@@ -59,15 +59,44 @@ export type Data = {
   reported?: {
     protocol?: number;
     status?: string;
-    revision?: string;
+    revision?: string | null;
+    last_successful_revision?: string | null;
+    attempted_revision?: string | null;
     seen_at?: number;
     message?: string;
     delays?: Record<string, number | null>;
     core_state?: string;
+    core_state_seen_at?: number;
+    diagnostic?: {
+      stage: string;
+      kind: string;
+      message: string;
+      exit_code?: number | null;
+      signal?: number | null;
+      output_truncated: boolean;
+    } | null;
+    retry?: {
+      failures: number;
+      next_retry_at: number;
+      delay_seconds: number;
+    } | null;
     command_error?: string;
   };
   command?: { id: string; type: string; expires_at: number } | null;
 };
+// Legacy agents used revision for the failed candidate. Only explicit success
+// information may populate the last successful version shown to the user.
+export function successfulRevision(reported?: Data["reported"]) {
+  if (reported?.last_successful_revision !== undefined)
+    return reported.last_successful_revision;
+  return reported?.status === "applied" || reported?.status === "online"
+    ? reported.revision
+    : undefined;
+}
+
+export function attemptedRevision(reported?: Data["reported"]) {
+  return reported?.attempted_revision ?? reported?.revision;
+}
 export type VariableType = "string" | "integer" | "number" | "boolean" | "list" | "object" | "outbound";
 export type TemplateVariable = { key: string; label: string; type: VariableType; required: boolean; default?: unknown };
 export type VariableSelector =

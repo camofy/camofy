@@ -13,6 +13,20 @@ fn client(proxy: &str) -> Result<reqwest::Client> {
 }
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
+    let mut endpoint = "http://127.0.0.1:17890".to_owned();
+    let mut compare_direct = true;
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--proxy" => {
+                endpoint = args
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("--proxy requires a URL"))?
+            }
+            "--skip-direct-comparison" => compare_direct = false,
+            _ => anyhow::bail!("usage: proxy-probe [--proxy URL] [--skip-direct-comparison]"),
+        }
+    }
     let invalid = client("http://127.0.0.1:1")?;
     ensure!(
         invalid
@@ -23,7 +37,7 @@ async fn main() -> Result<()> {
         "negative control bypassed proxy"
     );
     println!("negative_control=passed");
-    let proxy = client("http://127.0.0.1:17890")?;
+    let proxy = client(&endpoint)?;
     let response = proxy
         .get("https://www.gstatic.com/generate_204")
         .send()
@@ -46,25 +60,30 @@ async fn main() -> Result<()> {
         .find_map(|l| l.strip_prefix("ip="))
         .ok_or_else(|| anyhow::anyhow!("trace lacks IP"))?;
     let _: std::net::IpAddr = ip.parse()?;
-    let direct = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(Duration::from_secs(20))
-        .build()?
-        .get("https://www.cloudflare.com/cdn-cgi/trace")
-        .send()
-        .await?
-        .error_for_status()?
-        .text()
-        .await?;
-    let direct_ip = direct
-        .lines()
-        .find_map(|l| l.strip_prefix("ip="))
-        .ok_or_else(|| anyhow::anyhow!("direct trace lacks IP"))?;
-    ensure!(
-        ip != direct_ip,
-        "proxy and direct egress must differ for this probe"
-    );
-    println!("distinct_proxy_egress=true");
+    if compare_direct {
+        let direct = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(20))
+            .build()?
+            .get("https://www.cloudflare.com/cdn-cgi/trace")
+            .send()
+            .await?
+            .error_for_status()?
+            .text()
+            .await?;
+        let direct_ip = direct
+            .lines()
+            .find_map(|l| l.strip_prefix("ip="))
+            .ok_or_else(|| anyhow::anyhow!("direct trace lacks IP"))?;
+        ensure!(
+            ip != direct_ip,
+            "proxy and direct egress must differ for this probe"
+        );
+        println!("distinct_proxy_egress=true");
+    } else {
+        // With TUN enabled, a socket without an explicit proxy may still be proxied.
+        println!("direct_egress_comparison=skipped");
+    }
     println!(
         "proxy_location={}",
         trace

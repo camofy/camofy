@@ -1,0 +1,3 @@
+# Device-local overlay for routers where GeoSite's succinct construction exceeds
+# the available memory budget. Validate cold start and live updates on the device.
+geosite-matcher: mph

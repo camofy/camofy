@@ -5,7 +5,7 @@ import {
   useParams,
   useSearchParams,
 } from "react-router-dom";
-import { api, displayTime, type Resource, type VariableBinding } from "./model";
+import { api, attemptedRevision, displayTime, successfulRevision, type Resource, type VariableBinding } from "./model";
 import { useWorkspace } from "./context";
 import { Editor } from "./Forms";
 import { ManagedProfile, ManagedSource } from "./Store";
@@ -293,7 +293,7 @@ export function CollectionPage({ section }: { section: Section }) {
                             ? r.data.provider === "xiequ" || r.data.provider === "fanproxy"
                               ? "每次刷新即时提取"
                               : host(r.data.endpoint ?? r.data.url)
-                            : `配置版本 ${r.data.reported?.revision?.slice(0, 8) ?? "未上报"}`}
+                            : `最后成功 ${successfulRevision(r.data.reported)?.slice(0, 8) ?? "尚未确认"}`}
                     </small>
                   </td>
                   <td>
@@ -501,6 +501,53 @@ function Facts({ items }: { items: [string, ReactNode][] }) {
       ))}
     </dl>
   );
+}
+
+function deviceFailureFacts(r: Resource, clock: number): [string, ReactNode][] {
+  const report = r.data.reported;
+  const diagnostic = report?.diagnostic;
+  const retry = report?.retry;
+  const items: [string, ReactNode][] = [];
+  if (diagnostic) {
+    const stage = ({
+      validation: "配置校验", runtime: "内核启动", core_start: "内核启动",
+      core_reload: "重载配置", health: "内核健康检查", application: "应用配置",
+      rollback: "恢复旧配置", restore: "恢复旧配置", download: "下载配置",
+      preparation: "准备配置", prepare: "准备配置", candidate_write: "保存候选配置",
+      runtime_write: "写入运行配置", durable_write: "保存成功版本",
+      dns_redirect: "设置 DNS 转发", sync: "同步配置",
+    } as Record<string, string>)[diagnostic.stage] ?? diagnostic.stage;
+    const kind = ({
+      out_of_memory: "内存不足", timeout: "操作超时", invalid_configuration: "配置无效",
+      io_error: "读写失败", core_unavailable: "内核未就绪", application_failed: "应用失败",
+      address_in_use: "监听端口已被占用", missing_file: "缺少配置、内核或规则文件",
+      permission_denied: "文件或网络访问权限不足", duplicate_definition: "配置包含重复定义",
+      unknown_proxy: "代理或代理组不存在", unsupported_configuration: "内核不支持该配置",
+      hash_mismatch: "下载文件校验不一致", reload_rejected: "内核拒绝重载配置",
+      core_exited: "内核意外退出",
+    } as Record<string, string>)[diagnostic.kind] ?? diagnostic.message;
+    const details = [
+      diagnostic.exit_code != null ? `退出码 ${diagnostic.exit_code}` : null,
+      diagnostic.signal != null ? `信号 ${diagnostic.signal}` : null,
+    ].filter(Boolean);
+    items.push(["失败原因", <>
+      <span>{[stage, kind, ...details].join(" · ")}</span>
+      {diagnostic.message !== kind && <small className="fact-detail">{diagnostic.message}</small>}
+    </>]);
+  }
+  if (retry) {
+    items.push(["自动重试", `连续失败 ${retry.failures} 次 · ${retry.next_retry_at * 1000 > clock ? `下次 ${displayTime(retry.next_retry_at)}` : "已到重试时间，等待设备回执"}`]);
+  }
+  return items;
+}
+
+function deviceCoreState(r: Resource) {
+  const report = r.data.reported;
+  const state = ({ running: "运行中", stopping: "正在停止", stopped: "已停止", unavailable: "未就绪", unbound: "未绑定" } as Record<string, string>)[report?.core_state ?? ""];
+  if (!state) return "等待设备上报";
+  if (report?.core_state_seen_at && report.core_state_seen_at !== report.seen_at)
+    return `${state} · 最近确认 ${displayTime(report.core_state_seen_at)}`;
+  return state;
 }
 function References({ r }: { r: Resource }) {
   const { resources } = useWorkspace();
@@ -1254,21 +1301,13 @@ export function DetailPage({ section }: { section: Section }) {
                         ["应用状态", <Status r={r} />],
                         ["最近上报", displayTime(r.data.reported?.seen_at)],
                         [
-                          "已应用版本",
-                          r.data.reported?.revision?.slice(0, 12) ?? "—",
+                          "最后成功版本",
+                          successfulRevision(r.data.reported)?.slice(0, 12) ?? "尚未确认",
                         ],
+                        ["最近尝试版本", attemptedRevision(r.data.reported)?.slice(0, 12) ?? "—"],
+                        ...deviceFailureFacts(r, clock),
                         ["反馈", r.data.reported?.message ?? "—"],
-                        [
-                          "Mihomo",
-                          (
-                            {
-                              running: "运行中",
-                              stopped: "已停止",
-                              unavailable: "未就绪",
-                            } as Record<string, string>
-                          )[r.data.reported?.core_state ?? ""] ??
-                            "等待设备上报",
-                        ],
+                        ["Mihomo", deviceCoreState(r)],
                         ["控制结果", r.data.reported?.command_error || "—"],
                         [
                           "待执行指令",

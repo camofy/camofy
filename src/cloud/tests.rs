@@ -1475,6 +1475,144 @@ async fn cloud_end_to_end() {
     )
     .await;
     assert!(!records.to_string().contains("this must never be stored"));
+    // An isolated device exercises report compatibility without racing the
+    // optional live Agent used above.
+    let telemetry_device = request(
+        &client,
+        &origin,
+        &alice,
+        "POST",
+        "/resources",
+        json!({"kind":"device","data":{"name":"telemetry test", "bundle_id":bid}}),
+        200,
+    )
+    .await;
+    let telemetry_token = request(
+        &client,
+        &origin,
+        &alice,
+        "POST",
+        "/tokens",
+        json!({"bundle_id":bid,"device_id":telemetry_device["id"],"label":"telemetry test"}),
+        200,
+    )
+    .await;
+    let telemetry_id = Uuid::parse_str(telemetry_device["id"].as_str().unwrap()).unwrap();
+    let telemetry_report = |body: Value| {
+        client
+            .post(format!("{origin}/api/sync/report"))
+            .bearer_auth(telemetry_token["token"].as_str().unwrap())
+            .json(&body)
+    };
+    assert_eq!(
+        telemetry_report(json!({"status":"applied","revision":revision,"core_state":"running"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        204
+    );
+    assert_eq!(
+        telemetry_report(json!({"status":"failed","revision":newer["revision"]}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        204
+    );
+    let mut conn = db.acquire().await.unwrap();
+    let state = store::get(&app, &mut conn, alice_id, telemetry_id)
+        .await
+        .unwrap();
+    assert_eq!(state.data["reported"]["last_successful_revision"], revision);
+    assert_eq!(
+        state.data["reported"]["attempted_revision"],
+        newer["revision"]
+    );
+    assert_eq!(state.data["reported"]["core_state"], "running");
+    assert!(state.data["reported"]["core_state_seen_at"].is_number());
+    drop(conn);
+    let foreign_identity = request(&client, &origin, &alice, "POST", "/resources",
+        json!({"kind":"bundle","data":{"name":"Other telemetry identity","profiles":bundle["data"]["profiles"]}}), 200).await;
+    for field in ["attempted_revision", "last_successful_revision"] {
+        let mut payload = json!({"status":"failed", "revision":revision});
+        payload[field] = foreign_identity["data"]["published_revision"].clone();
+        assert_eq!(
+            telemetry_report(payload).send().await.unwrap().status(),
+            400,
+            "{field} must belong to the identity"
+        );
+    }
+    assert_eq!(
+        telemetry_report(
+            json!({"status":"failed","revision":revision,"attempted_revision":Uuid::new_v4()})
+        )
+        .send()
+        .await
+        .unwrap()
+        .status(),
+        400
+    );
+    // The cloud prunes revision artifacts even while an offline device retains
+    // that last-good configuration. Its historical UUID remains useful telemetry.
+    let pruned_revision = Uuid::new_v4();
+    assert_eq!(telemetry_report(json!({"status":"failed","revision":pruned_revision,"last_successful_revision":pruned_revision,"attempted_revision":newer["revision"]})).send().await.unwrap().status(), 204);
+    assert_eq!(
+        telemetry_report(json!({"status":"failed","revision":newer["revision"]}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        204
+    );
+    let mut conn = db.acquire().await.unwrap();
+    let state = store::get(&app, &mut conn, alice_id, telemetry_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        state.data["reported"]["last_successful_revision"],
+        pruned_revision.to_string()
+    );
+    assert_eq!(state.data["reported"]["status"], "failed");
+    drop(conn);
+    assert_eq!(
+        client
+            .get(format!(
+                "{origin}/api/sync/revisions/{pruned_revision}/agent"
+            ))
+            .bearer_auth(telemetry_token["token"].as_str().unwrap())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    let diagnostic = json!({"stage":"validation","kind":"out_of_memory","message":"Mihomo ran out of memory","exit_code":2,"signal":null,"output_truncated":true});
+    let retry = json!({"failures":2,"next_retry_at":now()+60,"delay_seconds":60});
+    assert_eq!(telemetry_report(json!({"status":"failed","revision":revision,"last_successful_revision":revision,"attempted_revision":newer["revision"],"diagnostic":diagnostic,"retry":retry,"core_state":"running"})).send().await.unwrap().status(), 204);
+    let command_id = Uuid::new_v4().to_string();
+    let mut conn = db.acquire().await.unwrap();
+    let mut state = store::get(&app, &mut conn, alice_id, telemetry_id)
+        .await
+        .unwrap();
+    state.data["command"] = json!({"id":command_id,"type":"test_delays","expires_at":now()+60});
+    store::put(&app, &mut conn, alice_id, &state).await.unwrap();
+    drop(conn);
+    assert_eq!(telemetry_report(json!({"status":"online","revision":null,"last_successful_revision":null,"attempted_revision":null,"diagnostic":null,"retry":null,"command_id":command_id,"delays":{"node":42}})).send().await.unwrap().status(), 204);
+    let mut conn = db.acquire().await.unwrap();
+    let state = store::get(&app, &mut conn, alice_id, telemetry_id)
+        .await
+        .unwrap();
+    assert_eq!(state.data["reported"]["status"], "failed");
+    assert_eq!(state.data["reported"]["last_successful_revision"], revision);
+    assert_eq!(
+        state.data["reported"]["attempted_revision"],
+        newer["revision"]
+    );
+    assert_eq!(state.data["reported"]["diagnostic"], diagnostic);
+    assert_eq!(state.data["reported"]["retry"], retry);
+    assert_eq!(state.data["reported"]["delays"]["node"], 42);
+    drop(conn);
     let sealed: serde_json::Value = sqlx::query_scalar("SELECT data FROM resources WHERE id=$1")
         .bind(sid)
         .fetch_one(&db)

@@ -49,7 +49,7 @@ type View = {
   overrides?: Record<string, string>;
   version: number;
   state?: State;
-  reported?: { protocol?: number; core_state?: string };
+  reported?: { protocol?: number; core_state?: string; core_state_seen_at?: number; seen_at?: number };
   jobs?: Job[];
   events?: Event[];
   devices?: {
@@ -230,6 +230,8 @@ export function ProxyControl({ r }: { r: Resource }) {
     (!view?.state?.received_at ||
       Date.now() / 1000 - view.state.received_at > 360);
   const core = view?.reported?.core_state;
+  const coreSeenAt = view?.reported?.core_state_seen_at;
+  const previousCoreState = coreSeenAt && coreSeenAt !== view?.reported?.seen_at;
   const desired = selected ? view?.selections?.[selected.name] : undefined;
   const selectable =
     selected && (selected.kind === "Selector" || selected.kind === "select");
@@ -316,7 +318,9 @@ export function ProxyControl({ r }: { r: Resource }) {
           </strong>
           <span className="muted">
             {device
-              ? `自动同步 · ${view?.state?.sampled_at ? displayTime(view.state.sampled_at) : "等待首次快照"}`
+              ? previousCoreState
+                ? `内核最近确认 ${displayTime(coreSeenAt)} · 节点快照 ${displayTime(view?.state?.sampled_at)}`
+                : `自动同步 · ${view?.state?.sampled_at ? displayTime(view.state.sampled_at) : "等待首次快照"}`
               : "影响所有跟随此身份的 Agent"}
           </span>
         </div>

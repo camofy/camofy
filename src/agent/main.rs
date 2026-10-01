@@ -1,4 +1,5 @@
 //! Lightweight configuration consumer with a local, first-time authorization UI.
+mod application;
 mod control;
 mod pairing;
 mod proxies;
@@ -114,6 +115,7 @@ struct Agent {
     control: control::Durable,
     local: control::Local,
     proxies: proxies::Durable,
+    application: application::State,
 }
 impl Agent {
     async fn publish_runtime(&mut self, error: Option<String>) {
@@ -136,7 +138,19 @@ impl Agent {
         let mut status = self.local.status.lock().await;
         status["core_state"] = json!(state);
         status["revision"] = json!(self.cached.as_ref().map(|c| &c.revision));
-        status["error"] = json!(error.or_else(|| self.control.command_error.clone()));
+        status["last_successful_revision"] = status["revision"].clone();
+        status["attempted_revision"] = json!(self.application.attempted_revision);
+        status["diagnostic"] = json!(self.application.diagnostic);
+        status["retry"] = json!(self.application.retry);
+        status["error"] = json!(
+            error
+                .or_else(|| self
+                    .application
+                    .diagnostic
+                    .as_ref()
+                    .map(ToString::to_string))
+                .or_else(|| self.control.command_error.clone())
+        );
     }
     async fn halt(&mut self) -> Result<()> {
         // Remove only the Agent-owned redirect; never flush unrelated firewall state.
@@ -170,6 +184,11 @@ impl Agent {
         )
         .await?;
         self.control = durable;
+        if action != "stop" {
+            // An explicit operator start/restart is a deliberate retry, independent
+            // of the automatic candidate/recovery cooldown.
+            self.application.manual_retry();
+        }
         let result = async {
             if action != "start" {
                 self.halt().await?;
@@ -202,8 +221,17 @@ impl Agent {
     fn core(&self, path: &str) -> String {
         format!("http://127.0.0.1:{}{path}", self.s.controller_port)
     }
-    async fn report(&self, revision: Option<&str>, status: &str, message: &str, extra: Value) {
-        let mut body = json!({"revision":revision,"status":status,"message":message});
+    async fn report(&self, _revision: Option<&str>, status: &str, message: &str, extra: Value) {
+        let revision = self.cached.as_ref().map(|c| c.revision.as_str());
+        let status = if status == "online" && self.application.diagnostic.is_some() {
+            "failed"
+        } else {
+            status
+        };
+        let mut body = json!({"revision":revision,"last_successful_revision":revision,
+            "attempted_revision":self.application.attempted_revision,
+            "diagnostic":self.application.diagnostic,"retry":self.application.retry,
+            "status":status,"message":message});
         if let Some(extra) = extra.as_object() {
             for (k, v) in extra {
                 body[k] = v.clone();
@@ -258,14 +286,26 @@ impl Agent {
             self.child = None;
         }
         if self.child.is_some() {
-            self.http
+            let response = self
+                .http
                 .put(self.core("/configs"))
                 .bearer_auth(&self.secret)
                 .query(&[("force", "true")])
                 .json(&json!({"path":path}))
                 .send()
-                .await?
-                .error_for_status()?;
+                .await
+                .map_err(|e| application::Diagnostic::safe("core_reload", &e.into()))?;
+            if !response.status().is_success() {
+                return Err(application::Diagnostic::new(
+                    "core_reload",
+                    "reload_rejected",
+                    &format!(
+                        "Mihomo rejected configuration reload (HTTP {})",
+                        response.status().as_u16()
+                    ),
+                )
+                .into());
+            }
         } else {
             self.child = Some(
                 Command::new(&self.s.mihomo)
@@ -276,10 +316,27 @@ impl Agent {
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
                     .kill_on_drop(false)
-                    .spawn()?,
+                    .spawn()
+                    .map_err(|e| application::Diagnostic::safe("core_start", &e.into()))?,
             );
         }
         for _ in 0..30 {
+            if let Some(child) = &mut self.child
+                && let Some(status) = child
+                    .try_wait()
+                    .map_err(|e| application::Diagnostic::safe("health", &e.into()))?
+            {
+                let mut diagnostic = application::Diagnostic::rejected(
+                    status,
+                    &Default::default(),
+                    &Default::default(),
+                );
+                diagnostic.stage = "health".into();
+                diagnostic.kind = "core_exited".into();
+                diagnostic.message = "Mihomo exited before its controller became healthy".into();
+                self.child = None;
+                return Err(diagnostic.into());
+            }
             if self
                 .http
                 .get(self.core("/version"))
@@ -293,7 +350,12 @@ impl Agent {
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
-        anyhow::bail!("Mihomo did not become healthy")
+        Err(application::Diagnostic::new(
+            "health",
+            "core_unavailable",
+            "Mihomo controller did not become healthy after configuration application",
+        )
+        .into())
     }
     async fn selections(&self, selections: &Value) -> Result<()> {
         for (group, node) in selections.as_object().into_iter().flatten() {
@@ -309,32 +371,134 @@ impl Agent {
         }
         Ok(())
     }
+    async fn input_key(&self, _revision: &str, hash: &str) -> Result<String> {
+        // Revisions can change without changing the artifact (for example a
+        // selection-only update). Such updates must not trigger another core
+        // validation process alongside a running core.
+        let mut inputs = format!(
+            "{hash}:{}:{}:{}:{}",
+            self.s.controller_port, self.s.dns_redirect, self.control.stopped, self.s.cloud_url
+        );
+        if let Some(path) = &self.s.local_overlay {
+            inputs.push_str(&camofy::digest(&tokio::fs::read(path).await?));
+        }
+        let mut paths = vec![self.s.mihomo.clone()];
+        let mut files = tokio::fs::read_dir(&self.s.data_dir).await?;
+        while let Some(file) = files.next_entry().await? {
+            let path = file.path();
+            if path
+                .extension()
+                .and_then(|x| x.to_str())
+                .is_some_and(|x| ["dat", "mmdb", "mrs"].contains(&x.to_ascii_lowercase().as_str()))
+            {
+                paths.push(path);
+            }
+        }
+        paths.sort();
+        for path in paths {
+            let meta = tokio::fs::metadata(&path).await?;
+            inputs.push_str(&format!(
+                "{}:{}:{:?}",
+                path.display(),
+                meta.len(),
+                meta.modified()?
+            ));
+        }
+        Ok(camofy::digest(&inputs))
+    }
+    async fn save_application(&self) {
+        if atomic(
+            &self.s.data_dir.join("apply-state.json"),
+            &serde_json::to_vec(&self.application).unwrap(),
+        )
+        .await
+        .is_err()
+        {
+            tracing::warn!("could not persist application retry state");
+        }
+    }
     async fn apply(&mut self, cache: Cached) -> Result<()> {
+        let key = self
+            .input_key(&cache.revision, &cache.hash)
+            .await
+            .map_err(|e| application::Diagnostic::safe("prepare", &e))?;
+        if let Some(diagnostic) = self.application.blocked(&key, now()) {
+            return Err(diagnostic.into());
+        }
+        let revision = cache.revision.clone();
+        let result = self.apply_inner(cache).await;
+        match &result {
+            Ok(()) => self.application.succeeded(key, &revision),
+            Err(error) => {
+                let diagnostic = application::Diagnostic::safe("application", error);
+                tracing::warn!(%diagnostic, attempted_revision=%revision, "candidate application failed; keeping last good configuration");
+                self.application.failed(key, &revision, diagnostic, now());
+            }
+        }
+        self.save_application().await;
+        result.map_err(|e| application::Diagnostic::safe("application", &e).into())
+    }
+    async fn validate_candidate(&self, candidate: &Path) -> Result<()> {
+        let mut child = Command::new(&self.s.mihomo)
+            .arg("-t")
+            .arg("-d")
+            .arg(&self.s.data_dir)
+            .arg("-f")
+            .arg(candidate)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| application::Diagnostic::safe("validation", &e.into()))?;
+        let stdout = child.stdout.take().unwrap();
+        let stderr = child.stderr.take().unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(30), async {
+            tokio::try_join!(
+                child.wait(),
+                application::capture(stdout),
+                application::capture(stderr)
+            )
+        })
+        .await;
+        match result {
+            Ok(Ok((status, stdout, stderr))) if !status.success() => {
+                Err(application::Diagnostic::rejected(status, &stdout, &stderr).into())
+            }
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(error)) => {
+                Err(application::Diagnostic::safe("validation", &error.into()).into())
+            }
+            Err(_) => {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                Err(application::Diagnostic::new(
+                    "validation",
+                    "timeout",
+                    "Mihomo validation exceeded 30 seconds",
+                )
+                .into())
+            }
+        }
+    }
+    async fn apply_inner(&mut self, cache: Cached) -> Result<()> {
         ensure!(
             camofy::digest(&cache.content) == cache.hash,
             "artifact hash mismatch"
         );
-        let runtime = self.runtime(&cache.content).await?;
+        let runtime = self
+            .runtime(&cache.content)
+            .await
+            .map_err(|e| application::Diagnostic::safe("prepare", &e))?;
         let candidate = self.s.data_dir.join("candidate.yaml");
-        atomic(&candidate, runtime.as_bytes()).await?;
-        let status = tokio::time::timeout(
-            Duration::from_secs(30),
-            Command::new(&self.s.mihomo)
-                .arg("-t")
-                .arg("-d")
-                .arg(&self.s.data_dir)
-                .arg("-f")
-                .arg(&candidate)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .kill_on_drop(true)
-                .status(),
-        )
-        .await??;
-        ensure!(status.success(), "Mihomo rejected candidate configuration");
+        atomic(&candidate, runtime.as_bytes())
+            .await
+            .map_err(|e| application::Diagnostic::safe("candidate_write", &e))?;
+        self.validate_candidate(&candidate).await?;
         let running = self.s.data_dir.join("running.yaml");
         let previous = tokio::fs::read(&running).await.ok();
-        atomic(&running, runtime.as_bytes()).await?;
+        atomic(&running, runtime.as_bytes())
+            .await
+            .map_err(|e| application::Diagnostic::safe("runtime_write", &e))?;
         let result = async {
             if !self.control.stopped {
                 self.load_core(&running).await?;
@@ -347,13 +511,16 @@ impl Agent {
                 let _ = self.selections(&selections).await;
             }
             if self.s.dns_redirect && !self.control.stopped {
-                dns_redirect(true, &runtime).await?;
+                dns_redirect(true, &runtime)
+                    .await
+                    .map_err(|e| application::Diagnostic::safe("dns_redirect", &e))?;
             }
             atomic(
                 &self.s.data_dir.join("last-good.json"),
                 &serde_json::to_vec(&cache)?,
             )
-            .await?;
+            .await
+            .map_err(|e| application::Diagnostic::safe("durable_write", &e))?;
             Ok::<_, anyhow::Error>(())
         }
         .await;
@@ -402,6 +569,17 @@ impl Agent {
             .await?;
         let revision = desired["revision"].as_str().context("missing revision")?;
         self.accept_control(&desired["control"]).await?;
+        let jobs_control_requested = desired["control"]["jobs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|job| {
+                ["core.start", "core.stop", "core.restart"]
+                    .contains(&job["method"].as_str().unwrap_or(""))
+                    && job["id"]
+                        .as_str()
+                        .is_some_and(|id| !self.proxies.receipts.contains_key(id))
+            });
         // Emergency stop takes precedence over downloads, validation and slow providers.
         let stops: Vec<Value> = desired["control"]["jobs"]
             .as_array()
@@ -418,6 +596,9 @@ impl Agent {
             self.control.command_id.as_deref() != Some(*id)
                 && cmd["expires_at"].as_u64().unwrap_or(0) > now()
         });
+        let control_requested = jobs_control_requested
+            || (pending.is_some()
+                && ["start", "stop", "restart"].contains(&cmd["type"].as_str().unwrap_or("")));
         if cmd["type"] == "stop"
             && let Some(id) = pending
         {
@@ -437,7 +618,9 @@ impl Agent {
             && !self.control.stopped
             && let Some(cache) = self.cached.clone()
         {
-            self.apply(cache).await?;
+            // Recovery cooldown must not prevent command processing or a newer
+            // candidate from being attempted in this same sync.
+            let _ = self.apply(cache).await;
         }
         let control_v2 = desired["control"]["protocol"] == 2;
         let hash = if control_v2 {
@@ -450,52 +633,82 @@ impl Agent {
         } else {
             "router"
         };
-        if self
-            .cached
+        let hash = hash.as_str().context("missing hash")?;
+        let inputs = self.input_key(revision, hash).await;
+        let key = inputs
             .as_ref()
-            .is_none_or(|c| c.hash != hash.as_str().unwrap_or(""))
+            .cloned()
+            .unwrap_or_else(|_| camofy::digest(format!("{revision}:{hash}:inputs-unavailable")));
+        let mut candidate_failure = None;
+        if self.cached.as_ref().is_none_or(|c| c.hash != hash)
+            || self.application.applied_inputs.as_deref() != Some(&key)
         {
-            let mut response = self
-                .http
-                .get(self.api(&format!("/api/sync/revisions/{revision}/{format}")))
-                .bearer_auth(&self.s.token)
-                .send()
-                .await?
-                .error_for_status()?;
-            ensure!(
-                response
-                    .headers()
-                    .get("x-camofy-revision")
-                    .and_then(|h| h.to_str().ok())
-                    == Some(revision),
-                "subscription changed during sync; retry with latest desired state"
-            );
-            let mut bytes = Vec::new();
-            while let Some(chunk) = response.chunk().await? {
-                ensure!(
-                    bytes.len() + chunk.len() <= 4 * 1024 * 1024,
-                    "artifact too large"
-                );
-                bytes.extend(chunk);
-            }
-            let cache = Cached {
-                revision: revision.into(),
-                hash: hash.as_str().context("missing hash")?.into(),
-                content: String::from_utf8(bytes)?,
-                selections: desired["selections"].clone(),
+            let attempt = if let Some(error) = self.application.blocked(&key, now()) {
+                Err(error.into())
+            } else if let Err(error) = inputs {
+                let diagnostic = application::Diagnostic::safe("prepare", &error);
+                self.application
+                    .failed(key.clone(), revision, diagnostic.clone(), now());
+                Err(diagnostic.into())
+            } else {
+                async {
+                    let mut response = self
+                        .http
+                        .get(self.api(&format!("/api/sync/revisions/{revision}/{format}")))
+                        .bearer_auth(&self.s.token)
+                        .send()
+                        .await?
+                        .error_for_status()?;
+                    ensure!(
+                        response
+                            .headers()
+                            .get("x-camofy-revision")
+                            .and_then(|h| h.to_str().ok())
+                            == Some(revision),
+                        "subscription changed during sync; retry with latest desired state"
+                    );
+                    let mut bytes = Vec::new();
+                    while let Some(chunk) = response.chunk().await? {
+                        ensure!(
+                            bytes.len() + chunk.len() <= 4 * 1024 * 1024,
+                            "artifact too large"
+                        );
+                        bytes.extend(chunk);
+                    }
+                    let cache = Cached {
+                        revision: revision.into(),
+                        hash: hash.into(),
+                        content: String::from_utf8(bytes)?,
+                        selections: desired["selections"].clone(),
+                    };
+                    self.apply(cache).await
+                }
+                .await
             };
-            if let Err(e) = self.apply(cache).await {
-                self.report(
-                    Some(revision),
-                    "failed",
-                    "candidate failed validation/application; inspect the agent locally",
-                    json!({}),
-                )
-                .await;
-                return Err(e);
+            if let Err(error) = attempt {
+                let diagnostic = application::Diagnostic::safe("download", &error);
+                // apply() recorded validation/application failures; also back off
+                // failed downloads without losing their safe stage information.
+                if error.downcast_ref::<application::Diagnostic>().is_none() {
+                    self.application
+                        .failed(key.clone(), revision, diagnostic.clone(), now());
+                    self.save_application().await;
+                }
+                candidate_failure = Some((diagnostic, self.application.retry.clone()));
+                self.application.pending_candidate =
+                    Some((revision.into(), hash.into(), key.clone()));
+                self.save_application().await;
             }
         }
-        if let Some(cache) = &mut self.cached {
+        if candidate_failure.is_none() && self.application.pending_candidate.take().is_some() {
+            self.save_application().await;
+        }
+        if candidate_failure.is_none()
+            && let Some(cache) = &mut self.cached
+        {
+            // A new revision may reuse already validated content. Accept its
+            // identity without another core reload, and clear stale diagnostics.
+            self.application.succeeded(key.clone(), revision);
             cache.revision = revision.into();
             cache.selections = desired["selections"].clone();
             atomic(
@@ -503,6 +716,7 @@ impl Agent {
                 &serde_json::to_vec(cache)?,
             )
             .await?;
+            self.save_application().await;
         }
         self.reconcile_proxies().await;
         self.process_jobs(&desired["control"]["jobs"]).await?;
@@ -529,17 +743,69 @@ impl Agent {
             .await;
         }
         self.publish_runtime(None).await;
-        self.report(
-            Some(revision),
-            "applied",
-            if self.control.stopped {
-                "configuration saved; core stopped"
-            } else {
-                "configuration active"
-            },
-            json!({"core_state":self.local.status.lock().await["core_state"],"protocol":2}),
-        )
-        .await;
+        let runtime_state = self.local.status.lock().await["core_state"].clone();
+        let final_failure = candidate_failure
+            .or_else(|| {
+                self.application
+                    .diagnostic
+                    .clone()
+                    .map(|diagnostic| (diagnostic, self.application.retry.clone()))
+            })
+            .or_else(|| {
+                if !control_requested {
+                    return None;
+                }
+                self.control.command_error.as_ref().map(|error| {
+                    (
+                        application::Diagnostic::safe("core_control", &anyhow::anyhow!("{error}")),
+                        None,
+                    )
+                })
+            })
+            .or_else(|| {
+                let expected = if self.control.stopped {
+                    "stopped"
+                } else {
+                    "running"
+                };
+                (runtime_state != expected).then(|| {
+                    (
+                        application::Diagnostic::new(
+                            "health",
+                            "core_unavailable",
+                            "Mihomo has not reached the requested running or stopped state",
+                        ),
+                        None,
+                    )
+                })
+            });
+        if let Some((diagnostic, retry)) = final_failure {
+            self.application.attempted_revision = Some(revision.into());
+            self.application.diagnostic = Some(diagnostic.clone());
+            self.application.retry = retry;
+            self.save_application().await;
+            self.publish_runtime(Some(diagnostic.to_string())).await;
+            self.report(
+                None,
+                "failed",
+                &diagnostic.to_string(),
+                json!({"core_state":self.local.status.lock().await["core_state"],"protocol":2}),
+            )
+            .await;
+        } else {
+            self.publish_runtime(None).await;
+            self.report(
+                Some(revision),
+                "applied",
+                if self.control.stopped {
+                    "configuration saved; core stopped"
+                } else {
+                    "configuration active"
+                },
+                json!({"core_state":self.local.status.lock().await["core_state"],"protocol":2}),
+            )
+            .await;
+        }
         if let Some(id) = desired["command"]["id"].as_str()
             && self.command.as_deref() != Some(id)
             && desired["command"]["type"] == "test_delays"
@@ -551,23 +817,23 @@ impl Agent {
                 http: self.http.clone(),
                 secret: self.secret.clone(),
                 child: None,
-                cached: None,
+                cached: self.cached.clone(),
                 command: None,
                 control: self.control.clone(),
                 local: self.local.clone(),
                 proxies: self.proxies.clone(),
+                application: self.application.clone(),
             };
             let id = id.to_string();
             // A slow node must not block realtime config application or the watchdog.
             tokio::spawn(async move {
                 if let Ok(delays) = worker.test_delays().await {
-                    worker
-                        .report(
-                            None,
-                            "online",
-                            "device delay test completed",
-                            json!({"command_id":id,"delays":delays}),
-                        )
+                    // The main agent reports with its current successful revision
+                    // and failure state, not this slow worker's old snapshot.
+                    let _ = worker
+                        .local
+                        .tx
+                        .send(control::Request::DelayReport { id, delays })
                         .await;
                 }
             });
@@ -790,6 +1056,8 @@ async fn notifications(s: Settings, tx: tokio::sync::watch::Sender<u64>) {
     }
 }
 
+// Register the Unix signal handler eagerly, before the returned future is polled.
+#[allow(clippy::manual_async_fn)]
 fn shutdown() -> impl std::future::Future<Output = ()> {
     #[cfg(unix)]
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -881,13 +1149,34 @@ async fn main() -> Result<()> {
         },
         local,
         proxies: proxies::Durable::load(&s.data_dir).await?,
+        application: match tokio::fs::read(s.data_dir.join("apply-state.json")).await {
+            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
+            Err(_) => Default::default(),
+        },
     };
     if let Ok(bytes) = tokio::fs::read(s.data_dir.join("last-good.json")).await {
         let cache: Cached = serde_json::from_slice(&bytes)?;
-        agent
-            .apply(cache)
-            .await
-            .context("cannot restore last good configuration")?;
+        // Retain the known successful revision even if restoring its runtime
+        // fails. The agent must remain online so stop/new config can recover it.
+        agent.cached = Some(cache.clone());
+        // A newly generated controller secret requires a fresh runtime file on
+        // restart. Failed *candidate* cooldowns remain persisted independently.
+        if let Err(error) = agent.apply_inner(cache.clone()).await {
+            let diagnostic = application::Diagnostic::safe("restore", &error);
+            tracing::warn!(%diagnostic, "cannot restore last good configuration");
+            if let Ok(key) = agent.input_key(&cache.revision, &cache.hash).await {
+                agent
+                    .application
+                    .failed(key, &cache.revision, diagnostic, now());
+                agent.save_application().await;
+            }
+        } else if let Ok(key) = agent.input_key(&cache.revision, &cache.hash).await {
+            // The restore just validated and applied these exact local inputs.
+            // Avoid immediately spawning a duplicate validation beside the core,
+            // while retaining any different failed candidate's retry history.
+            agent.application.restored(key, &cache.revision);
+            agent.save_application().await;
+        }
     }
     let (tx, mut rx) = tokio::sync::watch::channel(0);
     let notification = tokio::spawn(notifications(s, tx));
@@ -898,6 +1187,10 @@ async fn main() -> Result<()> {
             Some(request)=controls.recv()=>{
                 let action=match request {
                     control::Request::Core(action)=>action,
+                    control::Request::DelayReport{id,delays}=>{
+                        agent.report(None,"online","device delay test completed",json!({"command_id":id,"delays":delays})).await;
+                        continue;
+                    }
                     control::Request::Proxy{method,params,reply}=>{
                         let result=agent.local_proxy(&method,params).await.map_err(|e|e.to_string());
                         let _=reply.send(result);
@@ -910,11 +1203,19 @@ async fn main() -> Result<()> {
                 agent.publish_runtime(error.clone()).await;
                 agent.report(None,"online","local core control completed",json!({"core_state":agent.local.status.lock().await["core_state"],"command_error":error})).await;
             },
-            _=poll.tick()=>{if agent.sync().await.is_err(){tracing::warn!("sync failed; keeping last good configuration");}},
-            _=rx.changed()=>{if agent.sync().await.is_err(){tracing::warn!("sync failed; five-minute fallback remains active");}},
+            _=poll.tick()=>{if let Err(error)=agent.sync().await{let diagnostic=application::Diagnostic::safe("sync",&error);tracing::warn!(%diagnostic,"sync failed; keeping last good configuration");}},
+            _=rx.changed()=>{if let Err(error)=agent.sync().await{let diagnostic=application::Diagnostic::safe("sync",&error);tracing::warn!(%diagnostic,"sync failed; five-minute fallback remains active");}},
             _=health.tick()=>{
                 agent.flush_results().await;
                 agent.reconcile_proxies().await;
+                // Cooldown never sleeps the command loop. The watchdog checks
+                // eligibility and notices local overlay/core/geodata changes.
+                if let Some((revision, hash, failed_key)) = agent.application.pending_candidate.clone() {
+                    let changed = agent.input_key(&revision,&hash).await.is_ok_and(|key| key != failed_key);
+                    if changed || agent.application.retry_due(&failed_key,now()) {
+                        let _ = agent.sync().await;
+                    }
+                }
                 if agent.control.stopped { agent.publish_runtime(None).await; continue; }
                 let exited=agent.child.as_mut().is_some_and(|c|c.try_wait().ok().flatten().is_some());
                 if exited {
@@ -966,6 +1267,249 @@ mod tests {
         }
     }
     #[tokio::test]
+    async fn failed_candidate_keeps_successful_revision_and_cooldown_does_not_block_stop() {
+        use axum::{
+            Json, Router,
+            routing::{get, post},
+        };
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let root = std::env::temp_dir().join(format!("camofy-retry-test-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(&root).await.unwrap();
+        // An existing non-executable file gives a portable validation spawn failure.
+        let core = root.join("invalid-core");
+        tokio::fs::write(&core, "not an executable").await.unwrap();
+        let content = "proxies: []\nproxy-groups: []\nrules: ['MATCH,DIRECT']\n";
+        let desired = Arc::new(tokio::sync::Mutex::new(
+            json!({"revision":"candidate", "hash":camofy::digest(content),"selections":{}}),
+        ));
+        let reports = Arc::new(tokio::sync::Mutex::new(Vec::<Value>::new()));
+        let downloads = Arc::new(AtomicUsize::new(0));
+        let router = Router::new()
+            .route(
+                "/api/sync/desired",
+                get({
+                    let desired = desired.clone();
+                    move || {
+                        let desired = desired.clone();
+                        async move { Json(desired.lock().await.clone()) }
+                    }
+                }),
+            )
+            .route(
+                "/api/sync/revisions/candidate/router",
+                get({
+                    let downloads = downloads.clone();
+                    move || {
+                        let downloads = downloads.clone();
+                        async move {
+                            downloads.fetch_add(1, Ordering::SeqCst);
+                            ([("x-camofy-revision", "candidate")], content)
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/api/sync/report",
+                post({
+                    let reports = reports.clone();
+                    move |Json(body): Json<Value>| {
+                        let reports = reports.clone();
+                        async move {
+                            reports.lock().await.push(body);
+                            Json(json!({}))
+                        }
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router).await.unwrap();
+        });
+        let good = Cached {
+            revision: "last-good".into(),
+            hash: camofy::digest("previous configuration"),
+            content: "previous configuration".into(),
+            selections: json!({}),
+        };
+        let mut agent = Agent {
+            s: Settings {
+                subscription_url: String::new(),
+                cloud_url: origin,
+                token: "test".into(),
+                mihomo: core,
+                data_dir: root.clone(),
+                local_overlay: None,
+                controller_port: 9,
+                dns_redirect: false,
+                web_listen: None,
+            },
+            http: reqwest::Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .unwrap(),
+            secret: "test-controller-secret".into(),
+            child: None,
+            cached: Some(good.clone()),
+            command: None,
+            control: control::Durable {
+                stopped: true,
+                ..Default::default()
+            },
+            local: control::channel().0,
+            proxies: Default::default(),
+            application: Default::default(),
+        };
+        atomic(
+            &root.join("last-good.json"),
+            &serde_json::to_vec(&good).unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            agent.input_key("one-revision", "same-hash").await.unwrap(),
+            agent
+                .input_key("another-revision", "same-hash")
+                .await
+                .unwrap(),
+            "revision-only changes must not revalidate beside a running core"
+        );
+        agent.sync().await.unwrap();
+        assert_eq!(downloads.load(Ordering::SeqCst), 1);
+        assert_eq!(agent.cached.as_ref().unwrap().revision, "last-good");
+        let first = reports.lock().await.last().unwrap().clone();
+        assert_eq!(first["status"], "failed");
+        assert_eq!(first["revision"], "last-good");
+        assert_eq!(first["last_successful_revision"], "last-good");
+        assert_eq!(first["attempted_revision"], "candidate");
+        assert_eq!(first["diagnostic"]["stage"], "validation");
+        assert_eq!(first["retry"]["failures"], 1);
+        assert!(!first.to_string().contains("test-controller-secret"));
+        tokio::fs::write(root.join("candidate.yaml"), "unchanged during cooldown")
+            .await
+            .unwrap();
+        desired.lock().await["command"] =
+            json!({"id":"stop-during-backoff","type":"stop","expires_at":now()+300});
+        agent.sync().await.unwrap();
+        assert_eq!(
+            agent.control.command_id.as_deref(),
+            Some("stop-during-backoff")
+        );
+        assert_eq!(
+            downloads.load(Ordering::SeqCst),
+            1,
+            "cooldown must skip candidate download and validation"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(root.join("candidate.yaml"))
+                .await
+                .unwrap(),
+            "unchanged during cooldown"
+        );
+        let last = reports.lock().await.last().unwrap().clone();
+        assert_eq!(last["revision"], "last-good");
+        assert_eq!(last["status"], "failed");
+        assert_eq!(last["retry"]["failures"], 1);
+        assert_eq!(last["core_state"], "stopped");
+        let persisted: Cached =
+            serde_json::from_slice(&tokio::fs::read(root.join("last-good.json")).await.unwrap())
+                .unwrap();
+        assert_eq!(persisted.revision, "last-good");
+        // A local matcher change bypasses the old failure key immediately.
+        let overlay = root.join("overlay.yaml");
+        tokio::fs::write(&overlay, "geosite-matcher: mph\n")
+            .await
+            .unwrap();
+        agent.s.local_overlay = Some(overlay);
+        agent.sync().await.unwrap();
+        assert_eq!(downloads.load(Ordering::SeqCst), 2);
+        // The desired artifact is already the successful A, but its core died
+        // and recovery fails. A historical applied fingerprint is not health.
+        agent.cached = Some(Cached {
+            revision: "candidate".into(),
+            hash: camofy::digest(content),
+            content: content.into(),
+            selections: json!({}),
+        });
+        agent.control = Default::default();
+        agent.application = Default::default();
+        let active_key = agent
+            .input_key("candidate", &camofy::digest(content))
+            .await
+            .unwrap();
+        agent.application.succeeded(active_key, "candidate");
+        desired.lock().await["command"] = Value::Null;
+        agent.sync().await.unwrap();
+        let recovery = reports.lock().await.last().unwrap().clone();
+        assert_eq!(
+            recovery["status"], "failed",
+            "failed same-artifact recovery cannot report active"
+        );
+        assert_eq!(recovery["core_state"], "unavailable");
+        assert_eq!(recovery["revision"], "candidate");
+        assert_eq!(recovery["diagnostic"]["stage"], "validation");
+        assert!(agent.application.applied_inputs.is_none());
+        agent.publish_runtime(None).await;
+        assert!(
+            agent.local.status.lock().await["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("validation")),
+            "health ticks must preserve visible failure diagnostics"
+        );
+        // Starting a previously saved stopped configuration can fail after the
+        // candidate branch was skipped. Final reporting must still be failed.
+        agent.control = control::Durable {
+            stopped: true,
+            ..Default::default()
+        };
+        agent.application = Default::default();
+        let stopped_key = agent
+            .input_key("candidate", &camofy::digest(content))
+            .await
+            .unwrap();
+        agent.application.succeeded(stopped_key, "candidate");
+        desired.lock().await["command"] =
+            json!({"id":"start-fails","type":"start","expires_at":now()+300});
+        agent.sync().await.unwrap();
+        let failed_start = reports.lock().await.last().unwrap().clone();
+        assert_eq!(failed_start["status"], "failed");
+        assert_eq!(failed_start["core_state"], "unavailable");
+        assert!(agent.control.command_error.is_some());
+        // A saved stopped artifact with a new identity-only revision needs no
+        // download, and must replace old attempted identity/diagnostics.
+        agent.control = control::Durable {
+            stopped: true,
+            ..Default::default()
+        };
+        agent.application = Default::default();
+        let stopped_key = agent
+            .input_key("candidate", &camofy::digest(content))
+            .await
+            .unwrap();
+        agent.application.succeeded(stopped_key, "candidate");
+        agent.application.diagnostic = Some(application::Diagnostic::new(
+            "validation",
+            "out_of_memory",
+            "old failure",
+        ));
+        desired.lock().await["command"] = Value::Null;
+        desired.lock().await["revision"] = json!("identity-only-revision");
+        let count_before = downloads.load(Ordering::SeqCst);
+        agent.sync().await.unwrap();
+        let same_content = reports.lock().await.last().unwrap().clone();
+        assert_eq!(same_content["status"], "applied");
+        assert_eq!(same_content["attempted_revision"], "identity-only-revision");
+        assert!(same_content["diagnostic"].is_null());
+        assert!(same_content["retry"].is_null());
+        assert_eq!(downloads.load(Ordering::SeqCst), count_before);
+        server.abort();
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+    #[tokio::test]
     #[ignore = "requires CAMOFY_TEST_CORE built from cargo build --example mock-core"]
     async fn apply_reject_rollback_and_offline_restore() {
         let root = std::env::temp_dir().join(format!("camofy-agent-test-{}", uuid::Uuid::new_v4()));
@@ -1002,6 +1546,7 @@ mod tests {
             control: Default::default(),
             local: control::channel().0,
             proxies: Default::default(),
+            application: Default::default(),
         };
         let content = "mixed-port: 7897\nproxies: [{name: mine, type: ss, server: example.com, port: 443}, {name: mine2, type: ss, server: example.com, port: 443}]\nproxy-groups: [{name: pick, type: select, proxies: [mine, mine2, DIRECT]}]\nrules: ['MATCH,pick']\n";
         let cache = Cached {
