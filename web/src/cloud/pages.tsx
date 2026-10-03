@@ -1,6 +1,8 @@
 import { useEffect, useState, type ReactNode } from "react";
 import {
   Link,
+  Navigate,
+  useLocation,
   useNavigate,
   useParams,
   useSearchParams,
@@ -22,7 +24,14 @@ import {
   ResourceLink,
   Status,
 } from "./ui";
-import { resourcePath, sectionOf, sections, type Section } from "./navigation";
+import {
+  listed,
+  managedSource,
+  resourcePath,
+  sectionOf,
+  sections,
+  type Section,
+} from "./navigation";
 import { UsageCompact, UsagePanel, RefreshHistory } from "./Usage";
 import { ProxyControl } from "./ProxyControl";
 import { AssistantEditor } from "./Assistant";
@@ -96,7 +105,7 @@ export function CollectionPage({ section }: { section: Section }) {
   const { resources } = useWorkspace();
   const [search, setSearch] = useSearchParams();
   const query = search.get("q") ?? "";
-  const all = resources.filter((r) => sectionOf(r) === section);
+  const all = resources.filter((r) => sectionOf(r) === section && listed(r));
   const rows = all.filter((r) =>
     r.data.name.toLowerCase().includes(query.toLowerCase()),
   );
@@ -359,7 +368,7 @@ export function CollectionPage({ section }: { section: Section }) {
       {section === "subscriptions" && (
         <p className="section-note">
           <Icon name="shield" size={15} />
-          订阅源只负责拉取上游内容。是否参与合并，由身份中的关联开关决定。
+          每个订阅源自带订阅地址，可直接导入客户端；需要叠加规则时，再在身份中组合。
         </p>
       )}
       {section === "profiles" && (
@@ -549,19 +558,25 @@ function deviceCoreState(r: Resource) {
     return `${state} · 最近确认 ${displayTime(report.core_state_seen_at)}`;
   return state;
 }
-function References({ r }: { r: Resource }) {
+function References({ r, link }: { r: Resource; link?: Resource }) {
   const { resources } = useWorkspace();
   const refs = resources.filter((x) =>
     r.kind === "proxy"
       ? x.data.proxy_id === r.id
-      : x.kind === "bundle" &&
-        x.data.profiles?.some((p) => p.profile_id === r.id),
+      : (x.kind === "bundle" &&
+          listed(x) &&
+          x.data.profiles?.some((p) => p.profile_id === r.id)) ||
+        (!!link && x.kind === "device" && x.data.bundle_id === link.id),
   );
   return (
     <section className="panel">
       <div className="panel-heading">
         <h2>
-          {r.kind === "proxy" ? "使用此出口的订阅源" : "使用此配置的身份"}
+          {r.kind === "proxy"
+            ? "使用此出口的订阅源"
+            : r.data.type === "source"
+              ? "使用此订阅源的身份与设备"
+              : "使用此配置的身份"}
         </h2>
         <span className="count">{refs.length}</span>
       </div>
@@ -588,18 +603,21 @@ const outputFormats = [
   { value: "shadowrocket", label: "Shadowrocket 完整配置" },
   { value: "shadowrocket-nodes", label: "Shadowrocket 节点" },
 ];
-function Distribution({ r }: { r: Resource }) {
+function Distribution({ r, children }: { r: Resource; children?: ReactNode }) {
   const [format, setFormat] = useState("router"),
     [reveal, setReveal] = useState(false);
   const url = r.data.subscription_url
     ? r.data.subscription_url + (format === "router" ? "" : `/${format}`)
     : "";
+  const source = !!managedSource(r);
+  const formatError = r.data.outputs?.[format]?.error;
   return (
     <section className="panel distribution">
-      <h2>订阅链接</h2>
+      <h2>{source ? "订阅地址" : "订阅链接"}</h2>
       <p className="muted">
         复制到 Clash Verge Rev 或 Shadowrocket。路由器请通过设备绑定接入。
       </p>
+      {children}
       <label>
         客户端格式
         <select value={format} onChange={(e) => setFormat(e.target.value)}>
@@ -613,14 +631,19 @@ function Distribution({ r }: { r: Resource }) {
       {url ? (
         <>
           <label>
-            身份订阅地址
+            {source ? "Camofy 订阅地址" : "身份订阅地址"}
             <input
-              aria-label="身份订阅地址"
+              aria-label={source ? "Camofy 订阅地址" : "身份订阅地址"}
               type={reveal ? "text" : "password"}
               readOnly
               value={url}
             />
           </label>
+          {formatError && (
+            <p className="inline-error" role="alert">
+              此格式暂不可用：{formatError}
+            </p>
+          )}
           <div className="distribution-actions">
             <Copy value={url} />
             <button className="quiet" onClick={() => setReveal(!reveal)}>
@@ -629,20 +652,187 @@ function Distribution({ r }: { r: Resource }) {
           </div>
         </>
       ) : (
-        <p className="muted">当前没有订阅地址，请在「更多」中重新生成。</p>
+        <p className="muted">
+          当前没有订阅地址，请在「{source ? "订阅地址" : "更多"}」中重新生成。
+        </p>
       )}
       <div className="distribution-note">
         <Icon name="shield" size={15} />
         <span>订阅地址包含访问凭据，请勿公开分享。</span>
       </div>
-      <Link className="text-link" to={`${resourcePath(r)}?tab=more`}>
+      <Link
+        className="text-link"
+        to={`${resourcePath(r)}?tab=${source ? "link" : "more"}`}
+      >
         更多订阅管理 <Icon name="arrow" size={14} />
       </Link>
     </section>
   );
 }
+function SourceDistribution({
+  source,
+  link,
+}: {
+  source: Resource;
+  link?: Resource;
+}) {
+  const { busy, run } = useWorkspace();
+  if (!link)
+    return (
+      <section className="panel distribution">
+        <h2>订阅地址</h2>
+        <p className="muted">
+          生成后可直接导入 Clash Verge Rev、Shadowrocket，或绑定 Camofy Agent
+          设备，无需另建身份。
+        </p>
+        <div className="distribution-actions">
+          <button
+            className="primary"
+            disabled={busy}
+            onClick={() => {
+              void run(
+                () => api(`/profiles/${source.id}/subscription-link`, "POST"),
+                "订阅地址已生成。",
+              );
+            }}
+          >
+            生成订阅地址
+          </button>
+        </div>
+      </section>
+    );
+  const status = !link.data.published_revision ? (
+    link.data.error && source.data.fetch_status === "ok" ? (
+      <p className="inline-error">{link.data.error}</p>
+    ) : (
+      <p className="muted">首次拉取成功后，此地址开始提供配置。</p>
+    )
+  ) : link.data.error ? (
+    <p className="inline-error">
+      最近一次生成失败，地址仍提供上一版配置：{link.data.error}
+    </p>
+  ) : null;
+  return (
+    <Distribution r={link}>
+      {status && <div>{status}</div>}
+    </Distribution>
+  );
+}
+function SourceLinkManagement({
+  source,
+  link,
+}: {
+  source: Resource;
+  link?: Resource;
+}) {
+  const { resources, busy, run } = useWorkspace();
+  const navigate = useNavigate();
+  const [action, setAction] = useState<"promote" | "close" | null>(null);
+  if (!link)
+    return (
+      <div className="settings-stack">
+        <Panel
+          title="订阅地址"
+          description="此订阅源还没有订阅地址。生成后可直接导入客户端或绑定设备。"
+        >
+          <PanelBody>
+            <div className="distribution-actions">
+              <button
+                className="primary"
+                disabled={busy}
+                onClick={() => {
+                  void run(
+                    () =>
+                      api(`/profiles/${source.id}/subscription-link`, "POST"),
+                    "订阅地址已生成。",
+                  );
+                }}
+              >
+                生成订阅地址
+              </button>
+            </div>
+          </PanelBody>
+        </Panel>
+      </div>
+    );
+  const devices = resources.filter(
+    (d) => d.kind === "device" && d.data.bundle_id === link.id,
+  ).length;
+  return (
+    <SubscriptionManagement r={link}>
+      <Panel
+        title="转为身份"
+        description="需要叠加规则或其他 Profile 时使用。订阅地址、绑定设备、代理分组选择和发布历史都保持不变。"
+      >
+        <PanelBody>
+          <p className="muted">
+            转换后它会出现在身份列表中，可以自由编辑配置组合；此订阅源随后可以再生成一个新的订阅地址。
+          </p>
+          <div className="distribution-actions">
+            <button disabled={busy} onClick={() => setAction("promote")}>
+              转为身份
+            </button>
+          </div>
+        </PanelBody>
+      </Panel>
+      <section className="panel danger-zone">
+        <div>
+          <h2>关闭订阅地址</h2>
+          <p>
+            {devices
+              ? `有 ${devices} 台设备正在通过此订阅源同步，请先改绑或解绑设备。`
+              : "所有订阅链接立即失效，发布历史一并删除。之后可以重新生成新的地址。"}
+          </p>
+        </div>
+        <button
+          className="danger"
+          disabled={busy || devices > 0}
+          onClick={() => setAction("close")}
+        >
+          关闭
+        </button>
+      </section>
+      {action === "promote" && (
+        <Confirm
+          title="转为身份？"
+          text="订阅地址保持不变，客户端无需重新导入。转换后请在身份页面管理此地址。"
+          close={() => setAction(null)}
+          action={async () => {
+            const promoted = await run(
+              () =>
+                api<Resource>(`/bundles/${link.id}/promote`, "POST", {
+                  version: link.version,
+                }),
+              "已转为身份。",
+            );
+            if (promoted) navigate(`/identities/${promoted.id}`);
+          }}
+        />
+      )}
+      {action === "close" && (
+        <Confirm
+          title="关闭订阅地址？"
+          text="使用此订阅源地址的所有客户端将无法继续更新配置。此操作不可撤销。"
+          close={() => setAction(null)}
+          action={async () => {
+            await run(async () => {
+              await api(`/resources/${link.id}`, "DELETE");
+              return true;
+            }, "订阅地址已关闭。");
+          }}
+        />
+      )}
+    </SubscriptionManagement>
+  );
+}
 type HistoricalLink = { id: string; label: string; created_at: number };
-function SubscriptionManagement({ r }: { r: Resource }) {
+function SubscriptionManagement({
+  r,
+  children,
+}: {
+  r: Resource;
+  children?: ReactNode;
+}) {
   const { busy, run } = useWorkspace();
   const [reset, setReset] = useState<number | null>(null);
   const [revoke, setRevoke] = useState<HistoricalLink | null>(null);
@@ -671,7 +861,7 @@ function SubscriptionManagement({ r }: { r: Resource }) {
     <div className="settings-stack">
       <Panel
         title="订阅链接"
-        description="一个身份，一个稳定地址。多个客户端可以共用，配置更新不会改变地址。"
+        description={`一个${managedSource(r) ? "订阅源" : "身份"}，一个稳定地址。多个客户端可以共用，配置更新不会改变地址。`}
       >
         <PanelBody>
           <p className="muted">
@@ -741,6 +931,7 @@ function SubscriptionManagement({ r }: { r: Resource }) {
           </p>
         </PanelBody>
       </Panel>
+      {children}
       {reset !== null && (
         <Confirm
           title="重置订阅链接？"
@@ -1078,12 +1269,19 @@ export function DetailPage({ section }: { section: Section }) {
   const { resources, busy, run } = useWorkspace();
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const [remove, setRemove] = useState(false),
     [reveal, setReveal] = useState(false);
   const r = resources.find((x) => x.id === id && sectionOf(x) === section);
   if (!r) return <NotFound />;
+  // A source's link is managed on its source page; keep deep links (tab, group).
+  if (managedSource(r))
+    return <Navigate to={`${resourcePath(r)}${location.search}`} replace />;
   const isBundle = r.kind === "bundle",
     isSource = section === "subscriptions";
+  const link = isSource
+    ? resources.find((x) => managedSource(x) === r.id)
+    : undefined;
   const aiEditable = section === "profiles" && r.data.type === "overlay" && !r.data.store && r.data.origin !== "store";
   const tabs = isBundle
     ? [
@@ -1098,10 +1296,13 @@ export function DetailPage({ section }: { section: Section }) {
     : [
         { id: "overview", label: section === "profiles" ? "配置内容" : "概览" },
         ...(r.kind === "device" ? [{ id: "proxies", label: "代理与控制" }] : []),
+        ...(link ? [{ id: "proxies", label: "代理分组" }] : []),
         ...(r.data.store ? [{ id: "management", label: "版本与副本" }] : []),
         ...(aiEditable ? [{ id: "ai", label: "AI 编辑" }] : []),
         ...(isSource ? [{ id: "content", label: "订阅内容" }] : []),
         ...(isSource ? [{ id: "refresh-history", label: "刷新历史" }] : []),
+        ...(link ? [{ id: "history", label: "发布历史" }] : []),
+        ...(isSource ? [{ id: "link", label: "订阅地址" }] : []),
         { id: "settings", label: "设置" },
       ];
   const tab = tabs.some((t) => t.id === params.get("tab"))
@@ -1174,9 +1375,14 @@ export function DetailPage({ section }: { section: Section }) {
         ))}
       </div>
       {tab === "composition" && <Composition key={r.id} r={r} />}
-      {tab === "proxies" && <ProxyControl key={r.id} r={r} />}
+      {tab === "proxies" && (
+        <ProxyControl key={(link ?? r).id} r={link ?? r} />
+      )}
       {tab === "preview" && <Preview r={r} />}
-      {tab === "history" && <History key={r.id} r={r} />}
+      {tab === "history" && <History key={(link ?? r).id} r={link ?? r} />}
+      {tab === "link" && isSource && (
+        <SourceLinkManagement key={r.id} source={r} link={link} />
+      )}
       {tab === "usage" && <UsagePanel r={r} />}
       {tab === "refresh-history" && <RefreshHistory key={r.id} r={r} />}
       {tab === "content" && <Preview source r={r} />}
@@ -1245,8 +1451,8 @@ export function DetailPage({ section }: { section: Section }) {
                     <div className="secret-field">
                       <label>
                         {r.data.westdata
-                          ? "当前激活的订阅地址（面板下发）"
-                          : "上游订阅 URL"}
+                          ? "当前激活的上游地址（面板下发，仅供云端拉取）"
+                          : "上游订阅 URL（仅供云端拉取）"}
                         <input
                           type={reveal ? "text" : "password"}
                           readOnly
@@ -1383,35 +1589,38 @@ export function DetailPage({ section }: { section: Section }) {
             )}
             {isSource && <ProfileContracts r={r} />}
             {section !== "devices" && section !== "proxies" && (
-              <References r={r} />
+              <References r={r} link={link} />
             )}
           </div>
-          <aside className="guidance">
-            <h2>
-              {isSource
-                ? "上游内容，独立管理"
-                : section === "profiles"
-                  ? "可复用的配置单元"
-                  : section === "proxies"
-                    ? "拉取流量的出口"
-                    : "设备保持轻量"}
-            </h2>
-            <p>
-              {isSource
-                ? "定时刷新与手动刷新使用相同的全局拉取出口。刷新成功后，引用此订阅的身份会自动重新生成。"
-                : section === "profiles"
-                  ? "为节点、代理组、域名规则或运行参数分别建立 Profile，然后按用途自由组合。"
-                  : section === "proxies"
-                    ? `此代理仅用于云端拉取上游订阅，不会成为设备的流量出口。${r.data.provider === "static" ? "固定代理按保存的地址使用。" : "每次刷新即时提取一个短效 IP。"}`
-                    : "身份由云端直接分配，设备自动同步，无需配置订阅 URL。停止状态会持久保存，不会被同步或看门狗重新拉起；云端不可达时，请通过路由器本地页面启动、停止或重启 Mihomo。"}
-            </p>
-            <div className="guidance-rule" />
-            <p className="muted">
-              {section === "profiles"
-                ? "支持 prepend- / append- 合并指令。启用或禁用配置，请在身份中操作。"
-                : "敏感链接与凭据请妥善保管，不要公开分享。"}
-            </p>
-          </aside>
+          <div className="detail-aside">
+            {isSource && <SourceDistribution source={r} link={link} />}
+            <aside className="guidance">
+              <h2>
+                {isSource
+                  ? "上游内容，独立管理"
+                  : section === "profiles"
+                    ? "可复用的配置单元"
+                    : section === "proxies"
+                      ? "拉取流量的出口"
+                      : "设备保持轻量"}
+              </h2>
+              <p>
+                {isSource
+                  ? "定时刷新与手动刷新使用相同的全局拉取出口。刷新成功后，订阅地址和引用此订阅的身份会自动更新。"
+                  : section === "profiles"
+                    ? "为节点、代理组、域名规则或运行参数分别建立 Profile，然后按用途自由组合。"
+                    : section === "proxies"
+                      ? `此代理仅用于云端拉取上游订阅，不会成为设备的流量出口。${r.data.provider === "static" ? "固定代理按保存的地址使用。" : "每次刷新即时提取一个短效 IP。"}`
+                      : "身份由云端直接分配，设备自动同步，无需配置订阅 URL。停止状态会持久保存，不会被同步或看门狗重新拉起；云端不可达时，请通过路由器本地页面启动、停止或重启 Mihomo。"}
+              </p>
+              <div className="guidance-rule" />
+              <p className="muted">
+                {section === "profiles"
+                  ? "支持 prepend- / append- 合并指令。启用或禁用配置，请在身份中操作。"
+                  : "敏感链接与凭据请妥善保管，不要公开分享。"}
+              </p>
+            </aside>
+          </div>
         </div>
       )}
       {tab === "more" && isBundle && (
@@ -1440,7 +1649,9 @@ export function DetailPage({ section }: { section: Section }) {
               <p>
                 {r.kind === "device"
                   ? "解绑会移除设备记录并撤销云端授权；不停止本地 Mihomo，设备会保留最后有效配置。重新连接需要再次授权。"
-                  : "删除不可撤销。被其他资源引用时，请先解除关联。"}
+                  : isSource
+                    ? "删除不可撤销，订阅地址同时失效。被身份引用或有设备通过它同步时，请先解除关联。"
+                    : "删除不可撤销。被其他资源引用时，请先解除关联。"}
               </p>
             </div>
             <button
@@ -1461,7 +1672,9 @@ export function DetailPage({ section }: { section: Section }) {
               ? "设备将失去云端同步与远程控制授权，但本地 Mihomo 不会因此停止。身份订阅链接和其他设备不受影响。"
               : isBundle
                 ? "此操作不可撤销。身份删除后，使用该身份的订阅链接将失效。"
-                : "此操作不可撤销。被其他资源引用时，请先解除关联。"
+                : isSource
+                  ? "此操作不可撤销。订阅源的订阅地址将同时失效，使用它的客户端无法继续更新。"
+                  : "此操作不可撤销。被其他资源引用时，请先解除关联。"
           }
           close={() => setRemove(false)}
           action={async () => {
@@ -1495,6 +1708,8 @@ export function EditPage({
     (r) => r.id === id && sectionOf(r) === section,
   );
   if (!fresh && !existing) return <NotFound />;
+  if (existing && managedSource(existing))
+    return <Navigate to={resourcePath(existing)} replace />;
   const initial: Resource = existing ?? {
     id: "",
     version: 0,
@@ -1558,7 +1773,7 @@ export function EditPage({
             {section === "identities"
               ? "启用开关属于此身份中的关联。一个 Profile 可以在不同身份中采用不同的启用状态。"
               : section === "subscriptions"
-                ? "填写机场提供的 Clash YAML 地址，拉取出口由平台统一管理。源内容更新后，关联身份自动重新生成。"
+                ? "填写机场提供的 Clash YAML 地址，拉取出口由平台统一管理。保存后自动生成订阅地址，首次拉取成功即可导入客户端。"
                 : section === "profiles"
                   ? "建议每份 Profile 负责一个用途，例如自定义规则、专用节点或关闭 TUN，便于复用和排查。"
                   : section === "proxies"

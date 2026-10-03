@@ -14,6 +14,7 @@ mod retry;
 #[cfg(test)]
 mod retry_tests;
 mod security;
+mod source_link;
 mod store;
 mod sync;
 mod usage;
@@ -188,11 +189,16 @@ pub fn router(app: App) -> Router {
             post(api::westdata_services),
         )
         .route("/api/profiles/:id/content", get(api::profile_content))
+        .route(
+            "/api/profiles/:id/subscription-link",
+            post(source_link::create),
+        )
         .route("/api/profiles/:id/history", get(history::list))
         .route("/api/bundles/:id/usage", get(api::bundle_usage))
         .route("/api/proxies/egress-preview", post(provider::preview))
         .route("/api/bundles/:id/revisions", get(api::revisions))
         .route("/api/bundles/:id/rollback", post(api::rollback))
+        .route("/api/bundles/:id/promote", post(source_link::promote))
         .route("/api/bundles/:id/preview/:format", get(api::preview))
         .route("/api/tokens", get(api::tokens).post(api::token))
         .route("/api/tokens/:id", axum::routing::delete(api::revoke))

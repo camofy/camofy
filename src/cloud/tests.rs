@@ -850,6 +850,288 @@ async fn cloud_end_to_end() {
         1,
         "preview must not trigger upstream requests"
     );
+    // Every new source has its own link: a hidden identity published by the first fetch.
+    let listed = request(
+        &client,
+        &origin,
+        &alice,
+        "GET",
+        "/resources",
+        json!(null),
+        200,
+    )
+    .await;
+    let link = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["data"]["managed_source"] == src["id"])
+        .cloned()
+        .expect("source link");
+    assert_eq!(link["kind"], "bundle");
+    assert_eq!(link["data"]["name"], "Main");
+    assert!(link["data"]["published_revision"].is_string(), "{link}");
+    let link_id = link["id"].as_str().unwrap();
+    let link_url = link["data"]["subscription_url"].as_str().unwrap();
+    let served = client.get(link_url).send().await.unwrap();
+    assert_eq!(served.status(), 200);
+    assert_eq!(
+        served.headers()["content-disposition"],
+        "attachment; filename=\"camofy.yaml\"; filename*=UTF-8''Main"
+    );
+    assert_eq!(
+        served.headers()["subscription-userinfo"],
+        "upload=100; download=200; total=10000; expire=2000000000"
+    );
+    let served_yaml = camofy::engine::parse(&served.text().await.unwrap()).unwrap();
+    assert_eq!(served_yaml["proxies"][0]["name"], "mine");
+    assert_eq!(
+        served_yaml["rules"][0],
+        camofy::engine::cloud_safety_profile(&origin).unwrap()["prepend-rules"][0]
+    );
+    let clash = client
+        .get(format!("{link_url}/clash"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(clash.status(), 200);
+    assert_eq!(
+        clash.headers()["content-disposition"],
+        "attachment; filename=\"camofy-clash.yaml\"; filename*=UTF-8''Main"
+    );
+    request(
+        &client,
+        &origin,
+        &alice,
+        "PUT",
+        &format!("/resources/{link_id}"),
+        json!({"kind":"bundle","version":link["version"],"data":link["data"]}),
+        400,
+    )
+    .await;
+    let forged = request(
+        &client,
+        &origin,
+        &alice,
+        "POST",
+        "/resources",
+        json!({"kind":"bundle","data":{"name":"Forged link","managed_source":src["id"],
+            "profiles":[{"profile_id":src["id"],"enabled":true}]}}),
+        200,
+    )
+    .await;
+    assert!(forged["data"]["managed_source"].is_null());
+    request(
+        &client,
+        &origin,
+        &alice,
+        "DELETE",
+        &format!("/resources/{}", forged["id"].as_str().unwrap()),
+        json!(null),
+        204,
+    )
+    .await;
+    let again = request(
+        &client,
+        &origin,
+        &alice,
+        "POST",
+        &format!("/profiles/{sid}/subscription-link"),
+        json!(null),
+        200,
+    )
+    .await;
+    assert_eq!(again["id"], link["id"]);
+    request(
+        &client,
+        &origin,
+        &bob,
+        "POST",
+        &format!("/profiles/{sid}/subscription-link"),
+        json!(null),
+        404,
+    )
+    .await;
+    // Lifecycle on a source that is never fetched: its queued job is removed with it.
+    let hosted = request(
+        &client,
+        &origin,
+        &alice,
+        "POST",
+        "/resources",
+        json!({"kind":"profile","data":{"name":"Hosted","type":"source",
+            "url":"http://localhost:59999/hosted.yaml","auto_refresh":false}}),
+        200,
+    )
+    .await;
+    let hosted_id = hosted["id"].as_str().unwrap();
+    let find_link = |records: &Value| {
+        records
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["data"]["managed_source"] == hosted_id)
+            .cloned()
+    };
+    let listed = request(
+        &client,
+        &origin,
+        &alice,
+        "GET",
+        "/resources",
+        json!(null),
+        200,
+    )
+    .await;
+    let pending = find_link(&listed).expect("hosted link");
+    assert!(pending["data"]["published_revision"].is_null());
+    let pending_url = pending["data"]["subscription_url"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(client.get(&pending_url).send().await.unwrap().status(), 409);
+    let mut renamed = hosted["data"].clone();
+    renamed["name"] = json!("Hosted renamed");
+    request(
+        &client,
+        &origin,
+        &alice,
+        "PUT",
+        &format!("/resources/{hosted_id}"),
+        json!({"kind":"profile","version":hosted["version"],"data":renamed}),
+        200,
+    )
+    .await;
+    let listed = request(
+        &client,
+        &origin,
+        &alice,
+        "GET",
+        "/resources",
+        json!(null),
+        200,
+    )
+    .await;
+    let pending = find_link(&listed).unwrap();
+    assert_eq!(pending["data"]["name"], "Hosted renamed");
+    let pending_id = pending["id"].as_str().unwrap();
+    let hosted_device = request(
+        &client,
+        &origin,
+        &alice,
+        "POST",
+        "/resources",
+        json!({"kind":"device","data":{"name":"Hosted router","bundle_id":pending_id}}),
+        200,
+    )
+    .await;
+    for target in [hosted_id, pending_id] {
+        request(
+            &client,
+            &origin,
+            &alice,
+            "DELETE",
+            &format!("/resources/{target}"),
+            json!(null),
+            409,
+        )
+        .await;
+    }
+    request(
+        &client,
+        &origin,
+        &alice,
+        "DELETE",
+        &format!("/resources/{}", hosted_device["id"].as_str().unwrap()),
+        json!(null),
+        204,
+    )
+    .await;
+    request(
+        &client,
+        &origin,
+        &bob,
+        "POST",
+        &format!("/bundles/{pending_id}/promote"),
+        json!({"version":pending["version"]}),
+        404,
+    )
+    .await;
+    request(
+        &client,
+        &origin,
+        &alice,
+        "POST",
+        &format!("/bundles/{pending_id}/promote"),
+        json!({"version":0}),
+        409,
+    )
+    .await;
+    let promoted = request(
+        &client,
+        &origin,
+        &alice,
+        "POST",
+        &format!("/bundles/{pending_id}/promote"),
+        json!({"version":pending["version"]}),
+        200,
+    )
+    .await;
+    assert!(promoted["data"]["managed_source"].is_null());
+    assert_eq!(promoted["data"]["subscription_url"], pending_url.as_str());
+    let regenerated = request(
+        &client,
+        &origin,
+        &alice,
+        "POST",
+        &format!("/profiles/{hosted_id}/subscription-link"),
+        json!(null),
+        200,
+    )
+    .await;
+    assert_ne!(regenerated["id"], promoted["id"]);
+    assert_eq!(regenerated["data"]["managed_source"], hosted_id);
+    // The promoted identity is an ordinary reference now; the new link goes with the source.
+    request(
+        &client,
+        &origin,
+        &alice,
+        "DELETE",
+        &format!("/resources/{hosted_id}"),
+        json!(null),
+        409,
+    )
+    .await;
+    request(
+        &client,
+        &origin,
+        &alice,
+        "DELETE",
+        &format!("/resources/{pending_id}"),
+        json!(null),
+        204,
+    )
+    .await;
+    request(
+        &client,
+        &origin,
+        &alice,
+        "DELETE",
+        &format!("/resources/{hosted_id}"),
+        json!(null),
+        204,
+    )
+    .await;
+    assert_eq!(client.get(&pending_url).send().await.unwrap().status(), 401);
+    assert_eq!(
+        client
+            .get(regenerated["data"]["subscription_url"].as_str().unwrap())
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
     let resources = request(
         &client,
         &origin,

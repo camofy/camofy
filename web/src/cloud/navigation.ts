@@ -49,4 +49,13 @@ export function sectionOf(r: Resource): Section {
         ? "proxies"
         : "devices";
 }
-export const resourcePath = (r: Resource) => `/${sectionOf(r)}/${r.id}`;
+/** A source's own subscription link: an identity that is shown on its source page. */
+export const managedSource = (r: Resource) =>
+  r.kind === "bundle" ? r.data.managed_source : undefined;
+export const listed = (r: Resource) => !managedSource(r);
+export const displayName = (r: Resource) =>
+  managedSource(r) ? `订阅源 · ${r.data.name}` : r.data.name;
+export const resourcePath = (r: Resource) => {
+  const source = managedSource(r);
+  return source ? `/subscriptions/${source}` : `/${sectionOf(r)}/${r.id}`;
+};

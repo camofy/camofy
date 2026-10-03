@@ -28,6 +28,16 @@ it does not contact a central Camofy account server.
   interactive challenge no plain HTTP client can clear; subscription delivery is
   unchanged and stays on the platform egress. See
   [WestData 账号订阅](westdata-source.md).
+* Source link: every new source also gets a hidden identity that binds only that
+  source with its full content. The server alone sets its `managed_source` marker.
+  It issues the source's own `subscription_url` and publishes through the ordinary
+  revision pipeline after the first successful fetch: all formats, usage headers,
+  shared selections, history and rollback. Devices may be assigned to it. It is not
+  listed or editable as an identity and follows the source's name. Sources created
+  before this feature get one on request; deployment issues no credentials. Deleting
+  the source deletes its link, tokens and revisions, unless a device is assigned to
+  the link (409). Promote removes the marker: the identity keeps its ID, links,
+  devices and history, becomes ordinary, and the source may issue a new link.
 * Independent profile (`type: overlay`): arbitrary partial YAML such as nodes,
   groups, rules or runtime settings. Neither profile type has global activation.
 * Identity (`kind: bundle` in the API): an ordered `profiles` array of
@@ -123,6 +133,9 @@ Existing identity links are normalized on read without rotating credentials;
 old `/router` links remain compatible. The URL change does not alter runtime defaults.
 Optional `GET /sub/{token}/{format}` exports specific formats. Responses include ETag, private/no-cache,
 Content-Disposition, `profile-update-interval: 1` (hours) and revision header.
+Content-Disposition carries the identity or source name as RFC 5987 `filename*` without
+an extension (Clash Verge Rev names the imported profile after it), with an ASCII
+`filename` fallback of `camofy.yaml` or `camofy-{format}.yaml` (`.txt` for nodes).
 Formats: `clash`, `router`, `shadowrocket`, `shadowrocket-nodes`.
 
 `clash` excludes router/controller settings so a desktop client's runtime settings
@@ -241,6 +254,10 @@ and geo-distributed delivery are outside this initial implementation.
   returns the services it can manage: `{id, name, status, next_due}`. Uses the platform
   egress, is rate limited per user, and never returns credentials or page content.
 * GET `/api/bundles/{id}/preview/{format}`, `/revisions`; POST `/rollback` with revision.
+* POST `/api/profiles/{id}/subscription-link` returns a source's link identity, creating
+  one for an older source (idempotent). POST `/api/bundles/{id}/promote` with `{version}`
+  turns a source link into an ordinary identity (409 when stale). Closing a link is
+  DELETE `/api/resources/{link id}`; PUT on a link identity is rejected.
 * GET `/api/bundles/{id}/subscription-links` lists historical non-device links,
   excluding the primary link. Returns label, hash identifier and creation time,
   never recoverable secrets. DELETE `/api/bundles/{id}/subscription-links/{hash}`

@@ -171,6 +171,7 @@ async fn save(
         "usage_previous",
         "content_fingerprint",
         "selection_events",
+        "managed_source",
     ] {
         object.remove(key);
         if let Some(v) = old.as_ref().and_then(|r| r.data.get(key)) {
@@ -306,6 +307,11 @@ async fn save(
             crate::variables::validate_profile(&data).map_err(|e| Error::bad(e.to_string()))?;
         }
         "bundle" => {
+            if data["managed_source"].is_string() {
+                return Err(Error::bad(
+                    "此身份是订阅源的订阅地址，请在订阅源页面管理，或先转为身份",
+                ));
+            }
             if data.get("default_outbound").is_some() {
                 return Err(Error::bad("obsolete identity outbound is unsupported"));
             }
@@ -434,6 +440,18 @@ async fn save(
         store::put(&app, &mut tx, user, &r).await?;
     }
     if r.kind == "profile" && r.data["type"] == "source" {
+        if new {
+            // Every new source is directly importable. It publishes after the first fetch.
+            crate::source_link::issue(&app, &mut tx, user, &r).await?;
+        } else if let Some(link) = crate::source_link::find(&records, id)
+            && link.data["name"] != r.data["name"]
+        {
+            // Devices and the agent show the identity name; keep it the source's name.
+            let mut link = link.clone();
+            link.data["name"] = r.data["name"].clone();
+            link.version += 1;
+            store::put(&app, &mut tx, user, &link).await?;
+        }
         // Save schedules even when auto refresh is off: one initial/manual refresh is allowed.
         // Panel credentials are part of the fetch inputs, so changing them re-queues a refresh.
         let fetch_changed = old.as_ref().is_some_and(|o| {
@@ -502,7 +520,20 @@ pub async fn delete(
             "legacy proxies are retained; use platform proxy administration",
         ));
     }
-    for r in store::list(&app, &mut tx, user).await? {
+    let records = store::list(&app, &mut tx, user).await?;
+    // A source's own link goes with it; its tokens and revisions cascade.
+    let link = crate::source_link::find(&records, id).map(|r| r.id);
+    if let Some(link) = link
+        && records
+            .iter()
+            .any(|r| r.data["bundle_id"] == link.to_string())
+    {
+        return Err(Error::new(
+            StatusCode::CONFLICT,
+            "有设备正在通过此订阅源同步，请先改绑或解绑设备",
+        ));
+    }
+    for r in records.iter().filter(|r| Some(r.id) != link) {
         if ["proxy_id", "bundle_id"]
             .iter()
             .any(|k| r.data[*k] == id.to_string())
@@ -513,13 +544,17 @@ pub async fn delete(
         {
             return Err(Error::new(
                 StatusCode::CONFLICT,
-                "resource is referenced; remove its bindings first",
+                if crate::source_link::source_of(&target).is_some() {
+                    "有设备正在通过此订阅地址同步，请先改绑或解绑设备"
+                } else {
+                    "resource is referenced; remove its bindings first"
+                },
             ));
         }
     }
-    sqlx::query("DELETE FROM resources WHERE id=$1 AND user_id=$2")
-        .bind(id)
+    sqlx::query("DELETE FROM resources WHERE user_id=$1 AND id = ANY($2)")
         .bind(user)
+        .bind(Vec::from_iter([Some(id), link].into_iter().flatten()))
         .execute(&mut *tx)
         .await?;
     store::notify(&mut tx, user).await?;

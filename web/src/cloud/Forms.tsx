@@ -2,7 +2,7 @@ import { useState, useRef, useCallback } from "react";
 import brandMark from "../assets/mark.svg";
 import { useBlocker, useBeforeUnload } from "react-router-dom";
 import { api, type Data, type PanelService, type Resource, type User } from "./model";
-import { Modal, ConfigPreview, FieldActionRow, Icon } from "./ui";
+import { Modal, ConfigPreview, FieldActionRow, Icon, IdentityOptions } from "./ui";
 import { type IdentityPreview } from "./Store";
 import { BindingPicker, IdentityValuesEditor, ProvideEditor, VariableEditor } from "./Variables";
 import type { TemplateVariable, VariableBinding } from "./model";
@@ -1042,15 +1042,11 @@ export function Editor({
                 onChange={(e) => set("bundle_id", e.target.value)}
               >
                 <option value="">请选择</option>
-                {options("bundle").map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.data.name}
-                  </option>
-                ))}
+                <IdentityOptions bundles={options("bundle")} />
               </select>
             </label>
             <p className="muted">
-              保存后自动向设备下发这个身份，无需到路由器配置订阅
+              保存后自动向设备下发这个身份或订阅源，无需到路由器配置订阅
               URL。设备离线时会在重连后同步。
             </p>
           </>

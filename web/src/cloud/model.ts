@@ -48,6 +48,8 @@ export type Data = {
     variable_bindings?: Record<string, VariableBinding>;
   }[];
   subscription_url?: string;
+  // Set by the server on a subscription source's own hidden identity.
+  managed_source?: string;
   selections?: Record<string, string>;
   bundle_id?: string;
   published_revision?: string;

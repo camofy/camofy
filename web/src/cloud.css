@@ -1410,6 +1410,17 @@ div.inline-error {
 .settings-stack {
   max-width: 860px;
 }
+.detail-aside {
+  position: sticky;
+  top: 76px;
+  display: grid;
+  align-content: start;
+  gap: 20px;
+}
+.detail-aside > .guidance,
+.detail-aside > .distribution {
+  position: static;
+}
 .guidance {
   position: sticky;
   top: 76px;
@@ -2310,6 +2321,7 @@ div.inline-error {
   .edit-layout {
     grid-template-columns: minmax(0, 1fr);
   }
+  .detail-aside,
   .guidance,
   .distribution {
     position: static;

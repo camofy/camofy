@@ -128,6 +128,16 @@ pub async fn subscription(
     h: HeaderMap,
     Path((token, format)): Path<(String, String)>,
 ) -> Result<Response, Error> {
+    let fallback = filename(&format);
+    serve(app, h, token, format, &fallback).await
+}
+async fn serve(
+    app: App,
+    h: HeaderMap,
+    token: String,
+    format: String,
+    fallback: &str,
+) -> Result<Response, Error> {
     let a = access(&app, &token).await?;
     auth::rate(&app, format!("sub:{}", camofy::digest(&token)), 120, 60).await?;
     let mut conn = app.db.acquire().await?;
@@ -155,22 +165,72 @@ pub async fn subscription(
     let records = store::list(&app, &mut tx, a.user).await?;
     let usage = crate::usage::published(&app, &mut tx, a.user, &records, &b).await?;
     tx.commit().await?;
-    artifact_response(app.vault.open(sealed)?, &format, &h, id, Some(&usage))
+    let mut response = artifact_response(app.vault.open(sealed)?, &format, &h, id, Some(&usage))?;
+    response.headers_mut().insert(
+        header::CONTENT_DISPOSITION,
+        disposition(fallback, b.data["name"].as_str().unwrap_or("")),
+    );
+    Ok(response)
 }
 
 /// Platform-neutral identity URL. Preserve the existing complete YAML and hash contract;
 /// the legacy artifact name is an internal compatibility detail, not a client restriction.
 pub async fn identity_subscription(
-    app: State<App>,
+    State(app): State<App>,
     h: HeaderMap,
     Path(token): Path<String>,
 ) -> Result<Response, Error> {
-    let mut response = subscription(app, h, Path((token, "router".to_string()))).await?;
-    response.headers_mut().insert(
-        header::CONTENT_DISPOSITION,
-        "attachment; filename=\"camofy.yaml\"".parse().unwrap(),
+    serve(app, h, token, "router".into(), "camofy.yaml").await
+}
+
+fn filename(format: &str) -> String {
+    let extension = if format == "shadowrocket-nodes" {
+        "txt"
+    } else {
+        "yaml"
+    };
+    format!("camofy-{format}.{extension}")
+}
+
+/// Clients such as Clash Verge Rev name an imported profile after `filename*`, so it
+/// carries the identity name. The header itself must stay ASCII (RFC 5987 encoding).
+fn disposition(fallback: &str, name: &str) -> header::HeaderValue {
+    const ATTR: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+        .remove(b'!')
+        .remove(b'#')
+        .remove(b'$')
+        .remove(b'&')
+        .remove(b'+')
+        .remove(b'-')
+        .remove(b'.')
+        .remove(b'^')
+        .remove(b'_')
+        .remove(b'`')
+        .remove(b'|')
+        .remove(b'~');
+    let name: String = name.chars().filter(|c| !c.is_control()).collect();
+    let mut value = format!("attachment; filename=\"{fallback}\"");
+    if !name.trim().is_empty() {
+        value.push_str("; filename*=UTF-8''");
+        value.extend(percent_encoding::utf8_percent_encode(name.trim(), ATTR));
+    }
+    value.parse().unwrap()
+}
+
+#[test]
+fn disposition_names_profiles_without_non_ascii_headers() {
+    assert_eq!(
+        disposition("camofy.yaml", "工作 节点;\"x\"\n"),
+        "attachment; filename=\"camofy.yaml\"; filename*=UTF-8''%E5%B7%A5%E4%BD%9C%20%E8%8A%82%E7%82%B9%3B%22x%22"
     );
-    Ok(response)
+    assert_eq!(
+        disposition("camofy-clash.yaml", "Home-1.0"),
+        "attachment; filename=\"camofy-clash.yaml\"; filename*=UTF-8''Home-1.0"
+    );
+    assert_eq!(
+        disposition("camofy.yaml", " \t"),
+        "attachment; filename=\"camofy.yaml\""
+    );
 }
 fn artifact_response(
     artifacts: Value,
@@ -219,17 +279,7 @@ fn artifact_response(
     headers.insert("x-camofy-revision", revision.to_string().parse().unwrap());
     headers.insert(
         header::CONTENT_DISPOSITION,
-        format!(
-            "attachment; filename=\"camofy-{}.{}\"",
-            format,
-            if format == "shadowrocket-nodes" {
-                "txt"
-            } else {
-                "yaml"
-            }
-        )
-        .parse()
-        .unwrap(),
+        disposition(&filename(format), ""),
     );
     Ok(r)
 }

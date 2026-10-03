@@ -16,7 +16,7 @@ import { Login } from "./cloud/Forms";
 import Authorize from "./cloud/Authorize";
 import { StorePage, StoreDetail, AccountPage } from "./cloud/Store";
 import { Icon } from "./cloud/ui";
-import { sections, sectionOf } from "./cloud/navigation";
+import { listed, sections, sectionOf } from "./cloud/navigation";
 import { CollectionPage, DetailPage, EditPage, NotFound } from "./cloud/pages";
 
 function CloudWorkspace() {
@@ -217,7 +217,11 @@ function CloudWorkspace() {
                   <Icon name={s.icon} size={17} />
                   <span>{s.name}</span>
                   <small>
-                    {resources.filter((r) => sectionOf(r) === s.key).length}
+                    {
+                      resources.filter(
+                        (r) => sectionOf(r) === s.key && listed(r),
+                      ).length
+                    }
                   </small>
                 </NavLink>
               ))}

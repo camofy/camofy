@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import brandMark from "../assets/mark.svg";
 import { useSearchParams, Link } from "react-router-dom";
 import { api, type Resource, type User } from "./model";
-import { Icon } from "./ui";
+import { Icon, IdentityOptions } from "./ui";
 
 type Request = { device_name: string; return_uri: string; scope: string };
 export default function Authorize({
@@ -132,37 +132,28 @@ export default function Authorize({
               }}
             >
               <label>
-                这台设备使用哪个身份？
+                这台设备使用哪个身份或订阅源？
                 <select
                   required
                   value={identity}
                   onChange={(e) => setIdentity(e.target.value)}
                 >
-                  <option value="">请选择身份</option>
-                  {current.identities!.map((r) => (
-                    <option
-                      key={r.id}
-                      value={r.id}
-                      disabled={!r.data.published_revision}
-                    >
-                      {r.data.name}
-                      {!r.data.published_revision ? "（尚未成功发布）" : ""}
-                    </option>
-                  ))}
+                  <option value="">请选择身份或订阅源</option>
+                  <IdentityOptions bundles={current.identities!} published />
                 </select>
               </label>
               {!current.identities!.some((r) => r.data.published_revision) && (
                 <p className="muted">
-                  你还没有可用身份。
+                  你还没有可用的身份或订阅源。
                   <Link
                     className="text-link"
                     target="_blank"
                     rel="noopener noreferrer"
-                    to="/identities/new"
+                    to="/subscriptions/new"
                   >
-                    先创建身份
+                    先添加订阅源
                   </Link>
-                  ，然后刷新本页。
+                  ，首次拉取成功后刷新本页。
                 </p>
               )}
               <p className="muted">

@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, displayTime, type Resource } from "./model";
 import { Panel, PanelBody, Icon } from "./ui";
+import { useWorkspace } from "./context";
+import { managedSource } from "./navigation";
 import "./proxy-control.css";
 
 type Group = {
@@ -93,7 +95,13 @@ const errors: Record<string, string> = {
 
 export function ProxyControl({ r }: { r: Resource }) {
   const device = r.kind === "device";
+  const { resources } = useWorkspace();
   const [view, setView] = useState<View>();
+  // A source's own link reads as the source; its identity stays an internal detail.
+  const followed = device
+    ? resources.find((x) => x.id === view?.identity_id)
+    : r;
+  const noun = followed && managedSource(followed) ? "订阅源" : "身份";
   const [params, setParams] = useSearchParams();
   const [groupQuery, setGroupQuery] = useState("");
   const [nodeQuery, setNodeQuery] = useState("");
@@ -183,7 +191,7 @@ export function ProxyControl({ r }: { r: Resource }) {
       setNotice(
         device
           ? "选择已保存，正在等待设备确认。"
-          : "共享选择已保存，跟随此身份的设备将自动同步。",
+          : `共享选择已保存，跟随此${noun}的设备将自动同步。`,
       );
     } catch (e) {
       await load();
@@ -314,14 +322,14 @@ export function ProxyControl({ r }: { r: Resource }) {
               ? stale
                 ? "等待设备连接"
                 : (labels[core ?? ""] ?? "正在同步设备")
-              : "身份共享选择"}
+              : `${noun}共享选择`}
           </strong>
           <span className="muted">
             {device
               ? previousCoreState
                 ? `内核最近确认 ${displayTime(coreSeenAt)} · 节点快照 ${displayTime(view?.state?.sampled_at)}`
                 : `自动同步 · ${view?.state?.sampled_at ? displayTime(view.state.sampled_at) : "等待首次快照"}`
-              : "影响所有跟随此身份的 Agent"}
+              : `影响所有跟随此${noun}的 Agent`}
           </span>
         </div>
         <div className="proxy-top-actions">
@@ -516,7 +524,7 @@ export function ProxyControl({ r }: { r: Resource }) {
                       </strong>
                       <span>
                         {device
-                          ? `只读预览 · 跟随 ${view.identity_name ?? "身份"}`
+                          ? `只读预览 · 跟随 ${view.identity_name ?? noun}`
                           : "绑定设备自动同步；订阅客户端需更新订阅"}
                       </span>
                     </div>
@@ -525,7 +533,7 @@ export function ProxyControl({ r }: { r: Resource }) {
                         className="button"
                         to={`/identities/${view.identity_id}?tab=proxies&group=${encodeURIComponent(selected.name)}`}
                       >
-                        前往身份调整
+                        前往{noun}调整
                       </Link>
                     )}
                     {!device && view.selections?.[selected.name] && (
@@ -624,7 +632,7 @@ export function ProxyControl({ r }: { r: Resource }) {
                                 {actual
                                   ? "✓ 设备实际使用"
                                   : target
-                                    ? "身份期望 · 等待同步"
+                                    ? `${noun}期望 · 等待同步`
                                     : "只读预览"}
                               </small>
                             </div>
@@ -699,8 +707,8 @@ export function ProxyControl({ r }: { r: Resource }) {
                   )}
                   <p className="proxy-footnote">
                     {device
-                      ? "只读预览，节点选择统一在身份页面修改。"
-                      : "身份选择会同步至跟随设备。"}
+                      ? `只读预览，节点选择统一在${noun}页面修改。`
+                      : `${noun}选择会同步至跟随设备。`}
                     不会主动断开已有连接。
                     {selected.dynamic ? "动态节点以设备上报为准。" : ""}
                   </p>
@@ -723,8 +731,8 @@ export function ProxyControl({ r }: { r: Resource }) {
               {device
                 ? core === "stopped"
                   ? "启动内核后，分组将自动显示，无需手动刷新。"
-                  : "设备应用身份后会自动上报。此页会持续同步；网络恢复后无需重新打开。"
-                : "当前身份尚未配置代理分组。"}
+                  : `设备应用${noun}后会自动上报。此页会持续同步；网络恢复后无需重新打开。`
+                : `当前${noun}尚未配置代理分组。`}
             </p>
           </div>
         )

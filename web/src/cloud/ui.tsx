@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import type { Resource } from "./model";
-import { resourcePath } from "./navigation";
+import { displayName, managedSource, resourcePath } from "./navigation";
 export function Icon({ name, size = 18 }: { name: string; size?: number }) {
   const paths: Record<string, ReactNode> = {
     layers: (
@@ -373,10 +373,41 @@ export function ConfigPreview({
 export function ResourceLink({ r }: { r?: Resource }) {
   return r ? (
     <Link className="text-link" to={resourcePath(r)}>
-      {r.data.name}
+      {displayName(r)}
       <Icon name="arrow" size={13} />
     </Link>
   ) : (
     <span className="muted">未关联</span>
+  );
+}
+/** Device targets: identities, then the subscription sources' own links. */
+export function IdentityOptions({
+  bundles,
+  published = false,
+}: {
+  bundles: Resource[];
+  published?: boolean;
+}) {
+  const option = (r: Resource) => {
+    const unavailable = published && !r.data.published_revision;
+    return (
+      <option key={r.id} value={r.id} disabled={unavailable}>
+        {r.data.name}
+        {unavailable
+          ? managedSource(r)
+            ? "（尚未成功拉取）"
+            : "（尚未成功发布）"
+          : ""}
+      </option>
+    );
+  };
+  const identities = bundles.filter((r) => !managedSource(r)),
+    sources = bundles.filter((r) => managedSource(r));
+  if (!identities.length || !sources.length) return <>{bundles.map(option)}</>;
+  return (
+    <>
+      <optgroup label="身份">{identities.map(option)}</optgroup>
+      <optgroup label="订阅源">{sources.map(option)}</optgroup>
+    </>
   );
 }

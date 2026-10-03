@@ -63,6 +63,11 @@ export function designPreview(): Plugin {
       },
     },
   });
+  // A source's own link: a hidden identity that binds only that source.
+  const sourceLink = (source: string, name: string, download: number) => {
+    const link = identity("link-" + source, name, [source], download);
+    return { ...link, data: { ...link.data, managed_source: source } };
+  };
   type Item = {
     id: string;
     kind: string;
@@ -112,6 +117,15 @@ export function designPreview(): Plugin {
     ),
     identity("home", "家里的网络", ["backup-source", "routing", "no-tun"], 8),
     identity("travel", "轻装出行", ["travel-source", "routing"], 12),
+    sourceLink("everyday-source", "日常订阅", 36),
+    sourceLink("panel-source", "机房面板订阅", 12),
+    {
+      ...sourceLink("travel-source", "旅行订阅", 12),
+      data: {
+        ...sourceLink("travel-source", "旅行订阅", 12).data,
+        error: "profile \"旅行订阅\" 的代理组引用了不存在的节点「香港 03」",
+      },
+    },
     {
       id: "home-router",
       kind: "device",
@@ -140,6 +154,21 @@ export function designPreview(): Plugin {
           revision: "demo-revision-08",
           seen_at: now - 90,
           core_state: "stopped",
+        },
+      },
+    },
+    {
+      id: "balcony-router",
+      kind: "device",
+      version: 1,
+      data: {
+        name: "阳台路由器",
+        bundle_id: "link-panel-source",
+        reported: {
+          status: "applied",
+          revision: "demo-revision-08",
+          seen_at: now - 45,
+          core_state: "running",
         },
       },
     },
@@ -377,7 +406,31 @@ export function designPreview(): Plugin {
               data: draft.data,
             };
             resources.push(item);
+            if (item.kind === "profile" && item.data.type === "source") {
+              const link = sourceLink(item.id, String(item.data.name), 0);
+              resources.push({
+                ...link,
+                data: { ...link.data, published_revision: undefined },
+              });
+            }
             return send(item);
+          }
+          if (path.endsWith("/subscription-link") && req.method === "POST") {
+            const source = resources.find((r) => r.id === path.split("/")[2]);
+            if (!source) return send({ error: "演示订阅源不存在" }, 404);
+            let link = resources.find((r) => r.data.managed_source === source.id);
+            if (!link) {
+              link = sourceLink(source.id, String(source.data.name), 0);
+              resources.push(link);
+            }
+            return send(link);
+          }
+          if (path.endsWith("/promote") && req.method === "POST") {
+            const link = resources.find((r) => r.id === path.split("/")[2]);
+            if (!link?.data.managed_source) return send({ error: "演示身份不存在" }, 404);
+            delete link.data.managed_source;
+            link.version++;
+            return send(link);
           }
           if (path === "/admin/proxies" && req.method === "POST") {
             const data = { ...draft.data };
