@@ -236,7 +236,7 @@ async fn compatibility_http_end_to_end() {
     assert_eq!(camofy::digest(&raw), manifest["hash"].as_str().unwrap());
     let mut manual = data.clone();
     manual["node_filter"] = json!({"auto":false,"exclude_types":["anytls"]});
-    let edited = call(
+    let mut edited = call(
         &client,
         &origin,
         &sessions[0],
@@ -246,6 +246,10 @@ async fn compatibility_http_end_to_end() {
         200,
     )
     .await;
+    assert_ne!(
+        edited["data"]["published_revision"],
+        bundle["data"]["published_revision"]
+    );
     let response = client
         .get(sub)
         .header("User-Agent", old)
@@ -259,6 +263,29 @@ async fn compatibility_http_end_to_end() {
     assert_eq!(
         client
             .get(other["data"]["subscription_url"].as_str().unwrap())
+            .header("User-Agent", old)
+            .send()
+            .await
+            .unwrap()
+            .headers()["x-camofy-filtered"],
+        "2"
+    );
+    let manual_revision = edited["data"]["published_revision"].clone();
+    manual["node_filter"]["auto"] = json!(true);
+    edited = call(
+        &client,
+        &origin,
+        &sessions[0],
+        "PUT",
+        &format!("/resources/{id}"),
+        json!({"kind":"bundle","version":edited["version"],"data":manual}),
+        200,
+    )
+    .await;
+    assert_ne!(edited["data"]["published_revision"], manual_revision);
+    assert_eq!(
+        client
+            .get(sub)
             .header("User-Agent", old)
             .send()
             .await

@@ -493,6 +493,7 @@ async fn save(
                 o.data["profiles"] != r.data["profiles"]
                     || o.data["selections"] != r.data["selections"]
                     || o.data["identity_values"] != r.data["identity_values"]
+                    || o.data["node_filter"] != r.data["node_filter"]
             })
         }
         _ => false,
