@@ -1,4 +1,6 @@
+pub mod compatibility;
 pub mod engine;
+pub mod node_filter;
 pub mod protocol;
 
 pub fn digest(bytes: impl AsRef<[u8]>) -> String {

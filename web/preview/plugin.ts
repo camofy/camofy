@@ -1,7 +1,9 @@
 import type { Plugin } from "vite";
+import { readFileSync } from "node:fs";
 
 // Local-only visual review fixtures. No network calls, secrets, or production data.
 export function designPreview(): Plugin {
+  const matrix = JSON.parse(readFileSync(new URL("../../src/compatibility/registry.json", import.meta.url), "utf8"));
   const now = Math.floor(Date.now() / 1000);
   const yaml =
     "mixed-port: 7890\nmode: rule\nallow-lan: false\ntun:\n  enable: false\nproxies: []\nproxy-groups: []\nrules:\n  - DOMAIN-SUFFIX,camofy.app,DIRECT\n  - MATCH,DIRECT\n";
@@ -347,6 +349,22 @@ export function designPreview(): Plugin {
           let body = "";
           for await (const chunk of req) body += chunk;
           const draft = body ? JSON.parse(body) : {};
+          if (path === "/client-compatibility") return send(matrix);
+          if (path.endsWith("/compatibility-preview")) {
+            const identity = resources.find(r => r.id === path.split("/")[2]);
+            const policy = identity?.data.node_filter as { auto: boolean; exclude_types: string[] } | undefined;
+            const old = /ClashMetaForAndroid\/2\.10\.2/.test(draft.user_agent ?? "");
+            const fixture = [{ name: "常用节点", protocol: "ss" }, { name: "新协议节点", protocol: "mieru" }, { name: "备用节点", protocol: "anytls" }];
+            const excluded = fixture.filter(n => policy?.exclude_types.includes(n.protocol) || (policy?.auto !== false && old && n.protocol !== "ss"));
+            if (excluded.length === fixture.length) return send({ error: "过滤后没有可用节点，已阻止下发空订阅；请调整该身份的过滤设置或订阅源" }, 422);
+            const retained = fixture.filter(n => !excluded.includes(n));
+            return send({ content: "# 虚构的本地设计预览\nproxies:\n" + retained.map(n => `  - {name: ${n.name}, type: ${n.protocol}, server: proxy.example, port: 443}`).join("\n") + "\nproxy-groups:\n  - name: 节点选择\n    type: select\n    proxies: [" + retained.map(n => n.name).join(", ") + "]\nrules: ['MATCH,节点选择']\n", report: {
+              client: { name: old ? "Clash Meta for Android" : undefined, version: old ? "2.10.2" : undefined, confidence: old ? "bundled" : "unknown" },
+              before: 3, retained: retained.length, removed: excluded.length, repaired_references: excluded.length,
+              warnings: old ? [] : ["客户端或版本能力未确认，自动模式保留未知节点；指定类型排除仍然生效。"], unknown_capabilities: [], blocked_groups: [],
+              exclusions: excluded.map(n => ({ ...n, reason: policy?.exclude_types.includes(n.protocol) ? "manual" : "unsupported_protocol", capability: n.protocol }))
+            } });
+          }
           if (path === "/assistant/config")
             return send({ enabled: true, model: "gpt-6-luna", effort: "medium", portal_url: "https://example.invalid/models" });
           if (path.startsWith("/profiles/") && path.endsWith("/assistant/sessions") && req.method === "POST") {

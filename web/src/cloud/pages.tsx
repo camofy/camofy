@@ -35,6 +35,7 @@ import {
 import { UsageCompact, UsagePanel, RefreshHistory } from "./Usage";
 import { ProxyControl } from "./ProxyControl";
 import { AssistantEditor } from "./Assistant";
+import { Compatibility } from "./Compatibility";
 
 const meta = (section: Section) => sections.find((s) => s.key === section)!;
 const host = (url?: string) => {
@@ -1288,6 +1289,7 @@ export function DetailPage({ section }: { section: Section }) {
         { id: "composition", label: "配置组合" },
         { id: "proxies", label: "代理分组" },
         { id: "preview", label: "合并预览" },
+        { id: "compatibility", label: "客户端兼容" },
         { id: "usage", label: "套餐用量" },
         { id: "history", label: "发布历史" },
         { id: "settings", label: "设置" },
@@ -1379,6 +1381,7 @@ export function DetailPage({ section }: { section: Section }) {
         <ProxyControl key={(link ?? r).id} r={link ?? r} />
       )}
       {tab === "preview" && <Preview r={r} />}
+      {tab === "compatibility" && <Compatibility key={r.id} r={r} />}
       {tab === "history" && <History key={(link ?? r).id} r={link ?? r} />}
       {tab === "link" && isSource && (
         <SourceLinkManagement key={r.id} source={r} link={link} />

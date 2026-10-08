@@ -1,4 +1,5 @@
 export type Data = {
+  node_filter?: { auto: boolean; exclude_types: string[] };
   variables?: TemplateVariable[];
   provides?: VariableExport[];
   _candidates?: ExportCandidate[];

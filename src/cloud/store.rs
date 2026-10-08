@@ -1214,6 +1214,16 @@ pub fn render_bundle(
     );
     let selections = data.get("selections").cloned().unwrap_or(json!({}));
     let base = camofy::engine::compose_profiles(&profiles, &Default::default())?;
+    let node_policy = camofy::node_filter::Policy::parse(&data["node_filter"])?;
+    let manual = camofy::node_filter::apply(
+        &base,
+        &camofy::node_filter::Policy {
+            auto: false,
+            exclude_types: node_policy.exclude_types.clone(),
+        },
+        Default::default(),
+    )?;
+    let base = manual.config;
     let mut v = base.clone();
     camofy::engine::selection_defaults(&mut v, &serde_json::from_value(selections.clone())?);
     let mut artifacts = serde_json::Map::new();
@@ -1243,6 +1253,13 @@ pub fn render_bundle(
             },
         );
     }
+    // This metadata stays inside the encrypted revision. It freezes the policy
+    // and input used for all request-specific views without changing agent hashes.
+    artifacts.get_mut("router").unwrap()["compatibility"] = json!({
+        "policy":node_policy,"base":serde_yaml::to_string(&v)?,
+        "notices":crate::catalog::notices(resources,data),"manual_report":manual.report,
+        "matrix_version":camofy::compatibility::registry().version
+    });
     for format in ["clash", "router"] {
         anyhow::ensure!(
             artifacts[format]["content"].is_string(),

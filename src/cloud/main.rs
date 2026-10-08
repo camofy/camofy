@@ -4,6 +4,7 @@ mod assistant;
 mod auth;
 mod captcha;
 mod catalog;
+mod client_config;
 mod control;
 mod downloads;
 mod history;
@@ -200,6 +201,11 @@ pub fn router(app: App) -> Router {
         .route("/api/bundles/:id/rollback", post(api::rollback))
         .route("/api/bundles/:id/promote", post(source_link::promote))
         .route("/api/bundles/:id/preview/:format", get(api::preview))
+        .route("/api/client-compatibility", get(client_config::matrix))
+        .route(
+            "/api/bundles/:id/compatibility-preview",
+            post(client_config::preview),
+        )
         .route("/api/tokens", get(api::tokens).post(api::token))
         .route("/api/tokens/:id", axum::routing::delete(api::revoke))
         .route(
@@ -336,6 +342,8 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod compatibility_tests;
 #[cfg(test)]
 mod control_tests;
 #[cfg(test)]

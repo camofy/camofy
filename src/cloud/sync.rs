@@ -165,7 +165,44 @@ async fn serve(
     let records = store::list(&app, &mut tx, a.user).await?;
     let usage = crate::usage::published(&app, &mut tx, a.user, &records, &b).await?;
     tx.commit().await?;
-    let mut response = artifact_response(app.vault.open(sealed)?, &format, &h, id, Some(&usage))?;
+    if !crate::client_config::FORMATS.contains(&format.as_str()) {
+        return Err(Error::not_found());
+    }
+    let mut artifacts = app.vault.open(sealed)?;
+    let (artifact, report) = crate::client_config::adapt_cached(
+        id,
+        &artifacts,
+        &format,
+        h.get(header::USER_AGENT).and_then(|v| v.to_str().ok()),
+    )
+    .map_err(|e| Error::new(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
+    artifacts[&format] = artifact;
+    let mut response = artifact_response(artifacts, &format, &h, id, Some(&usage))?;
+    response
+        .headers_mut()
+        .insert(header::VARY, "User-Agent".parse().unwrap());
+    response.headers_mut().insert(
+        "x-camofy-filtered",
+        report.removed.to_string().parse().unwrap(),
+    );
+    response.headers_mut().insert(
+        "x-camofy-compatibility",
+        report.client.confidence.parse().unwrap(),
+    );
+    if let Some(family) = report.client.family {
+        response
+            .headers_mut()
+            .insert("x-camofy-client", family.parse().unwrap());
+    }
+    // Product/version and aggregate counts only; raw headers, URLs, tokens and
+    // node names never enter access diagnostics.
+    tracing::info!(
+        client = report.client.name.as_deref().unwrap_or("unknown"),
+        version = report.client.version.as_deref().unwrap_or("unknown"),
+        removed = report.removed,
+        retained = report.retained,
+        "subscription compatibility applied"
+    );
     response.headers_mut().insert(
         header::CONTENT_DISPOSITION,
         disposition(fallback, b.data["name"].as_str().unwrap_or("")),

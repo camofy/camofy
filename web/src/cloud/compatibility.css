@@ -1,0 +1,30 @@
+.compat-nav { display: flex; flex-wrap: wrap; gap: 8px; }
+.compat-nav .selected { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
+.compat-form { display: flex; flex-direction: column; gap: 18px; }
+.compat-form > p { margin: 0; }
+.compat-form > label { max-width: 720px; }
+.compat-form fieldset { margin: 0; padding: 18px 0 0; border: 0; border-top: 1px solid var(--line); }
+.compat-form legend { padding: 0 12px 0 0; font-size: 13px; font-weight: 500; }
+.compat-types { display: grid; grid-template-columns: repeat(auto-fill, minmax(145px, 1fr)); gap: 14px 20px; }
+.compat-policy { margin: 0 0 24px; display: grid; gap: 18px; }
+.compat-policy > div { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 16px; align-items: start; }
+.compat-policy dt { color: var(--muted); }
+.compat-policy dd { margin: 0; }
+.compat-tags { display: flex; flex-wrap: wrap; gap: 8px 12px; overflow-wrap: anywhere; }
+.compat-counts { display: flex; flex-wrap: wrap; gap: 16px 36px; margin-bottom: 20px; color: var(--muted); }
+.compat-counts strong { padding-left: 8px; font-size: 20px; font-weight: 500; color: var(--ink); }
+.compatibility details summary { cursor: pointer; padding: 4px 0; }
+.compatibility details[open] summary { margin-bottom: 14px; }
+.compat-evidence { padding-left: 20px; margin: 0; display: grid; gap: 8px; }
+.compat-evidence a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+.compat-table td { overflow-wrap: anywhere; }
+.compatibility .table-wrap > .compat-table td { display: table-cell; }
+.compatibility .table-wrap > .compat-table { min-width: 0; }
+.compatibility .compat-table th, .compatibility .compat-table td { padding: 12px 20px; }
+@media (max-width: 600px) {
+  .compatibility .compat-table th, .compatibility .compat-table td { padding: 10px 12px; font-size: 12px; }
+  .compat-policy > div { grid-template-columns: 80px minmax(0, 1fr); gap: 10px; }
+  .compat-counts { gap: 12px 22px; }
+  .compat-types { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 10px; }
+  .compat-types code { overflow-wrap: anywhere; }
+}

@@ -128,6 +128,9 @@ async fn save(
         ));
     }
     let mut data = e.data;
+    if e.kind != "bundle" && data.get("node_filter").is_some() {
+        return Err(Error::bad("节点过滤只能在身份层面设置"));
+    }
     let object = data
         .as_object_mut()
         .ok_or_else(|| Error::bad("data must be an object"))?;
@@ -316,6 +319,10 @@ async fn save(
                 return Err(Error::bad("obsolete identity outbound is unsupported"));
             }
             crate::variables::canonicalize_identity(&mut data);
+            data["node_filter"] = serde_json::to_value(
+                camofy::node_filter::Policy::parse(&data["node_filter"])
+                    .map_err(|e| Error::bad(e.to_string()))?,
+            )?;
             crate::variables::validate_identity(&data).map_err(|e| Error::bad(e.to_string()))?;
             let bindings = data["profiles"].as_array().ok_or_else(|| {
                 Error::bad("profiles must be ordered {profile_id, enabled} bindings")
@@ -423,7 +430,12 @@ async fn save(
     }
     store::put(&app, &mut tx, user, &r).await?;
     // A managed identity edit must be valid before its association can be committed.
-    if r.kind == "bundle" && crate::variables::active(&records, &r.data) {
+    if r.kind == "bundle"
+        && (crate::variables::active(&records, &r.data)
+            || !camofy::node_filter::Policy::parse(&r.data["node_filter"])?
+                .exclude_types
+                .is_empty())
+    {
         store::render_bundle(&records, &r.data, &app.origin)
             .map_err(|e| Error::bad(e.to_string()))?;
     }
