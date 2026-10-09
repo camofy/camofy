@@ -877,8 +877,9 @@ async fn cloud_end_to_end() {
     assert_eq!(served.status(), 200);
     assert_eq!(
         served.headers()["content-disposition"],
-        "attachment; filename=\"camofy.yaml\"; filename*=UTF-8''Main"
+        "attachment; filename=\"camofy-router.yaml\"; filename*=UTF-8''Main"
     );
+    assert_eq!(served.headers()["x-camofy-format"], "router");
     assert_eq!(
         served.headers()["subscription-userinfo"],
         "upload=100; download=200; total=10000; expire=2000000000"
