@@ -310,6 +310,25 @@ mod tests {
     }
 
     #[test]
+    fn auto_preserves_inert_protocol_placeholders_and_rejects_dialer_chains() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let content = "proxies:\n  - {name: Reality, type: vless, server: proxy.example, port: 443, uuid: 00000000-0000-0000-0000-000000000001, tls: true, udp: true, network: tcp, flow: xtls-rprx-vision, client-fingerprint: chrome, reality-opts: {public-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, short-id: ''}, alterId: 0, cipher: auto}\n  - {name: QUIC, type: hysteria2, server: proxy.example, port: 443, password: sample, up: null, down: null, hop-interval: 30, sni: front.example}\n  - {name: Auth, type: socks5, server: proxy.example, port: 1080, username: sample, password: sample, cipher: null, alterId: null}\n  - {name: Chained, type: socks5, server: proxy.example, port: 1080, username: sample, password: sample, dialer-proxy: Reality}\nproxy-groups: [{name: Choose, type: select, proxies: [Reality, QUIC, Auth, Chained]}]\nrules: ['MATCH,Choose']\n";
+        let artifacts = fixture(content, true);
+        let (view, report) = adapt(&artifacts, "auto", Some("Shadowrocket/2.2.90")).unwrap();
+        assert!(view["error"].is_null(), "{view}");
+        assert_eq!(report.removed, 1);
+        assert_eq!(report.retained, 3);
+        assert_eq!(report.exclusions[0].reason, "unsupported_output");
+        let links =
+            String::from_utf8(STANDARD.decode(view["content"].as_str().unwrap()).unwrap()).unwrap();
+        assert_eq!(links.lines().count(), 3);
+        assert!(links.contains("security=reality"));
+        assert!(links.contains("flow=xtls-rprx-vision"));
+        assert!(links.lines().any(|line| line.starts_with("hysteria2://")));
+        assert!(links.lines().any(|line| line.starts_with("socks://")));
+    }
+
+    #[test]
     fn corrected_exporters_replace_published_errors_without_republishing() {
         let artifacts = fixture(
             "proxies: [{name: Authenticated, type: socks5, server: proxy.example, port: 1080, username: sample, password: sample}]\nproxy-providers: {}\nrules: ['MATCH,Authenticated']\n",

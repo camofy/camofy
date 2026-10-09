@@ -11,6 +11,14 @@ It inspects the subscription request's User-Agent and removes nodes with a
 confirmed unsupported protocol or required feature. Auto output additionally
 excludes nodes that its selected encoder cannot represent without losing options;
 these have the distinct `unsupported_output` reason, not a client capability claim.
+URI validation ignores null placeholders emitted by generic converters. Non-null
+exceptions are protocol-specific: VLESS accepts only inert `alterId: 0` and
+`cipher: auto/none` placeholders; single-port Hysteria2 accepts an inactive
+`hop-interval` only when `ports` is absent or empty. This follows the pinned
+[Mihomo VLESS option structure](https://github.com/MetaCubeX/mihomo/blob/v1.19.17/adapter/outbound/vless.go)
+and [Hysteria2 construction](https://github.com/MetaCubeX/mihomo/blob/v1.19.17/adapter/outbound/hysteria2.go).
+Active port hopping, bandwidth controls and dialer chains remain explicit encoder
+limitations; they are never silently discarded to make a node export succeed.
 Explicit exclusions apply to
 every client and device using this identity, even when automatic filtering is off.
 They never modify a shared source or another identity. Type identifiers are

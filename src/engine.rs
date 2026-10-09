@@ -563,7 +563,13 @@ fn uri_fields(v: &Value, allowed: &[&str], path: &str) -> Result<()> {
     let fields = v
         .as_mapping()
         .ok_or_else(|| anyhow::anyhow!("invalid URI input: {path} must be a mapping"))?;
-    for key in fields.keys() {
+    for (key, value) in fields {
+        // Generic subscription converters emit null placeholders for fields that
+        // do not apply to this protocol. Null has no setting to preserve; false,
+        // zero and empty strings still require protocol-specific handling.
+        if value.is_null() {
+            continue;
+        }
         if !key.as_str().is_some_and(|s| allowed.contains(&s)) {
             let field = diagnostic_key(key.as_str());
             bail!("URI exporter cannot preserve {path}.{field}");
@@ -772,6 +778,8 @@ pub fn shadowrocket_node_uri(node: &Value) -> Result<String> {
         ],
         "vless" => &[
             "uuid",
+            "alterId",
+            "cipher",
             "tls",
             "servername",
             "sni",
@@ -797,6 +805,8 @@ pub fn shadowrocket_node_uri(node: &Value) -> Result<String> {
         ],
         "hysteria2" => &[
             "password",
+            "ports",
+            "hop-interval",
             "sni",
             "skip-cert-verify",
             "obfs",
@@ -817,6 +827,35 @@ pub fn shadowrocket_node_uri(node: &Value) -> Result<String> {
         .chain(extra.iter().copied())
         .collect::<Vec<_>>();
     uri_fields(node, &allowed, "node")?;
+    if kind == "vless" {
+        // Mihomo v1.19.17 adapter/outbound/vless.go: VlessOption has neither
+        // alterId nor cipher. Accept only conventional VMess default placeholders
+        // emitted by generic converters, never an arbitrary cross-protocol value.
+        if let Some(alter_id) = node.get("alterId").filter(|v| !v.is_null()) {
+            ensure!(
+                alter_id.as_u64() == Some(0),
+                "URI exporter cannot preserve node.alterId for VLESS except the zero placeholder"
+            );
+        }
+        ensure!(
+            matches!(uri_string(node, "cipher")?, None | Some("auto" | "none")),
+            "URI exporter cannot preserve node.cipher for VLESS except auto or none placeholders"
+        );
+    } else if kind == "hysteria2" {
+        // Mihomo v1.19.17 adapter/outbound/hysteria2.go assigns HopInterval to
+        // the client only inside the nonempty Ports branch. On a single-port
+        // node it has no effect; active hopping still requires a richer encoder.
+        ensure!(
+            uri_string(node, "ports")?.is_none_or(str::is_empty),
+            "URI exporter cannot preserve node.ports"
+        );
+        if let Some(interval) = node.get("hop-interval").filter(|v| !v.is_null()) {
+            ensure!(
+                interval.as_u64().is_some(),
+                "invalid URI input: hop-interval must be a nonnegative integer"
+            );
+        }
+    }
     ensure!(
         uri_bool(node, "udp")? != Some(false),
         "URI exporter cannot preserve udp: false; use a complete configuration to retain this restriction"
@@ -1482,6 +1521,113 @@ mod tests {
         assert_eq!(pairs["flow"], "xtls-rprx-vision");
         assert_eq!(pairs["encryption"], "none");
         assert_eq!(pairs["sni"], "tls.example");
+    }
+
+    #[test]
+    fn shadowrocket_uri_null_converter_placeholders_do_not_remove_valid_nodes() {
+        for (fields, placeholders) in [
+            (
+                "type: vless\nuuid: 00000000-0000-0000-0000-000000000001\ntls: true\nservername: tls.example\nclient-fingerprint: chrome\nflow: xtls-rprx-vision\nreality-opts: {public-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, short-id: 'a1b2'}",
+                "alterId: null\ncipher: null",
+            ),
+            (
+                "type: hysteria2\npassword: example\nsni: tls.example\nobfs: salamander\nobfs-password: example-obfuscation",
+                "up: null\ndown: null",
+            ),
+            (
+                "type: socks5\nusername: demo\npassword: example\nudp: true",
+                "alterId: null\ncipher: null\ndialer-proxy: null",
+            ),
+        ] {
+            let baseline = shadowrocket_node_uri(&export_node(fields)).unwrap();
+            let decorated = export_node(&format!("{fields}\n{placeholders}"));
+            assert_eq!(shadowrocket_node_uri(&decorated).unwrap(), baseline);
+        }
+        for fields in [
+            "type: vless\nuuid: null",
+            "type: ss\ncipher: aes-128-gcm\npassword: null",
+        ] {
+            let error = shadowrocket_node_uri(&export_node(fields))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("missing"), "{error}");
+        }
+    }
+
+    #[test]
+    fn shadowrocket_uri_only_ignores_verified_vless_converter_defaults() {
+        let fields = "type: vless\nuuid: 00000000-0000-0000-0000-000000000001\ntls: true\nservername: tls.example\nclient-fingerprint: chrome\nflow: xtls-rprx-vision\nreality-opts: {public-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, short-id: 'a1b2'}";
+        let baseline = shadowrocket_node_uri(&export_node(fields)).unwrap();
+        for cipher in ["auto", "none"] {
+            let node = export_node(&format!("{fields}\nalterId: 0\ncipher: {cipher}"));
+            assert_eq!(shadowrocket_node_uri(&node).unwrap(), baseline);
+        }
+        for invalid in [
+            "alterId: 64",
+            "alterId: false",
+            "alterId: '0'",
+            "cipher: aes-128-gcm",
+            "cipher: ''",
+            "cipher: false",
+        ] {
+            assert!(shadowrocket_node_uri(&export_node(&format!("{fields}\n{invalid}"))).is_err());
+        }
+        // The same fields remain connection parameters in their actual protocol.
+        let vmess = export_node(
+            "type: vmess\nuuid: 00000000-0000-0000-0000-000000000001\nalterId: 64\ncipher: aes-128-gcm",
+        );
+        let uri = shadowrocket_node_uri(&vmess).unwrap();
+        let decoded: serde_json::Value = serde_json::from_slice(
+            &STANDARD
+                .decode(uri.strip_prefix("vmess://").unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(decoded["aid"], "64");
+        assert_eq!(decoded["scy"], "aes-128-gcm");
+    }
+
+    #[test]
+    fn shadowrocket_uri_hysteria2_only_ignores_inactive_port_hopping() {
+        let fields = "type: hysteria2\npassword: example\nsni: tls.example\nskip-cert-verify: true\nobfs: salamander\nobfs-password: example-obfuscation";
+        let baseline = shadowrocket_node_uri(&export_node(fields)).unwrap();
+        for inactive in [
+            "up: null\ndown: null\nhop-interval: 30",
+            "ports: null\nhop-interval: 0",
+            "ports: ''\nhop-interval: 15",
+        ] {
+            let node = export_node(&format!("{fields}\n{inactive}"));
+            assert_eq!(shadowrocket_node_uri(&node).unwrap(), baseline);
+        }
+        for active_or_invalid in [
+            "ports: '443,8443'\nhop-interval: 30",
+            "ports: '4000-5000'",
+            "port-hopping: true\nhop-interval: 30",
+            "hop-interval: '30'",
+            "hop-interval: false",
+            "hop-interval: -1",
+            "up: 20 Mbps",
+            "down: 40 Mbps",
+        ] {
+            assert!(
+                shadowrocket_node_uri(&export_node(&format!("{fields}\n{active_or_invalid}")))
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn shadowrocket_uri_unknown_nonnull_values_and_dialer_chains_stay_strict() {
+        for value in ["false", "0", "''", "{}", "[]"] {
+            let node = export_node(&format!("type: socks5\nfuture-option: {value}"));
+            assert!(shadowrocket_node_uri(&node).is_err());
+        }
+        let node = export_node(
+            "type: socks5\nusername: demo\npassword: example\nalterId: null\ncipher: null\ndialer-proxy: ExampleRelay",
+        );
+        let error = shadowrocket_node_uri(&node).unwrap_err().to_string();
+        assert!(error.contains("node.dialer-proxy"));
+        assert!(!error.contains("ExampleRelay"));
     }
 
     #[test]
