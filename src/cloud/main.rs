@@ -5,6 +5,7 @@ mod auth;
 mod captcha;
 mod catalog;
 mod client_config;
+mod config_resources;
 mod control;
 mod downloads;
 mod history;

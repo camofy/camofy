@@ -988,9 +988,19 @@ pub async fn preview(
     if format == "agent" {
         return Ok(Json(revision.1["agent"].clone()));
     }
-    let (artifact, report) =
-        crate::client_config::adapt_cached(revision.0, &revision.1, &format, None)
-            .map_err(|e| Error::new(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
+    let (artifact, report) = crate::client_config::adapt_request(
+        &app,
+        crate::config_resources::Scope {
+            user,
+            bundle: id,
+            revision: Some(revision.0),
+        },
+        &revision.1,
+        &format,
+        None,
+    )
+    .await
+    .map_err(|e| Error::new(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
     let mut response = artifact;
     response["report"] = serde_json::to_value(report)?;
     Ok(Json(response))

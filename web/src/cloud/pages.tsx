@@ -642,10 +642,10 @@ function Distribution({ r, children }: { r: Resource; children?: ReactNode }) {
         </select>
       </label>
       <p className="muted">{format === "auto"
-        ? "按请求客户端自动适配：Clash 系返回 YAML，Shadowrocket 返回节点订阅。未识别时返回完整 YAML。"
+        ? "按客户端能力适配完整配置，保留节点、代理组和分流规则。Shadowrocket 请从配置页导入；未识别时返回完整 YAML。"
         : format === "router" ? "完整 YAML 保留路由和本地设置；仍应用身份的节点过滤策略。"
         : format === "shadowrocket-nodes" ? "仅包含节点，不包含分流规则和代理组。"
-        : format === "shadowrocket" ? "仅适用于能导入此 YAML 的客户端版本；不支持的规则或字段会明确提示。"
+        : format === "shadowrocket" ? "从 Shadowrocket 配置页导入，包含节点、代理组和转换后的分流规则。无法转换的内容会明确提示。"
         : "Clash YAML 不包含路由器专用的本地运行设置。"}</p>
       {url ? (
         <>

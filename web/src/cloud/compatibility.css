@@ -21,6 +21,10 @@
 .compatibility .table-wrap > .compat-table td { display: table-cell; }
 .compatibility .table-wrap > .compat-table { min-width: 0; }
 .compatibility .compat-table th, .compatibility .compat-table td { padding: 12px 20px; }
+.compatibility .table-wrap > .config-capability-table { min-width: 760px; }
+.config-capability-table th:first-child, .config-capability-table td:first-child { min-width: 240px; }
+.config-capability-table td:first-child code { white-space: nowrap; }
+.config-capability-table th:nth-child(2), .config-capability-table td:nth-child(2) { min-width: 125px; }
 @media (max-width: 600px) {
   .compatibility .compat-table th, .compatibility .compat-table td { padding: 10px 12px; font-size: 12px; }
   .compat-policy > div { grid-template-columns: 80px minmax(0, 1fr); gap: 10px; }

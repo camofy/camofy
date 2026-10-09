@@ -7,15 +7,17 @@ use axum::{
     http::{HeaderMap, StatusCode},
 };
 use camofy::{
-    compatibility,
+    compatibility, config_compat, config_compatibility,
     node_filter::{self, Policy, Report},
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::VecDeque,
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
+    time::Duration,
 };
+use tokio::sync::Semaphore;
 use uuid::Uuid;
 
 pub const FORMATS: &[&str] = &[
@@ -35,13 +37,30 @@ pub fn resolve_format<'a>(
 ) -> anyhow::Result<&'a str> {
     anyhow::ensure!(FORMATS.contains(&requested), "unsupported output format");
     if requested != "auto" {
+        if requested == "shadowrocket" && client.family.as_deref() == Some("shadowrocket") {
+            anyhow::ensure!(
+                !config_compatibility::full_configuration(client).blocked,
+                "此版本尚不支持完整配置导入，请查看客户端兼容矩阵"
+            );
+        }
         return Ok(requested);
     }
     if client.family.as_deref() == Some("shadowrocket") {
-        return Ok("shadowrocket-nodes");
+        let assessment = config_compatibility::full_configuration(client);
+        anyhow::ensure!(
+            !assessment.blocked,
+            "此版本尚不支持完整配置导入，请查看客户端兼容矩阵"
+        );
+        return Ok("shadowrocket");
     }
     match client.format.as_deref() {
-        Some("clash") => Ok("clash"),
+        Some("clash") => {
+            anyhow::ensure!(
+                !config_compatibility::full_configuration(client).blocked,
+                "此客户端的完整配置格式尚未确认，请查看客户端兼容矩阵"
+            );
+            Ok("clash")
+        }
         None => Ok("router"),
         Some(_) => anyhow::bail!(
             "Auto 暂未提供此客户端的原生导出格式，请使用支持的客户端或明确选择输出格式"
@@ -55,37 +74,45 @@ struct CachedView {
     report: Report,
     bytes: usize,
 }
-/// Small process-local LRU of immutable views. Never cache raw User-Agents or
-/// authentication/usage decisions. Unrecognized UAs share one bounded key.
-pub fn adapt_cached(
+
+static VIEW_CACHE: OnceLock<Mutex<VecDeque<CachedView>>> = OnceLock::new();
+
+fn view_key(
     revision: Uuid,
     artifacts: &Value,
     format: &str,
     ua: Option<&str>,
-) -> anyhow::Result<(Value, Report)> {
-    static CACHE: OnceLock<Mutex<VecDeque<CachedView>>> = OnceLock::new();
-    let cache = CACHE.get_or_init(|| Mutex::new(VecDeque::new()));
-    let key = format!(
+) -> anyhow::Result<String> {
+    // A published revision and compiler process use one immutable source lock.
+    // Include the base artifact hash to protect callers using synthetic revisions.
+    Ok(format!(
         "{revision}:{format}:{}:{}",
         artifacts["router"]["hash"],
         serde_json::to_string(&compatibility::detect(ua))?
-    );
-    {
-        let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(index) = cache.iter().position(|entry| entry.key == key) {
-            let entry = cache.remove(index).unwrap();
-            let result = (entry.artifact.clone(), entry.report.clone());
-            cache.push_back(entry);
-            return Ok(result);
-        }
-    }
-    let (artifact, report) = adapt(artifacts, format, ua)?;
+    ))
+}
+
+fn cached_view(key: &str) -> Option<(Value, Report)> {
+    let mut cache = VIEW_CACHE
+        .get_or_init(|| Mutex::new(VecDeque::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let index = cache.iter().position(|entry| entry.key == key)?;
+    let entry = cache.remove(index).unwrap();
+    let result = (entry.artifact.clone(), entry.report.clone());
+    cache.push_back(entry);
+    Some(result)
+}
+
+fn store_view(key: String, artifact: &Value, report: &Report) -> anyhow::Result<()> {
     let bytes =
-        artifact["content"].as_str().map_or(0, str::len) + serde_json::to_vec(&report)?.len();
-    const MAX_BYTES: usize = 8 * 1024 * 1024;
+        artifact["content"].as_str().map_or(0, str::len) + serde_json::to_vec(report)?.len();
+    const MAX_BYTES: usize = 32 * 1024 * 1024;
     if bytes <= MAX_BYTES && !artifact["error"].is_string() {
-        let mut cache = cache.lock().unwrap_or_else(|e| e.into_inner());
-        // Concurrent misses can calculate the same view; keep a single entry.
+        let mut cache = VIEW_CACHE
+            .get_or_init(|| Mutex::new(VecDeque::new()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         cache.retain(|entry| entry.key != key);
         while cache.len() >= 12
             || cache.iter().map(|entry| entry.bytes).sum::<usize>() + bytes > MAX_BYTES
@@ -101,10 +128,116 @@ pub fn adapt_cached(
             bytes,
         });
     }
+    Ok(())
+}
+/// Small process-local LRU of immutable views. Never cache raw User-Agents or
+/// authentication/usage decisions. Unrecognized UAs share one bounded key.
+pub fn adapt_cached(
+    revision: Uuid,
+    artifacts: &Value,
+    format: &str,
+    ua: Option<&str>,
+) -> anyhow::Result<(Value, Report)> {
+    let key = view_key(revision, artifacts, format, ua)?;
+    if let Some(result) = cached_view(&key) {
+        return Ok(result);
+    }
+    let (artifact, report) = adapt(artifacts, format, ua)?;
+    store_view(key, &artifact, &report)?;
     Ok((artifact, report))
 }
 
+/// Resolve rule dependencies outside identity/revision transactions. Published
+/// requests and authenticated previews share the same compiler and source lock.
+pub async fn adapt_request(
+    app: &App,
+    scope: crate::config_resources::Scope,
+    artifacts: &Value,
+    format: &str,
+    ua: Option<&str>,
+) -> anyhow::Result<(Value, Report)> {
+    let client = compatibility::detect(ua);
+    if !matches!(resolve_format(format, &client), Ok("shadowrocket")) {
+        return match scope.revision {
+            Some(revision) => adapt_cached(revision, artifacts, format, ua),
+            None => adapt(artifacts, format, ua),
+        };
+    }
+    // Authentication/ownership must precede even an in-process artifact hit.
+    crate::config_resources::validate_scope(app, scope).await?;
+    let key = scope
+        .revision
+        .map(|id| view_key(id, artifacts, format, ua))
+        .transpose()?;
+    if let Some(result) = key.as_deref().and_then(cached_view) {
+        return Ok(result);
+    }
+    static SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+    let permit = tokio::time::timeout(
+        Duration::from_secs(5),
+        SLOTS
+            .get_or_init(|| Arc::new(Semaphore::new(1)))
+            .clone()
+            .acquire_owned(),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("完整配置转换繁忙，请稍后重试"))??;
+    // Coalesce concurrent cache misses after the previous owner has finished.
+    if let Some(result) = key.as_deref().and_then(cached_view) {
+        return Ok(result);
+    }
+    let app = app.clone();
+    let artifacts = artifacts.clone();
+    let format = format.to_owned();
+    let ua = ua.map(str::to_owned);
+    let runtime = tokio::runtime::Handle::current();
+    run_blocking_conversion(permit, move || {
+        let base = artifacts["router"]["compatibility"]["base"]
+            .as_str().or_else(|| artifacts["router"]["content"].as_str())
+            .ok_or_else(|| anyhow::anyhow!("published identity has no YAML snapshot"))?;
+        let config = camofy::engine::parse(base)?;
+        // The blocking worker also performs source decoding/planning; the
+        // runtime continues to drive bounded asynchronous fetches and leases.
+        let resources = runtime.block_on(crate::config_resources::resolve(
+            &app, scope, config_compat::Target::Shadowrocket, &config,
+        ))?;
+        let (mut artifact, report) = adapt_with_sources(&artifacts, &format, ua.as_deref(), &resources.sources)?;
+        if artifact["configuration"].is_object() {
+            artifact["configuration"]["resources"] = json!({
+                "count": resources.source_count, "bytes": resources.total_bytes,
+                "fingerprint": resources.fingerprint, "compiler_version": resources.compiler_version,
+                "geosite_revision": resources.geosite_revision,
+            });
+        }
+        if let Some(key) = key { store_view(key, &artifact, &report)?; }
+        Ok((artifact, report))
+    }).await
+}
+
+async fn run_blocking_conversion<T: Send + 'static>(
+    permit: tokio::sync::OwnedSemaphorePermit,
+    convert: impl FnOnce() -> anyhow::Result<T> + Send + 'static,
+) -> anyhow::Result<T> {
+    tokio::task::spawn_blocking(move || {
+        // Dropping the request future does not cancel a blocking task. Keep its
+        // memory admission permit here until the actual computation has ended.
+        let _permit = permit;
+        convert()
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("完整配置转换任务未完成，请稍后重试"))?
+}
+
 pub fn adapt(artifacts: &Value, format: &str, ua: Option<&str>) -> anyhow::Result<(Value, Report)> {
+    adapt_with_sources(artifacts, format, ua, &Default::default())
+}
+
+fn adapt_with_sources(
+    artifacts: &Value,
+    format: &str,
+    ua: Option<&str>,
+    sources: &config_compat::ResolvedSources,
+) -> anyhow::Result<(Value, Report)> {
     anyhow::ensure!(FORMATS.contains(&format), "unsupported output format");
     let snapshot = &artifacts["router"]["compatibility"];
     let policy = Policy::parse(&snapshot["policy"])?;
@@ -117,24 +250,13 @@ pub fn adapt(artifacts: &Value, format: &str, ua: Option<&str>) -> anyhow::Resul
     // Manual exclusions have already been applied to this revision's base.
     // Legacy revisions never contained them; both paths share the same engine.
     let resolved = resolve_format(format, &client);
-    let automatic_uri =
-        format == "auto" && matches!(&resolved, Ok("shadowrocket-nodes")) && policy.auto;
-    let filtered = node_filter::apply_with_exclusions(
+    let filtered = node_filter::apply(
         &config,
         &Policy {
             auto: policy.auto,
             exclude_types: vec![],
         },
         client,
-        |node| {
-            if automatic_uri {
-                camofy::engine::shadowrocket_node_uri(node)
-                    .err()
-                    .map(|e| e.to_string())
-            } else {
-                None
-            }
-        },
     )?;
     let mut report = filtered.report;
     if format == "auto" {
@@ -142,10 +264,10 @@ pub fn adapt(artifacts: &Value, format: &str, ua: Option<&str>) -> anyhow::Resul
             report.warnings.push(
                 "未识别客户端，Auto 返回完整 YAML；请在客户端中更新订阅，或指定输出格式。".into(),
             );
-        } else if matches!(&resolved, Ok("shadowrocket-nodes")) {
+        } else if matches!(&resolved, Ok("shadowrocket")) {
             report
                 .warnings
-                .push("Auto 为 Shadowrocket 返回节点订阅；不包含分流规则和代理组。".into());
+                .extend(config_compatibility::full_configuration(&report.client).warnings);
         }
     }
     if let Ok(manual) = serde_json::from_value::<Report>(snapshot["manual_report"].clone()) {
@@ -163,10 +285,26 @@ pub fn adapt(artifacts: &Value, format: &str, ua: Option<&str>) -> anyhow::Resul
     // Always compile request views with the current exporter. Published errors
     // and unsafe legacy graph shapes must not survive an exporter fix. Immutable
     // agent downloads use the separate revision endpoint and never pass here.
+    let mut configuration = Value::Null;
     let content = match format {
         "router" | "agent" => camofy::engine::mihomo(&filtered.config, true),
-        "clash" => camofy::engine::mihomo(&filtered.config, false),
-        "shadowrocket" => camofy::engine::shadowrocket_full(&filtered.config),
+        "clash" => {
+            let capabilities = inspect_configuration(&filtered.config, &report.client);
+            configuration = json!({"complete":true,"capabilities":capabilities});
+            ensure_configuration_capabilities(&capabilities)
+                .and_then(|()| camofy::engine::mihomo(&filtered.config, false))
+        },
+        "shadowrocket" => config_compat::compile(&filtered.config, config_compat::Target::Shadowrocket, sources)
+            .and_then(|compiled| {
+                let target_client = if report.client.family.as_deref() == Some("shadowrocket") {
+                    report.client.clone()
+                } else { compatibility::detect(Some("Shadowrocket")) };
+                let capabilities = inspect_configuration(&compiled.config, &target_client);
+                ensure_configuration_capabilities(&capabilities)?;
+                configuration = json!({"stats":compiled.stats,"diagnostics":compiled.diagnostics,
+                    "complete":true,"capabilities":capabilities,"source_hashes":compiled.source_hashes});
+                camofy::engine::mihomo(&compiled.config, false)
+            }),
         "shadowrocket-nodes" => camofy::engine::shadowrocket_nodes(&filtered.config),
         _ => unreachable!(),
     };
@@ -189,18 +327,110 @@ pub fn adapt(artifacts: &Value, format: &str, ua: Option<&str>) -> anyhow::Resul
         format!("{notices}{content}")
     };
     anyhow::ensure!(
-        content.len() <= 4 * 1024 * 1024,
-        "merged output exceeds 4 MiB"
+        content.len() <= 16 * 1024 * 1024,
+        "converted output exceeds 16 MiB"
     );
     Ok((
-        json!({"hash":camofy::digest(content.as_bytes()),"content":content,"format":format}),
+        json!({"hash":camofy::digest(content.as_bytes()),"content":content,"format":format,"configuration":configuration}),
         report,
     ))
 }
 
+/// Report only canonical feature identifiers, never configuration values or URLs.
+fn inspect_configuration(
+    config: &serde_yaml::Value,
+    client: &compatibility::Detection,
+) -> Vec<Value> {
+    use std::collections::BTreeSet;
+    let mut keys = BTreeSet::from(["syntax.clash_yaml".to_owned()]);
+    keys.extend(config_compat::rule_capabilities(config));
+    for provider in config["rule-providers"]
+        .as_mapping()
+        .into_iter()
+        .flat_map(|map| map.values())
+    {
+        if let Some(kind) = provider["type"]
+            .as_str()
+            .filter(|kind| ["http", "file", "inline"].contains(kind))
+        {
+            keys.insert(format!("clash.provider.{kind}"));
+        }
+        if let Some(behavior) = provider["behavior"]
+            .as_str()
+            .filter(|kind| ["domain", "classical", "ipcidr"].contains(kind))
+        {
+            let format = provider["format"].as_str().unwrap_or("yaml");
+            if ["yaml", "text", "mrs"].contains(&format) {
+                keys.insert(format!("clash.provider.{behavior}_{format}"));
+            }
+        }
+    }
+    for group in config["proxy-groups"].as_sequence().into_iter().flatten() {
+        keys.insert("clash.proxy_groups".into());
+        if let Some(kind) = group["type"]
+            .as_str()
+            .filter(|s| ["select", "url-test", "fallback", "load-balance", "relay"].contains(s))
+        {
+            keys.insert(format!("clash.group.{}", kind.replace('-', "_")));
+        }
+    }
+    for (field, key) in [
+        ("nameserver", "nameserver"),
+        ("nameserver-policy", "nameserver_policy"),
+        ("fake-ip-filter", "fake_ip_filter"),
+        ("fallback-filter", "fallback_filter"),
+        ("proxy-server-nameserver", "proxy_server_nameserver"),
+        ("respect-rules", "respect_rules"),
+    ] {
+        if !config["dns"][field].is_null() {
+            keys.insert(format!("clash.dns.{key}"));
+        }
+    }
+    if config["dns"]["nameserver-policy"]
+        .as_mapping()
+        .is_some_and(|map| {
+            map.keys()
+                .filter_map(serde_yaml::Value::as_str)
+                .any(|key| key.starts_with("geosite:"))
+        })
+    {
+        keys.insert("clash.dns.nameserver_policy_geosite".into());
+    }
+    if config["dns"]["fake-ip-filter"]
+        .as_sequence()
+        .is_some_and(|items| {
+            items
+                .iter()
+                .filter_map(serde_yaml::Value::as_str)
+                .any(|key| key.starts_with("geosite:"))
+        })
+    {
+        keys.insert("clash.dns.fake_ip_filter_geosite".into());
+    }
+    keys.into_iter().map(|key| {
+        let assessment = config_compatibility::capability(client, &key);
+        json!({"key":key,"support":assessment.support,"basis":assessment.basis,"notes":assessment.notes,"evidence":assessment.evidence})
+    }).collect()
+}
+
+fn ensure_configuration_capabilities(capabilities: &[Value]) -> anyhow::Result<()> {
+    if let Some(item) = capabilities
+        .iter()
+        .find(|item| item["support"] == "unsupported")
+    {
+        anyhow::bail!(
+            "当前客户端版本不支持完整配置中的 {}；未删除该配置",
+            item["key"].as_str().unwrap_or("feature")
+        );
+    }
+    Ok(())
+}
+
 pub async fn matrix(State(app): State<App>, h: HeaderMap) -> Result<Json<Value>, Error> {
     auth::user(&app, &h, false).await?;
-    Ok(Json(serde_json::to_value(compatibility::registry())?))
+    let mut result = serde_json::to_value(compatibility::registry())?;
+    result["configuration"] = serde_json::to_value(config_compatibility::registry())?;
+    Ok(Json(result))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -241,16 +471,91 @@ pub async fn preview(
     }
     let (artifacts, _) = store::render_bundle(&records, &b.data, &app.origin)
         .map_err(|e| Error::bad(e.to_string()))?;
-    let (artifact, report) = adapt(&artifacts, format, body.user_agent.as_deref())
-        .map_err(|e| Error::new(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
+    let (artifact, report) = adapt_request(
+        &app,
+        crate::config_resources::Scope {
+            user,
+            bundle: id,
+            revision: None,
+        },
+        &artifacts,
+        format,
+        body.user_agent.as_deref(),
+    )
+    .await
+    .map_err(|e| Error::new(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
     Ok(Json(
-        json!({"content":artifact["content"],"error":artifact["error"],"format":artifact["format"],"report":report,"policy":b.data["node_filter"]}),
+        json!({"content":artifact["content"],"error":artifact["error"],"format":artifact["format"],"configuration":artifact["configuration"],"report":report,"policy":b.data["node_filter"]}),
     ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cancelled_request_holds_capacity_until_blocking_work_finishes() {
+        let slots = Arc::new(Semaphore::new(1));
+        let permit = slots.clone().acquire_owned().await.unwrap();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let task = tokio::spawn(run_blocking_conversion(permit, move || {
+            let _ = started.send(());
+            wait.recv()
+                .map_err(|_| anyhow::anyhow!("synthetic synchronization failed"))?;
+            Ok(())
+        }));
+        ready.await.unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), slots.clone().acquire_owned())
+                .await
+                .is_err()
+        );
+        release.send(()).unwrap();
+        let _available = tokio::time::timeout(Duration::from_secs(2), slots.acquire_owned())
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[test]
+    fn complete_cached_views_preserve_resource_metadata_and_reject_errors() {
+        let artifacts = fixture("rules: ['MATCH,DIRECT']", true);
+        let revision = Uuid::new_v4();
+        let key = view_key(revision, &artifacts, "auto", Some("Shadowrocket/2.2.90")).unwrap();
+        let (mut artifact, report) =
+            adapt(&artifacts, "auto", Some("Shadowrocket/2.2.90")).unwrap();
+        artifact["configuration"]["resources"] =
+            json!({"count":1,"fingerprint":"synthetic-resource-lock"});
+        store_view(key.clone(), &artifact, &report).unwrap();
+        assert_eq!(cached_view(&key).unwrap().0, artifact);
+        let error_key = view_key(
+            Uuid::new_v4(),
+            &artifacts,
+            "auto",
+            Some("Shadowrocket/2.2.90"),
+        )
+        .unwrap();
+        store_view(
+            error_key.clone(),
+            &json!({"error":"synthetic conversion error"}),
+            &report,
+        )
+        .unwrap();
+        assert!(cached_view(&error_key).is_none());
+        assert_ne!(
+            key,
+            view_key(
+                revision,
+                &artifacts,
+                "shadowrocket",
+                Some("Shadowrocket/2.2.90")
+            )
+            .unwrap()
+        );
+    }
     fn fixture(content: &str, auto: bool) -> Value {
         let config = camofy::engine::parse(content).unwrap();
         json!({"agent":{"hash":"immutable-device-hash","content":"immutable-device-content"},
@@ -267,8 +572,8 @@ mod tests {
             (Some("mihomo/1.19.17"), "clash"),
             (Some("ClashMetaForAndroid/2.10.2.Meta"), "clash"),
             (Some("Stash/3.3.3"), "clash"),
-            (Some("Shadowrocket/2.2.90"), "shadowrocket-nodes"),
-            (Some("Shadowrocket/99.0.0"), "shadowrocket-nodes"),
+            (Some("Shadowrocket/2.2.90"), "shadowrocket"),
+            (Some("Shadowrocket/99.0.0"), "shadowrocket"),
         ] {
             let detection = compatibility::detect(ua);
             assert_eq!(resolve_format("auto", &detection).unwrap(), expected);
@@ -278,22 +583,23 @@ mod tests {
     }
 
     #[test]
-    fn auto_filters_unrepresentable_nodes_without_losing_parameters() {
-        use base64::{Engine, engine::general_purpose::STANDARD};
-        let content = "proxies:\n  - {name: Safe, type: ss, server: proxy.example, port: 443, cipher: aes-128-gcm, password: sample}\n  - name: Protected\n    type: vless\n    server: proxy.example\n    port: 443\n    uuid: 00000000-0000-0000-0000-000000000001\n    network: ws\n    ws-opts:\n      headers: {Authorization: 'Bearer sample'}\nproxy-groups: [{name: Choose, type: select, proxies: [Protected, Safe]}]\nrules: ['MATCH,Choose']\n";
+    fn auto_preserves_complete_configuration_without_uri_limits() {
+        let content = "proxies:\n  - {name: Plain, type: ss, server: proxy.example, port: 443, cipher: aes-128-gcm, password: example}\n  - {name: Web, type: vless, server: proxy.example, port: 443, uuid: 00000000-0000-0000-0000-000000000001, network: ws, ws-opts: {headers: {Authorization: example}}}\nproxy-groups: [{name: Pick, type: select, proxies: [Plain, Web]}]\nrules: ['DOMAIN,service.example,Pick', 'MATCH,REJECT']\n";
         let artifacts = fixture(content, true);
         let before = artifacts.clone();
         let (view, report) = adapt(&artifacts, "auto", Some("Shadowrocket/99.0.0")).unwrap();
-        assert_eq!(view["format"], "shadowrocket-nodes");
-        assert_eq!(report.removed, 1);
-        assert_eq!(report.exclusions[0].reason, "unsupported_output");
-        let links =
-            String::from_utf8(STANDARD.decode(view["content"].as_str().unwrap()).unwrap()).unwrap();
-        assert!(links.starts_with("ss://"));
-        assert!(!links.contains("vless://"));
+        assert_eq!(view["format"], "shadowrocket");
+        assert_eq!(report.removed, 0);
+        assert!(view["error"].is_null(), "{view}");
+        let yaml = camofy::engine::parse(view["content"].as_str().unwrap()).unwrap();
+        assert_eq!(yaml["proxies"].as_sequence().unwrap().len(), 2);
+        assert_eq!(yaml["rules"].as_sequence().unwrap().len(), 2);
+        assert_eq!(yaml["proxy-groups"].as_sequence().unwrap().len(), 1);
+        assert_eq!(
+            yaml["proxies"][1]["ws-opts"]["headers"]["Authorization"],
+            "example"
+        );
         assert_eq!(artifacts, before);
-        // Explicit node formats and disabled auto filtering fail with diagnostics;
-        // they never silently omit the authentication header.
         assert!(adapt(&artifacts, "shadowrocket-nodes", None).unwrap().0["error"].is_string());
         assert!(
             adapt(
@@ -303,29 +609,74 @@ mod tests {
             )
             .unwrap()
             .0["error"]
-                .is_string()
+                .is_null()
         );
-        let (yaml, _) = adapt(&artifacts, "router", Some("Shadowrocket/99.0.0")).unwrap();
-        assert!(yaml["content"].as_str().unwrap().contains("Authorization"));
     }
 
     #[test]
-    fn auto_preserves_inert_protocol_placeholders_and_rejects_dialer_chains() {
-        use base64::{Engine, engine::general_purpose::STANDARD};
+    fn auto_preserves_protocol_parameters_and_dialer_chains() {
         let content = "proxies:\n  - {name: Reality, type: vless, server: proxy.example, port: 443, uuid: 00000000-0000-0000-0000-000000000001, tls: true, udp: true, network: tcp, flow: xtls-rprx-vision, client-fingerprint: chrome, reality-opts: {public-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, short-id: ''}, alterId: 0, cipher: auto}\n  - {name: QUIC, type: hysteria2, server: proxy.example, port: 443, password: sample, up: null, down: null, hop-interval: 30, sni: front.example}\n  - {name: Auth, type: socks5, server: proxy.example, port: 1080, username: sample, password: sample, cipher: null, alterId: null}\n  - {name: Chained, type: socks5, server: proxy.example, port: 1080, username: sample, password: sample, dialer-proxy: Reality}\nproxy-groups: [{name: Choose, type: select, proxies: [Reality, QUIC, Auth, Chained]}]\nrules: ['MATCH,Choose']\n";
         let artifacts = fixture(content, true);
         let (view, report) = adapt(&artifacts, "auto", Some("Shadowrocket/2.2.90")).unwrap();
         assert!(view["error"].is_null(), "{view}");
-        assert_eq!(report.removed, 1);
-        assert_eq!(report.retained, 3);
-        assert_eq!(report.exclusions[0].reason, "unsupported_output");
-        let links =
-            String::from_utf8(STANDARD.decode(view["content"].as_str().unwrap()).unwrap()).unwrap();
-        assert_eq!(links.lines().count(), 3);
-        assert!(links.contains("security=reality"));
-        assert!(links.contains("flow=xtls-rprx-vision"));
-        assert!(links.lines().any(|line| line.starts_with("hysteria2://")));
-        assert!(links.lines().any(|line| line.starts_with("socks://")));
+        assert_eq!(report.removed, 0);
+        assert_eq!(report.retained, 4);
+        let yaml = camofy::engine::parse(view["content"].as_str().unwrap()).unwrap();
+        assert_eq!(yaml["proxies"][3]["dialer-proxy"], "Reality");
+        assert_eq!(yaml["proxies"][0]["flow"], "xtls-rprx-vision");
+        assert!(yaml["proxies"][0]["reality-opts"].is_mapping());
+        assert_eq!(yaml["rules"][0], "MATCH,Choose");
+    }
+
+    #[test]
+    fn configuration_matrix_checks_actual_fields_without_confusing_policy_names() {
+        let artifacts = fixture(
+            "proxy-groups: [{name: AND, type: select, proxies: [REJECT]}]\nrules: ['DOMAIN,service.example,AND', 'MATCH,AND']",
+            true,
+        );
+        let (artifact, _) = adapt(&artifacts, "auto", Some("Clash/1.18.0")).unwrap();
+        assert!(artifact["error"].is_null(), "{artifact}");
+        assert!(
+            !artifact["configuration"]["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["key"] == "clash.rule.and")
+        );
+        let artifacts = fixture(
+            "proxy-groups: [{name: Pick, type: relay, proxies: [DIRECT]}]\nrules: ['MATCH,Pick']",
+            true,
+        );
+        let (artifact, _) = adapt(&artifacts, "auto", Some("mihomo/1.19.17")).unwrap();
+        assert!(
+            artifact["error"]
+                .as_str()
+                .unwrap()
+                .contains("clash.group.relay")
+        );
+        let (raw, _) = adapt(&artifacts, "router", Some("mihomo/1.19.17")).unwrap();
+        assert!(raw["error"].is_null());
+    }
+
+    #[test]
+    fn auto_expands_inline_rules_without_changing_policy_or_dns() {
+        let artifacts = fixture(
+            "proxies: []\nproxy-groups: [{name: Pick, type: select, proxies: [REJECT]}]\nrule-providers: {example: {type: inline, behavior: classical, payload: ['DOMAIN-SUFFIX,example.test', 'IP-CIDR,192.0.2.0/24']}}\ndns: {enable: true, nameserver: ['https://dns.example/dns-query']}\nrules: ['DOMAIN,first.test,DIRECT', 'RULE-SET,example,Pick,no-resolve', 'MATCH,REJECT']",
+            true,
+        );
+        let (artifact, _) =
+            adapt(&artifacts, "auto", Some("Shadowrocket/3131 CFNetwork/1")).unwrap();
+        assert!(artifact["error"].is_null(), "{artifact}");
+        let config = camofy::engine::parse(artifact["content"].as_str().unwrap()).unwrap();
+        assert!(config.get("rule-providers").is_none());
+        assert_eq!(config["rules"][0], "DOMAIN,first.test,DIRECT");
+        assert_eq!(config["rules"][2], "IP-CIDR,192.0.2.0/24,Pick,no-resolve");
+        assert_eq!(config["rules"][3], "MATCH,REJECT");
+        assert_eq!(
+            config["dns"]["nameserver"][0],
+            "https://dns.example/dns-query"
+        );
+        assert_eq!(artifact["configuration"]["stats"]["output_rules"], 4);
     }
 
     #[test]

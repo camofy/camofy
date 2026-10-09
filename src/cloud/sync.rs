@@ -162,12 +162,18 @@ async fn serve(app: App, h: HeaderMap, token: String, format: String) -> Result<
         return Err(Error::not_found());
     }
     let mut artifacts = app.vault.open(sealed)?;
-    let (artifact, report) = crate::client_config::adapt_cached(
-        id,
+    let (artifact, report) = crate::client_config::adapt_request(
+        &app,
+        crate::config_resources::Scope {
+            user: a.user,
+            bundle: a.bundle,
+            revision: Some(id),
+        },
         &artifacts,
         &format,
         h.get(header::USER_AGENT).and_then(|v| v.to_str().ok()),
     )
+    .await
     .map_err(|e| Error::new(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
     let resolved = artifact["format"].as_str().unwrap_or(&format).to_owned();
     artifacts[&resolved] = artifact;

@@ -1,0 +1,1861 @@
+{
+  "schema_version": 1,
+  "version": "2026-10-10.1",
+  "checked_at": "2026-10-10",
+  "dimensions": {
+    "syntax": [
+      "syntax.clash_yaml",
+      "syntax.singbox_json",
+      "syntax.xray_json",
+      "syntax.surge_ini",
+      "syntax.loon_ini",
+      "syntax.quantumultx_ini"
+    ],
+    "native_rules": [
+      "native.rule.domain",
+      "native.rule.domain_suffix",
+      "native.rule.domain_keyword",
+      "native.rule.domain_regex",
+      "native.rule.geosite",
+      "native.rule.geoip",
+      "native.rule.ipcidr",
+      "native.rule.ipcidr6",
+      "native.rule.dst_port",
+      "native.rule.process_name",
+      "native.rule.and",
+      "native.rule.or",
+      "native.rule.not",
+      "native.rule.no_resolve",
+      "native.rule.rule_set",
+      "native.rule.final"
+    ],
+    "clash_rules": [
+      "clash.rule.domain",
+      "clash.rule.domain_suffix",
+      "clash.rule.domain_keyword",
+      "clash.rule.domain_regex",
+      "clash.rule.geosite",
+      "clash.rule.geoip",
+      "clash.rule.ipcidr",
+      "clash.rule.ipcidr6",
+      "clash.rule.dst_port",
+      "clash.rule.process_name",
+      "clash.rule.and",
+      "clash.rule.or",
+      "clash.rule.not",
+      "clash.rule.no_resolve",
+      "clash.rule.rule_set",
+      "clash.rule.match"
+    ],
+    "clash_dns": [
+      "clash.dns.nameserver",
+      "clash.dns.nameserver_policy",
+      "clash.dns.nameserver_policy_geosite",
+      "clash.dns.fake_ip_filter",
+      "clash.dns.fake_ip_filter_geosite",
+      "clash.dns.fallback_filter",
+      "clash.dns.proxy_server_nameserver",
+      "clash.dns.respect_rules"
+    ],
+    "clash_rule_providers": [
+      "clash.provider.http",
+      "clash.provider.file",
+      "clash.provider.inline",
+      "clash.provider.classical_yaml",
+      "clash.provider.classical_text",
+      "clash.provider.domain_yaml",
+      "clash.provider.domain_text",
+      "clash.provider.ipcidr_yaml",
+      "clash.provider.ipcidr_text",
+      "clash.provider.domain_mrs",
+      "clash.provider.ipcidr_mrs",
+      "clash.provider.classical_mrs"
+    ],
+    "clash_proxy_groups": [
+      "clash.proxy_groups"
+    ],
+    "clash_group_types": [
+      "clash.group.select",
+      "clash.group.url_test",
+      "clash.group.fallback",
+      "clash.group.load_balance",
+      "clash.group.relay",
+      "clash.group.direct"
+    ]
+  },
+  "profiles": {
+    "clash-family-syntax": {
+      "name": "Clash YAML 家族输入语法基线",
+      "capabilities": {
+        "syntax.clash_yaml": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/config/config.go",
+            "https://pkg.go.dev/github.com/Dreamacro/clash@v1.18.0/config",
+            "https://github.com/MetaCubeX/ClashMetaForAndroid/blob/94ebfd648abae76d32ae2191cfc413482d654c66/README.md",
+            "https://github.com/chen08209/FlClash/blob/4b59eca853778d4e7be3de26589252889c899bc5/README.md",
+            "https://github.com/clash-verge-rev/clash-verge-rev/blob/44477d97d4f568e8016d6a2b9a0001d52d8f56a1/README.md",
+            "https://github.com/MetaCubeX/ClashX.Meta/blob/471b3e04153655374516b8589cacdb6db373d913/README.md"
+          ],
+          "notes": "仅证明家族接受 Clash YAML；包装客户端版本与内核版本不等同，各字段独立判断。"
+        }
+      }
+    },
+    "stash-syntax": {
+      "name": "Stash YAML 输入语法基线",
+      "capabilities": {
+        "syntax.clash_yaml": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/configuration/example-config"
+          ],
+          "notes": "Stash 使用 Clash YAML 配置；不能据此推断 Mihomo 扩展字段全部支持。"
+        }
+      }
+    },
+    "shadowrocket-syntax": {
+      "name": "Shadowrocket Clash 导入语法基线",
+      "capabilities": {
+        "syntax.clash_yaml": {
+          "support": "supported",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362"
+          ],
+          "notes": "2.1.95 发布记录新增 Clash YAML 导入；未知版本只采用家族入口基线并提示，已知旧版本由范围覆盖。"
+        },
+        "clash.rule.domain": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.rule.domain_suffix": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.rule.domain_keyword": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.rule.domain_regex": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.rule.geosite": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.rule.geoip": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.rule.ipcidr": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.rule.ipcidr6": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.rule.dst_port": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.rule.process_name": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.rule.and": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.rule.or": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.rule.not": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.rule.no_resolve": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.rule.rule_set": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.rule.match": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.dns.nameserver": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.dns.nameserver_policy": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.dns.nameserver_policy_geosite": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.dns.fake_ip_filter": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.dns.fake_ip_filter_geosite": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.dns.fallback_filter": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.dns.proxy_server_nameserver": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.dns.respect_rules": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.provider.http": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.provider.file": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.provider.inline": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.provider.classical_yaml": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.provider.classical_text": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.provider.domain_yaml": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.provider.domain_text": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.provider.ipcidr_yaml": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.provider.ipcidr_text": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.provider.domain_mrs": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.provider.ipcidr_mrs": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.provider.classical_mrs": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "clash.proxy_groups": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "公开资料未逐字段规定 Clash YAML 导入映射；保留配置并提示未验证，不把原生语法证据当作导入保证。"
+        },
+        "native.rule.process_name": {
+          "support": "unknown",
+          "evidence": [
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "未找到明确的平台及版本支持契约；资料未提及不构成不支持证据。"
+        },
+        "native.rule.domain_regex": {
+          "support": "unknown",
+          "evidence": [
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "未找到明确的平台及版本支持契约；资料未提及不构成不支持证据。"
+        },
+        "native.rule.geosite": {
+          "support": "unknown",
+          "evidence": [
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "未找到明确的平台及版本支持契约；资料未提及不构成不支持证据。"
+        },
+        "clash.group.select": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362"
+          ],
+          "notes": "Clash YAML 导入入口已知；此策略组类型及其参数的导入映射未形成可核实契约。"
+        },
+        "clash.group.url_test": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362"
+          ],
+          "notes": "Clash YAML 导入入口已知；此策略组类型及其参数的导入映射未形成可核实契约。"
+        },
+        "clash.group.fallback": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362"
+          ],
+          "notes": "Clash YAML 导入入口已知；此策略组类型及其参数的导入映射未形成可核实契约。"
+        },
+        "clash.group.load_balance": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362"
+          ],
+          "notes": "Clash YAML 导入入口已知；此策略组类型及其参数的导入映射未形成可核实契约。"
+        },
+        "clash.group.relay": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362"
+          ],
+          "notes": "Clash YAML 导入入口已知；此策略组类型及其参数的导入映射未形成可核实契约。"
+        },
+        "clash.group.direct": {
+          "support": "unknown",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362"
+          ],
+          "notes": "Clash YAML 导入入口已知；此策略组类型及其参数的导入映射未形成可核实契约。"
+        }
+      }
+    },
+    "shadowrocket-before-clash": {
+      "name": "Shadowrocket Clash YAML 引入之前",
+      "capabilities": {
+        "syntax.clash_yaml": {
+          "support": "unsupported",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362"
+          ],
+          "notes": "Shadowrocket 2.1.95 才新增 Clash YAML 导入；该已知旧版本无法接收此完整配置格式，请升级客户端。"
+        }
+      }
+    },
+    "shadowrocket-clash-reviewed": {
+      "name": "Shadowrocket 已核实的 Clash YAML 入口",
+      "capabilities": {
+        "syntax.clash_yaml": {
+          "support": "supported",
+          "evidence": [
+            "https://t.me/ShadowrocketNews/362",
+            "https://apps.apple.com/us/app/shadowrocket/id932747118"
+          ],
+          "notes": "2.1.95 引入 Clash YAML；后续已查发布记录继续修复 Clash 解析，范围截至 2.2.92，不证明逐字段等价。"
+        }
+      }
+    },
+    "shadowrocket-native-rules": {
+      "name": "Shadowrocket 原生规则语法",
+      "capabilities": {
+        "native.rule.domain": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/GMOogway/shadowrocket-rules/blob/68f92ea9aed0f119649813d9d60d69f5139ffe7b/docs/01.shadowrocket_configure.md",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "原作者配置说明及维护手册提供原生规则示例；IPv6 可写为 IP-CIDR，不证明 Clash 导入器同名字段的映射。"
+        },
+        "native.rule.domain_suffix": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/GMOogway/shadowrocket-rules/blob/68f92ea9aed0f119649813d9d60d69f5139ffe7b/docs/01.shadowrocket_configure.md",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "原作者配置说明及维护手册提供原生规则示例；IPv6 可写为 IP-CIDR，不证明 Clash 导入器同名字段的映射。"
+        },
+        "native.rule.domain_keyword": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/GMOogway/shadowrocket-rules/blob/68f92ea9aed0f119649813d9d60d69f5139ffe7b/docs/01.shadowrocket_configure.md",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "原作者配置说明及维护手册提供原生规则示例；IPv6 可写为 IP-CIDR，不证明 Clash 导入器同名字段的映射。"
+        },
+        "native.rule.geoip": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/GMOogway/shadowrocket-rules/blob/68f92ea9aed0f119649813d9d60d69f5139ffe7b/docs/01.shadowrocket_configure.md",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "原作者配置说明及维护手册提供原生规则示例；IPv6 可写为 IP-CIDR，不证明 Clash 导入器同名字段的映射。"
+        },
+        "native.rule.ipcidr": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/GMOogway/shadowrocket-rules/blob/68f92ea9aed0f119649813d9d60d69f5139ffe7b/docs/01.shadowrocket_configure.md",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "原作者配置说明及维护手册提供原生规则示例；IPv6 可写为 IP-CIDR，不证明 Clash 导入器同名字段的映射。"
+        },
+        "native.rule.ipcidr6": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/GMOogway/shadowrocket-rules/blob/68f92ea9aed0f119649813d9d60d69f5139ffe7b/docs/01.shadowrocket_configure.md",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "原作者配置说明及维护手册提供原生规则示例；IPv6 可写为 IP-CIDR，不证明 Clash 导入器同名字段的映射。"
+        },
+        "native.rule.dst_port": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/GMOogway/shadowrocket-rules/blob/68f92ea9aed0f119649813d9d60d69f5139ffe7b/docs/01.shadowrocket_configure.md",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "原作者配置说明及维护手册提供原生规则示例；IPv6 可写为 IP-CIDR，不证明 Clash 导入器同名字段的映射。"
+        },
+        "native.rule.no_resolve": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/GMOogway/shadowrocket-rules/blob/68f92ea9aed0f119649813d9d60d69f5139ffe7b/docs/01.shadowrocket_configure.md",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "原作者配置说明及维护手册提供原生规则示例；IPv6 可写为 IP-CIDR，不证明 Clash 导入器同名字段的映射。"
+        },
+        "native.rule.rule_set": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/GMOogway/shadowrocket-rules/blob/68f92ea9aed0f119649813d9d60d69f5139ffe7b/docs/01.shadowrocket_configure.md",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "原作者配置说明及维护手册提供原生规则示例；IPv6 可写为 IP-CIDR，不证明 Clash 导入器同名字段的映射。"
+        },
+        "native.rule.final": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/GMOogway/shadowrocket-rules/blob/68f92ea9aed0f119649813d9d60d69f5139ffe7b/docs/01.shadowrocket_configure.md",
+            "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md"
+          ],
+          "notes": "原作者配置说明及维护手册提供原生规则示例；IPv6 可写为 IP-CIDR，不证明 Clash 导入器同名字段的映射。"
+        },
+        "native.rule.and": {
+          "support": "supported",
+          "evidence": [
+            "https://apps.apple.com/us/app/shadowrocket/id932747118",
+            "https://github.com/GMOogway/shadowrocket-rules/blob/68f92ea9aed0f119649813d9d60d69f5139ffe7b/docs/01.shadowrocket_configure.md"
+          ],
+          "notes": "2.2.71 起可查的官方发布记录涉及逻辑规则修复；原作者配置示例给出 AND/OR/NOT 语法。未推定首次支持版本。"
+        },
+        "native.rule.or": {
+          "support": "supported",
+          "evidence": [
+            "https://apps.apple.com/us/app/shadowrocket/id932747118",
+            "https://github.com/GMOogway/shadowrocket-rules/blob/68f92ea9aed0f119649813d9d60d69f5139ffe7b/docs/01.shadowrocket_configure.md"
+          ],
+          "notes": "2.2.71 起可查的官方发布记录涉及逻辑规则修复；原作者配置示例给出 AND/OR/NOT 语法。未推定首次支持版本。"
+        },
+        "native.rule.not": {
+          "support": "supported",
+          "evidence": [
+            "https://apps.apple.com/us/app/shadowrocket/id932747118",
+            "https://github.com/GMOogway/shadowrocket-rules/blob/68f92ea9aed0f119649813d9d60d69f5139ffe7b/docs/01.shadowrocket_configure.md"
+          ],
+          "notes": "2.2.71 起可查的官方发布记录涉及逻辑规则修复；原作者配置示例给出 AND/OR/NOT 语法。未推定首次支持版本。"
+        }
+      }
+    },
+    "mihomo-basic": {
+      "name": "Mihomo 核心规则与 DNS（有界版本）",
+      "capabilities": {
+        "syntax.clash_yaml": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/v1.15.0/config/config.go",
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/config/config.go"
+          ],
+          "notes": "原生 YAML 解析器；版本范围两端源码已核实。"
+        },
+        "clash.rule.domain": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/v1.15.0/rules/parser.go",
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/parser.go"
+          ],
+          "notes": "源码解析器具有对应规则分支；进程规则仍要求操作系统能获取本机进程。"
+        },
+        "clash.rule.domain_suffix": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/v1.15.0/rules/parser.go",
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/parser.go"
+          ],
+          "notes": "源码解析器具有对应规则分支；进程规则仍要求操作系统能获取本机进程。"
+        },
+        "clash.rule.domain_keyword": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/v1.15.0/rules/parser.go",
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/parser.go"
+          ],
+          "notes": "源码解析器具有对应规则分支；进程规则仍要求操作系统能获取本机进程。"
+        },
+        "clash.rule.geosite": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/v1.15.0/rules/parser.go",
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/parser.go"
+          ],
+          "notes": "源码解析器具有对应规则分支；进程规则仍要求操作系统能获取本机进程。"
+        },
+        "clash.rule.geoip": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/v1.15.0/rules/parser.go",
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/parser.go"
+          ],
+          "notes": "源码解析器具有对应规则分支；进程规则仍要求操作系统能获取本机进程。"
+        },
+        "clash.rule.ipcidr": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/v1.15.0/rules/parser.go",
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/parser.go"
+          ],
+          "notes": "源码解析器具有对应规则分支；进程规则仍要求操作系统能获取本机进程。"
+        },
+        "clash.rule.ipcidr6": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/v1.15.0/rules/parser.go",
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/parser.go"
+          ],
+          "notes": "源码解析器具有对应规则分支；进程规则仍要求操作系统能获取本机进程。"
+        },
+        "clash.rule.dst_port": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/v1.15.0/rules/parser.go",
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/parser.go"
+          ],
+          "notes": "源码解析器具有对应规则分支；进程规则仍要求操作系统能获取本机进程。"
+        },
+        "clash.rule.process_name": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/v1.15.0/rules/parser.go",
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/parser.go"
+          ],
+          "notes": "源码解析器具有对应规则分支；进程规则仍要求操作系统能获取本机进程。"
+        },
+        "clash.rule.and": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/v1.15.0/rules/parser.go",
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/parser.go"
+          ],
+          "notes": "源码解析器具有对应规则分支；进程规则仍要求操作系统能获取本机进程。"
+        },
+        "clash.rule.or": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/v1.15.0/rules/parser.go",
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/parser.go"
+          ],
+          "notes": "源码解析器具有对应规则分支；进程规则仍要求操作系统能获取本机进程。"
+        },
+        "clash.rule.not": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/v1.15.0/rules/parser.go",
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/parser.go"
+          ],
+          "notes": "源码解析器具有对应规则分支；进程规则仍要求操作系统能获取本机进程。"
+        },
+        "clash.rule.no_resolve": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/v1.15.0/rules/parser.go",
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/parser.go"
+          ],
+          "notes": "源码解析器具有对应规则分支；进程规则仍要求操作系统能获取本机进程。"
+        },
+        "clash.rule.rule_set": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/v1.15.0/rules/parser.go",
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/parser.go"
+          ],
+          "notes": "源码解析器具有对应规则分支；进程规则仍要求操作系统能获取本机进程。"
+        },
+        "clash.rule.match": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/v1.15.0/rules/parser.go",
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/parser.go"
+          ],
+          "notes": "源码解析器具有对应规则分支；进程规则仍要求操作系统能获取本机进程。"
+        },
+        "clash.proxy_groups": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/v1.15.0/config/config.go",
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/config/config.go"
+          ],
+          "notes": "原生策略组配置解析；具体策略组选项需另查对应版本。"
+        },
+        "clash.dns.nameserver": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/v1.15.0/config/config.go",
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/config/config.go"
+          ],
+          "notes": "源码有独立 DNS 配置解析；不能将 DNS 策略替换为流量路由规则。"
+        },
+        "clash.dns.nameserver_policy": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/v1.15.0/config/config.go",
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/config/config.go"
+          ],
+          "notes": "源码有独立 DNS 配置解析；不能将 DNS 策略替换为流量路由规则。"
+        },
+        "clash.dns.fake_ip_filter": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/v1.15.0/config/config.go",
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/config/config.go"
+          ],
+          "notes": "源码有独立 DNS 配置解析；不能将 DNS 策略替换为流量路由规则。"
+        },
+        "clash.dns.fallback_filter": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/v1.15.0/config/config.go",
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/config/config.go"
+          ],
+          "notes": "源码有独立 DNS 配置解析；不能将 DNS 策略替换为流量路由规则。"
+        },
+        "clash.dns.proxy_server_nameserver": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/v1.15.0/config/config.go",
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/config/config.go"
+          ],
+          "notes": "源码有独立 DNS 配置解析；不能将 DNS 策略替换为流量路由规则。"
+        }
+      }
+    },
+    "mihomo-1.15.0-rule-regex": {
+      "name": "Mihomo 1.15.0 规则解析器",
+      "capabilities": {
+        "clash.rule.domain_regex": {
+          "support": "unsupported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/v1.15.0/rules/parser.go"
+          ],
+          "notes": "此精确版本规则 switch 没有 DOMAIN-REGEX 分支并在 default 返回 unsupported；不外推到其他版本。"
+        }
+      }
+    },
+    "mihomo-1.19.17": {
+      "name": "Mihomo 1.19.17 扩展配置快照",
+      "capabilities": {
+        "clash.rule.domain_regex": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/parser.go"
+          ],
+          "notes": "此精确源码版本解析 DOMAIN-REGEX；不外推到未经检查的更早版本。"
+        },
+        "clash.provider.http": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/provider/parse.go"
+          ],
+          "notes": "此精确版本 provider 解析器；资源内容、behavior、format 独立校验。"
+        },
+        "clash.provider.file": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/provider/parse.go"
+          ],
+          "notes": "此精确版本 provider 解析器；资源内容、behavior、format 独立校验。"
+        },
+        "clash.provider.inline": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/provider/parse.go"
+          ],
+          "notes": "此精确版本 provider 解析器；资源内容、behavior、format 独立校验。"
+        },
+        "clash.provider.classical_yaml": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/provider/parse.go"
+          ],
+          "notes": "此精确版本 provider 解析器；资源内容、behavior、format 独立校验。"
+        },
+        "clash.provider.classical_text": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/provider/parse.go"
+          ],
+          "notes": "此精确版本 provider 解析器；资源内容、behavior、format 独立校验。"
+        },
+        "clash.provider.domain_yaml": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/provider/parse.go"
+          ],
+          "notes": "此精确版本 provider 解析器；资源内容、behavior、format 独立校验。"
+        },
+        "clash.provider.domain_text": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/provider/parse.go"
+          ],
+          "notes": "此精确版本 provider 解析器；资源内容、behavior、format 独立校验。"
+        },
+        "clash.provider.ipcidr_yaml": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/provider/parse.go"
+          ],
+          "notes": "此精确版本 provider 解析器；资源内容、behavior、format 独立校验。"
+        },
+        "clash.provider.ipcidr_text": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/provider/parse.go"
+          ],
+          "notes": "此精确版本 provider 解析器；资源内容、behavior、format 独立校验。"
+        },
+        "clash.provider.classical_mrs": {
+          "support": "unsupported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/provider/mrs_reader.go"
+          ],
+          "notes": "MRS 读取器要求 mrsRuleStrategy；classical 策略未实现此接口。"
+        },
+        "clash.group.select": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/adapter/outboundgroup/parser.go"
+          ],
+          "notes": "此精确版本策略组解析器支持 select/url-test/fallback/load-balance，明确拒绝已移除的 relay；direct 不是策略组类型。DIRECT 内置策略仍可作为组成员。"
+        },
+        "clash.group.url_test": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/adapter/outboundgroup/parser.go"
+          ],
+          "notes": "此精确版本策略组解析器支持 select/url-test/fallback/load-balance，明确拒绝已移除的 relay；direct 不是策略组类型。DIRECT 内置策略仍可作为组成员。"
+        },
+        "clash.group.fallback": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/adapter/outboundgroup/parser.go"
+          ],
+          "notes": "此精确版本策略组解析器支持 select/url-test/fallback/load-balance，明确拒绝已移除的 relay；direct 不是策略组类型。DIRECT 内置策略仍可作为组成员。"
+        },
+        "clash.group.load_balance": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/adapter/outboundgroup/parser.go"
+          ],
+          "notes": "此精确版本策略组解析器支持 select/url-test/fallback/load-balance，明确拒绝已移除的 relay；direct 不是策略组类型。DIRECT 内置策略仍可作为组成员。"
+        },
+        "clash.group.relay": {
+          "support": "unsupported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/adapter/outboundgroup/parser.go"
+          ],
+          "notes": "此精确版本策略组解析器支持 select/url-test/fallback/load-balance，明确拒绝已移除的 relay；direct 不是策略组类型。DIRECT 内置策略仍可作为组成员。"
+        },
+        "clash.group.direct": {
+          "support": "unsupported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/adapter/outboundgroup/parser.go"
+          ],
+          "notes": "此精确版本策略组解析器支持 select/url-test/fallback/load-balance，明确拒绝已移除的 relay；direct 不是策略组类型。DIRECT 内置策略仍可作为组成员。"
+        }
+      }
+    },
+    "mihomo-mrs": {
+      "name": "Mihomo MRS 有界版本",
+      "capabilities": {
+        "clash.provider.domain_mrs": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/v1.19.0/rules/provider/mrs_reader.go",
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/provider/mrs_reader.go"
+          ],
+          "notes": "已核实此范围两端的 MRSv1 读取器；MRS 支持 domain/ipcidr，不支持 classical。"
+        },
+        "clash.provider.ipcidr_mrs": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/MetaCubeX/mihomo/blob/v1.19.0/rules/provider/mrs_reader.go",
+            "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/provider/mrs_reader.go"
+          ],
+          "notes": "已核实此范围两端的 MRSv1 读取器；MRS 支持 domain/ipcidr，不支持 classical。"
+        }
+      }
+    },
+    "clash-open-1.18.0": {
+      "name": "Clash 开源 1.18.0 精确快照",
+      "capabilities": {
+        "syntax.clash_yaml": {
+          "support": "supported",
+          "evidence": [
+            "https://pkg.go.dev/github.com/Dreamacro/clash@v1.18.0/config"
+          ],
+          "notes": "Clash 开源核心配置解析；不适用于 Premium 或同名包装程序。"
+        },
+        "clash.proxy_groups": {
+          "support": "supported",
+          "evidence": [
+            "https://pkg.go.dev/github.com/Dreamacro/clash@v1.18.0/config"
+          ],
+          "notes": "Clash 开源核心配置解析；不适用于 Premium 或同名包装程序。"
+        },
+        "clash.rule.domain": {
+          "support": "supported",
+          "evidence": [
+            "https://proxy.golang.org/github.com/%21dreamacro/clash/@v/v1.18.0.zip"
+          ],
+          "notes": "Go 模块归档中 rule/parser.go 具有对应分支；进程规则取决于运行平台。"
+        },
+        "clash.rule.domain_suffix": {
+          "support": "supported",
+          "evidence": [
+            "https://proxy.golang.org/github.com/%21dreamacro/clash/@v/v1.18.0.zip"
+          ],
+          "notes": "Go 模块归档中 rule/parser.go 具有对应分支；进程规则取决于运行平台。"
+        },
+        "clash.rule.domain_keyword": {
+          "support": "supported",
+          "evidence": [
+            "https://proxy.golang.org/github.com/%21dreamacro/clash/@v/v1.18.0.zip"
+          ],
+          "notes": "Go 模块归档中 rule/parser.go 具有对应分支；进程规则取决于运行平台。"
+        },
+        "clash.rule.geoip": {
+          "support": "supported",
+          "evidence": [
+            "https://proxy.golang.org/github.com/%21dreamacro/clash/@v/v1.18.0.zip"
+          ],
+          "notes": "Go 模块归档中 rule/parser.go 具有对应分支；进程规则取决于运行平台。"
+        },
+        "clash.rule.ipcidr": {
+          "support": "supported",
+          "evidence": [
+            "https://proxy.golang.org/github.com/%21dreamacro/clash/@v/v1.18.0.zip"
+          ],
+          "notes": "Go 模块归档中 rule/parser.go 具有对应分支；进程规则取决于运行平台。"
+        },
+        "clash.rule.ipcidr6": {
+          "support": "supported",
+          "evidence": [
+            "https://proxy.golang.org/github.com/%21dreamacro/clash/@v/v1.18.0.zip"
+          ],
+          "notes": "Go 模块归档中 rule/parser.go 具有对应分支；进程规则取决于运行平台。"
+        },
+        "clash.rule.dst_port": {
+          "support": "supported",
+          "evidence": [
+            "https://proxy.golang.org/github.com/%21dreamacro/clash/@v/v1.18.0.zip"
+          ],
+          "notes": "Go 模块归档中 rule/parser.go 具有对应分支；进程规则取决于运行平台。"
+        },
+        "clash.rule.process_name": {
+          "support": "supported",
+          "evidence": [
+            "https://proxy.golang.org/github.com/%21dreamacro/clash/@v/v1.18.0.zip"
+          ],
+          "notes": "Go 模块归档中 rule/parser.go 具有对应分支；进程规则取决于运行平台。"
+        },
+        "clash.rule.no_resolve": {
+          "support": "supported",
+          "evidence": [
+            "https://proxy.golang.org/github.com/%21dreamacro/clash/@v/v1.18.0.zip"
+          ],
+          "notes": "Go 模块归档中 rule/parser.go 具有对应分支；进程规则取决于运行平台。"
+        },
+        "clash.rule.match": {
+          "support": "supported",
+          "evidence": [
+            "https://proxy.golang.org/github.com/%21dreamacro/clash/@v/v1.18.0.zip"
+          ],
+          "notes": "Go 模块归档中 rule/parser.go 具有对应分支；进程规则取决于运行平台。"
+        },
+        "clash.rule.geosite": {
+          "support": "unsupported",
+          "evidence": [
+            "https://proxy.golang.org/github.com/%21dreamacro/clash/@v/v1.18.0.zip"
+          ],
+          "notes": "Go 模块归档 rule/parser.go 对这些类型显式或经 default 返回 unsupported；仅限开源 1.18.0。"
+        },
+        "clash.rule.domain_regex": {
+          "support": "unsupported",
+          "evidence": [
+            "https://proxy.golang.org/github.com/%21dreamacro/clash/@v/v1.18.0.zip"
+          ],
+          "notes": "Go 模块归档 rule/parser.go 对这些类型显式或经 default 返回 unsupported；仅限开源 1.18.0。"
+        },
+        "clash.rule.and": {
+          "support": "unsupported",
+          "evidence": [
+            "https://proxy.golang.org/github.com/%21dreamacro/clash/@v/v1.18.0.zip"
+          ],
+          "notes": "Go 模块归档 rule/parser.go 对这些类型显式或经 default 返回 unsupported；仅限开源 1.18.0。"
+        },
+        "clash.rule.or": {
+          "support": "unsupported",
+          "evidence": [
+            "https://proxy.golang.org/github.com/%21dreamacro/clash/@v/v1.18.0.zip"
+          ],
+          "notes": "Go 模块归档 rule/parser.go 对这些类型显式或经 default 返回 unsupported；仅限开源 1.18.0。"
+        },
+        "clash.rule.not": {
+          "support": "unsupported",
+          "evidence": [
+            "https://proxy.golang.org/github.com/%21dreamacro/clash/@v/v1.18.0.zip"
+          ],
+          "notes": "Go 模块归档 rule/parser.go 对这些类型显式或经 default 返回 unsupported；仅限开源 1.18.0。"
+        },
+        "clash.rule.rule_set": {
+          "support": "unsupported",
+          "evidence": [
+            "https://proxy.golang.org/github.com/%21dreamacro/clash/@v/v1.18.0.zip"
+          ],
+          "notes": "Go 模块归档 rule/parser.go 对这些类型显式或经 default 返回 unsupported；仅限开源 1.18.0。"
+        },
+        "clash.dns.nameserver": {
+          "support": "supported",
+          "evidence": [
+            "https://pkg.go.dev/github.com/Dreamacro/clash@v1.18.0/config"
+          ],
+          "notes": "原生 DNS 配置结构及解析函数；并不包含 Mihomo 所有 DNS 扩展。"
+        },
+        "clash.dns.nameserver_policy": {
+          "support": "supported",
+          "evidence": [
+            "https://pkg.go.dev/github.com/Dreamacro/clash@v1.18.0/config"
+          ],
+          "notes": "原生 DNS 配置结构及解析函数；并不包含 Mihomo 所有 DNS 扩展。"
+        },
+        "clash.dns.fake_ip_filter": {
+          "support": "supported",
+          "evidence": [
+            "https://pkg.go.dev/github.com/Dreamacro/clash@v1.18.0/config"
+          ],
+          "notes": "原生 DNS 配置结构及解析函数；并不包含 Mihomo 所有 DNS 扩展。"
+        },
+        "clash.dns.fallback_filter": {
+          "support": "supported",
+          "evidence": [
+            "https://pkg.go.dev/github.com/Dreamacro/clash@v1.18.0/config"
+          ],
+          "notes": "原生 DNS 配置结构及解析函数；并不包含 Mihomo 所有 DNS 扩展。"
+        },
+        "clash.group.select": {
+          "support": "supported",
+          "evidence": [
+            "https://proxy.golang.org/github.com/%21dreamacro/clash/@v/v1.18.0.zip"
+          ],
+          "notes": "精确版本归档 adapter/outboundgroup/parser.go 包含对应类型；direct 经 default 明确拒绝。DIRECT 内置策略不等于 type: direct。"
+        },
+        "clash.group.url_test": {
+          "support": "supported",
+          "evidence": [
+            "https://proxy.golang.org/github.com/%21dreamacro/clash/@v/v1.18.0.zip"
+          ],
+          "notes": "精确版本归档 adapter/outboundgroup/parser.go 包含对应类型；direct 经 default 明确拒绝。DIRECT 内置策略不等于 type: direct。"
+        },
+        "clash.group.fallback": {
+          "support": "supported",
+          "evidence": [
+            "https://proxy.golang.org/github.com/%21dreamacro/clash/@v/v1.18.0.zip"
+          ],
+          "notes": "精确版本归档 adapter/outboundgroup/parser.go 包含对应类型；direct 经 default 明确拒绝。DIRECT 内置策略不等于 type: direct。"
+        },
+        "clash.group.load_balance": {
+          "support": "supported",
+          "evidence": [
+            "https://proxy.golang.org/github.com/%21dreamacro/clash/@v/v1.18.0.zip"
+          ],
+          "notes": "精确版本归档 adapter/outboundgroup/parser.go 包含对应类型；direct 经 default 明确拒绝。DIRECT 内置策略不等于 type: direct。"
+        },
+        "clash.group.relay": {
+          "support": "supported",
+          "evidence": [
+            "https://proxy.golang.org/github.com/%21dreamacro/clash/@v/v1.18.0.zip"
+          ],
+          "notes": "精确版本归档 adapter/outboundgroup/parser.go 包含对应类型；direct 经 default 明确拒绝。DIRECT 内置策略不等于 type: direct。"
+        },
+        "clash.group.direct": {
+          "support": "unsupported",
+          "evidence": [
+            "https://proxy.golang.org/github.com/%21dreamacro/clash/@v/v1.18.0.zip"
+          ],
+          "notes": "精确版本归档 adapter/outboundgroup/parser.go 包含对应类型；direct 经 default 明确拒绝。DIRECT 内置策略不等于 type: direct。"
+        }
+      }
+    },
+    "stash-mrs-before": {
+      "name": "Stash MRS 引入之前",
+      "capabilities": {
+        "clash.provider.domain_mrs": {
+          "support": "unsupported",
+          "evidence": [
+            "https://stash.wiki/release-notes/ios"
+          ],
+          "notes": "官方发布记录在 3.1.0 新增 MRS 远程规则集支持。"
+        },
+        "clash.provider.ipcidr_mrs": {
+          "support": "unsupported",
+          "evidence": [
+            "https://stash.wiki/release-notes/ios"
+          ],
+          "notes": "官方发布记录在 3.1.0 新增 MRS 远程规则集支持。"
+        }
+      }
+    },
+    "stash-mrs": {
+      "name": "Stash MRS 已核实范围",
+      "capabilities": {
+        "clash.provider.domain_mrs": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/release-notes/ios",
+            "https://stash.wiki/rules/rule-set"
+          ],
+          "notes": "3.1.0 引入 MRS；官方格式表限制为 domain/ipcidr。"
+        },
+        "clash.provider.ipcidr_mrs": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/release-notes/ios",
+            "https://stash.wiki/rules/rule-set"
+          ],
+          "notes": "3.1.0 引入 MRS；官方格式表限制为 domain/ipcidr。"
+        },
+        "clash.provider.classical_mrs": {
+          "support": "unsupported",
+          "evidence": [
+            "https://stash.wiki/rules/rule-set"
+          ],
+          "notes": "官方格式说明明确 MRS 仅支持 domain 与 ipcidr。"
+        }
+      }
+    },
+    "stash-current": {
+      "name": "Stash 当前文档规则与 provider",
+      "capabilities": {
+        "syntax.clash_yaml": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/configuration/example-config"
+          ],
+          "notes": "文档中的 YAML 完整配置。"
+        },
+        "clash.proxy_groups": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/configuration/example-config"
+          ],
+          "notes": "文档中的 YAML 完整配置。"
+        },
+        "clash.rule.domain": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/rules/rule-types"
+          ],
+          "notes": "官方规则文档定义这些原生 Clash YAML 规则。"
+        },
+        "clash.rule.domain_suffix": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/rules/rule-types"
+          ],
+          "notes": "官方规则文档定义这些原生 Clash YAML 规则。"
+        },
+        "clash.rule.domain_keyword": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/rules/rule-types"
+          ],
+          "notes": "官方规则文档定义这些原生 Clash YAML 规则。"
+        },
+        "clash.rule.domain_regex": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/rules/rule-types"
+          ],
+          "notes": "官方规则文档定义这些原生 Clash YAML 规则。"
+        },
+        "clash.rule.geosite": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/rules/rule-types"
+          ],
+          "notes": "官方规则文档定义这些原生 Clash YAML 规则。"
+        },
+        "clash.rule.geoip": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/rules/rule-types"
+          ],
+          "notes": "官方规则文档定义这些原生 Clash YAML 规则。"
+        },
+        "clash.rule.ipcidr": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/rules/rule-types"
+          ],
+          "notes": "官方规则文档定义这些原生 Clash YAML 规则。"
+        },
+        "clash.rule.ipcidr6": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/rules/rule-types"
+          ],
+          "notes": "官方规则文档定义这些原生 Clash YAML 规则。"
+        },
+        "clash.rule.dst_port": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/rules/rule-types"
+          ],
+          "notes": "官方规则文档定义这些原生 Clash YAML 规则。"
+        },
+        "clash.rule.and": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/rules/rule-types"
+          ],
+          "notes": "官方规则文档定义这些原生 Clash YAML 规则。"
+        },
+        "clash.rule.or": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/rules/rule-types"
+          ],
+          "notes": "官方规则文档定义这些原生 Clash YAML 规则。"
+        },
+        "clash.rule.not": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/rules/rule-types"
+          ],
+          "notes": "官方规则文档定义这些原生 Clash YAML 规则。"
+        },
+        "clash.rule.no_resolve": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/rules/rule-types"
+          ],
+          "notes": "官方规则文档定义这些原生 Clash YAML 规则。"
+        },
+        "clash.rule.rule_set": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/rules/rule-types"
+          ],
+          "notes": "官方规则文档定义这些原生 Clash YAML 规则。"
+        },
+        "clash.rule.match": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/rules/rule-types"
+          ],
+          "notes": "官方规则文档定义这些原生 Clash YAML 规则。"
+        },
+        "clash.provider.http": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/rules/rule-set"
+          ],
+          "notes": "官方 provider 格式表；inline 明确要求 iOS/tvOS 3.6+ 或 macOS 4.3+，本条仅用于该精确版本。"
+        },
+        "clash.provider.file": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/rules/rule-set"
+          ],
+          "notes": "官方 provider 格式表；inline 明确要求 iOS/tvOS 3.6+ 或 macOS 4.3+，本条仅用于该精确版本。"
+        },
+        "clash.provider.inline": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/rules/rule-set"
+          ],
+          "notes": "官方文档明确 iOS/tvOS 3.6+ 或 macOS 4.3+ 支持 inline，behavior 为 domain 或 ipcidr；本条不保证 classical inline。"
+        },
+        "clash.provider.classical_yaml": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/rules/rule-set"
+          ],
+          "notes": "官方 provider 格式表；inline 明确要求 iOS/tvOS 3.6+ 或 macOS 4.3+，本条仅用于该精确版本。"
+        },
+        "clash.provider.classical_text": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/rules/rule-set"
+          ],
+          "notes": "官方 provider 格式表；inline 明确要求 iOS/tvOS 3.6+ 或 macOS 4.3+，本条仅用于该精确版本。"
+        },
+        "clash.provider.domain_yaml": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/rules/rule-set"
+          ],
+          "notes": "官方 provider 格式表；inline 明确要求 iOS/tvOS 3.6+ 或 macOS 4.3+，本条仅用于该精确版本。"
+        },
+        "clash.provider.domain_text": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/rules/rule-set"
+          ],
+          "notes": "官方 provider 格式表；inline 明确要求 iOS/tvOS 3.6+ 或 macOS 4.3+，本条仅用于该精确版本。"
+        },
+        "clash.provider.ipcidr_yaml": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/rules/rule-set"
+          ],
+          "notes": "官方 provider 格式表；inline 明确要求 iOS/tvOS 3.6+ 或 macOS 4.3+，本条仅用于该精确版本。"
+        },
+        "clash.provider.ipcidr_text": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/rules/rule-set"
+          ],
+          "notes": "官方 provider 格式表；inline 明确要求 iOS/tvOS 3.6+ 或 macOS 4.3+，本条仅用于该精确版本。"
+        },
+        "clash.dns.nameserver": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/configuration/example-config"
+          ],
+          "notes": "官方当前配置示例包含此字段；本条只适用于精确版本 iOS/tvOS 3.6.0 或 macOS 4.3.0，不外推历史版本。"
+        },
+        "clash.dns.nameserver_policy": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/configuration/example-config"
+          ],
+          "notes": "官方当前配置示例包含此字段；本条只适用于精确版本 iOS/tvOS 3.6.0 或 macOS 4.3.0，不外推历史版本。"
+        },
+        "clash.dns.nameserver_policy_geosite": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/configuration/example-config"
+          ],
+          "notes": "官方当前配置示例包含此字段；本条只适用于精确版本 iOS/tvOS 3.6.0 或 macOS 4.3.0，不外推历史版本。"
+        },
+        "clash.dns.fake_ip_filter": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/configuration/example-config"
+          ],
+          "notes": "官方当前配置示例包含此字段；本条只适用于精确版本 iOS/tvOS 3.6.0 或 macOS 4.3.0，不外推历史版本。"
+        },
+        "clash.group.select": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/proxy-protocols/proxy-groups"
+          ],
+          "notes": "官方策略组文档提供该类型配置。relay 不推荐使用且仅支持 TCP 或 UDP over TCP；本条不扩大其传输能力。"
+        },
+        "clash.group.url_test": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/proxy-protocols/proxy-groups"
+          ],
+          "notes": "官方策略组文档提供该类型配置。relay 不推荐使用且仅支持 TCP 或 UDP over TCP；本条不扩大其传输能力。"
+        },
+        "clash.group.fallback": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/proxy-protocols/proxy-groups"
+          ],
+          "notes": "官方策略组文档提供该类型配置。relay 不推荐使用且仅支持 TCP 或 UDP over TCP；本条不扩大其传输能力。"
+        },
+        "clash.group.load_balance": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/proxy-protocols/proxy-groups"
+          ],
+          "notes": "官方策略组文档提供该类型配置。relay 不推荐使用且仅支持 TCP 或 UDP over TCP；本条不扩大其传输能力。"
+        },
+        "clash.group.relay": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/proxy-protocols/proxy-groups"
+          ],
+          "notes": "官方策略组文档提供该类型配置。relay 不推荐使用且仅支持 TCP 或 UDP over TCP；本条不扩大其传输能力。"
+        }
+      }
+    },
+    "stash-ios-process": {
+      "name": "Stash iOS/tvOS 进程限制",
+      "capabilities": {
+        "clash.rule.process_name": {
+          "support": "unsupported",
+          "evidence": [
+            "https://stash.wiki/rules/rule-types"
+          ],
+          "notes": "官方说明 iOS/tvOS Network Extension 无法匹配进程，相关规则会被忽略；不能当作 macOS 原生版能力。"
+        }
+      }
+    },
+    "stash-mac-process": {
+      "name": "Stash macOS 本机进程规则",
+      "capabilities": {
+        "clash.rule.process_name": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/rules/rule-types"
+          ],
+          "notes": "官方文档支持匹配本机进程；不适用于在 Mac 运行的 iOS 版应用。"
+        }
+      }
+    },
+    "stash-geosite": {
+      "name": "Stash GEOSITE 已查发布记录",
+      "capabilities": {
+        "clash.rule.geosite": {
+          "support": "supported",
+          "evidence": [
+            "https://stash.wiki/release-notes/ios",
+            "https://stash.wiki/rules/rule-types"
+          ],
+          "notes": "3.1.0 发布记录已优化 GEOSITE；据此确认此范围支持，但不声明 3.1.0 为首次版本。"
+        }
+      }
+    },
+    "singbox-native": {
+      "name": "sing-box 原生输入",
+      "capabilities": {
+        "syntax.singbox_json": {
+          "support": "supported",
+          "evidence": [
+            "https://sing-box.sagernet.org/configuration/"
+          ],
+          "notes": "官方配置格式为 JSON；尚未实现由当前源模型生成完整 sing-box 配置。"
+        }
+      }
+    },
+    "xray-native": {
+      "name": "Xray 原生输入",
+      "capabilities": {
+        "syntax.xray_json": {
+          "support": "supported",
+          "evidence": [
+            "https://xtls.github.io/config/"
+          ],
+          "notes": "官方配置格式为 JSON；尚未实现由当前源模型生成完整 Xray 配置。"
+        }
+      }
+    },
+    "surge-native": {
+      "name": "Surge 原生输入",
+      "capabilities": {
+        "syntax.surge_ini": {
+          "support": "supported",
+          "evidence": [
+            "https://manual.nssurge.com/"
+          ],
+          "notes": "官方完整配置语法；尚未实现完整 Surge 输出。"
+        }
+      }
+    },
+    "loon-native": {
+      "name": "Loon 原生输入",
+      "capabilities": {
+        "syntax.loon_ini": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/Loon0x00/LoonExampleConfig/blob/f5b97c72dfe35283678c6da68b21c959ff30126d/example.conf"
+          ],
+          "notes": "官方完整配置语法；尚未实现完整 Loon 输出。"
+        }
+      }
+    },
+    "quantumult-native": {
+      "name": "Quantumult X 原生输入",
+      "capabilities": {
+        "syntax.quantumultx_ini": {
+          "support": "supported",
+          "evidence": [
+            "https://github.com/crossutility/Quantumult-X/blob/master/sample.conf"
+          ],
+          "notes": "开发者提供原生配置示例；尚未实现完整 Quantumult X 输出。"
+        }
+      }
+    }
+  },
+  "clients": [
+    {
+      "id": "cmfa",
+      "name": "Clash Meta for Android",
+      "renderer": "clash_yaml",
+      "syntax": "syntax.clash_yaml",
+      "baseline": "clash-family-syntax",
+      "ranges": [],
+      "notes": "完整配置保留原生 YAML；应用版本不自动映射为内核版本。"
+    },
+    {
+      "id": "flclash",
+      "name": "FlClash",
+      "renderer": "clash_yaml",
+      "syntax": "syntax.clash_yaml",
+      "baseline": "clash-family-syntax",
+      "ranges": [],
+      "notes": "完整配置保留原生 YAML；应用版本不自动映射为内核版本。"
+    },
+    {
+      "id": "mihomo",
+      "name": "Mihomo / Clash.Meta 内核",
+      "renderer": "clash_yaml",
+      "syntax": "syntax.clash_yaml",
+      "baseline": "clash-family-syntax",
+      "ranges": [
+        {
+          "min": "1.15.0",
+          "max": "1.19.17",
+          "profile": "mihomo-basic"
+        },
+        {
+          "min": "1.15.0",
+          "max": "1.15.0",
+          "profile": "mihomo-1.15.0-rule-regex"
+        },
+        {
+          "min": "1.19.17",
+          "max": "1.19.17",
+          "profile": "mihomo-1.19.17"
+        },
+        {
+          "min": "1.19.0",
+          "max": "1.19.17",
+          "profile": "mihomo-mrs"
+        }
+      ],
+      "notes": "完整配置保留原生 YAML；应用版本不自动映射为内核版本。"
+    },
+    {
+      "id": "verge",
+      "name": "Clash Verge Rev",
+      "renderer": "clash_yaml",
+      "syntax": "syntax.clash_yaml",
+      "baseline": "clash-family-syntax",
+      "ranges": [],
+      "notes": "完整配置保留原生 YAML；应用版本不自动映射为内核版本。"
+    },
+    {
+      "id": "clash-core",
+      "name": "Clash 开源内核",
+      "renderer": "clash_yaml",
+      "syntax": "syntax.clash_yaml",
+      "baseline": "clash-family-syntax",
+      "ranges": [
+        {
+          "min": "1.18.0",
+          "max": "1.18.0",
+          "profile": "clash-open-1.18.0"
+        }
+      ],
+      "notes": "完整配置保留原生 YAML；应用版本不自动映射为内核版本。"
+    },
+    {
+      "id": "stash",
+      "name": "Stash（iOS / tvOS）",
+      "renderer": "clash_yaml",
+      "syntax": "syntax.clash_yaml",
+      "baseline": "stash-syntax",
+      "ranges": [
+        {
+          "min": "0.0.0",
+          "max": "3.0.99",
+          "profile": "stash-mrs-before"
+        },
+        {
+          "min": "3.1.0",
+          "max": "3.6.0",
+          "profile": "stash-mrs"
+        },
+        {
+          "min": "3.1.0",
+          "max": "3.5.99",
+          "profile": "stash-geosite"
+        },
+        {
+          "min": "3.6.0",
+          "max": "3.6.0",
+          "profile": "stash-current"
+        },
+        {
+          "min": "3.6.0",
+          "max": "3.6.0",
+          "profile": "stash-ios-process"
+        }
+      ],
+      "notes": "完整配置保留原生 YAML；应用版本不自动映射为内核版本。"
+    },
+    {
+      "id": "stash-mac",
+      "name": "Stash Mac",
+      "renderer": "clash_yaml",
+      "syntax": "syntax.clash_yaml",
+      "baseline": "stash-syntax",
+      "ranges": [
+        {
+          "min": "4.3.0",
+          "max": "4.3.0",
+          "profile": "stash-current"
+        },
+        {
+          "min": "4.3.0",
+          "max": "4.3.0",
+          "profile": "stash-mrs"
+        },
+        {
+          "min": "4.3.0",
+          "max": "4.3.0",
+          "profile": "stash-mac-process"
+        }
+      ],
+      "notes": "完整配置保留原生 YAML；应用版本不自动映射为内核版本。"
+    },
+    {
+      "id": "shadowrocket",
+      "name": "Shadowrocket",
+      "renderer": "clash_yaml",
+      "syntax": "syntax.clash_yaml",
+      "baseline": "shadowrocket-syntax",
+      "ranges": [
+        {
+          "min": "0.0.0",
+          "max": "2.1.94",
+          "profile": "shadowrocket-before-clash"
+        },
+        {
+          "min": "2.1.95",
+          "max": "2.2.92",
+          "profile": "shadowrocket-clash-reviewed"
+        },
+        {
+          "min": "2.2.71",
+          "max": "2.2.92",
+          "profile": "shadowrocket-native-rules"
+        }
+      ],
+      "notes": "接受 Clash 导入不意味着与 Mihomo 全字段等价；字段未知时保留并诊断。"
+    },
+    {
+      "id": "clashx-meta",
+      "name": "ClashX Meta",
+      "renderer": "clash_yaml",
+      "syntax": "syntax.clash_yaml",
+      "baseline": "clash-family-syntax",
+      "ranges": [],
+      "notes": "完整配置保留原生 YAML；应用版本不自动映射为内核版本。"
+    },
+    {
+      "id": "clash-legacy",
+      "name": "Clash for Windows / Clash for Android / ClashX",
+      "renderer": "clash_yaml",
+      "syntax": "syntax.clash_yaml",
+      "baseline": "clash-family-syntax",
+      "ranges": [],
+      "notes": "完整配置保留原生 YAML；应用版本不自动映射为内核版本。"
+    },
+    {
+      "id": "v2rayng",
+      "name": "v2rayNG",
+      "renderer": null,
+      "syntax": null,
+      "baseline": null,
+      "ranges": [],
+      "notes": "已识别客户端家族，但尚未实现该客户端的完整配置 renderer；明确阻止完整配置输出，不降级成仅节点订阅。"
+    },
+    {
+      "id": "xray",
+      "name": "Xray 内核",
+      "renderer": null,
+      "syntax": null,
+      "baseline": "xray-native",
+      "ranges": [],
+      "notes": "已识别客户端家族，但尚未实现该客户端的完整配置 renderer；明确阻止完整配置输出，不降级成仅节点订阅。"
+    },
+    {
+      "id": "sing-box",
+      "name": "sing-box",
+      "renderer": null,
+      "syntax": null,
+      "baseline": "singbox-native",
+      "ranges": [],
+      "notes": "已识别客户端家族，但尚未实现该客户端的完整配置 renderer；明确阻止完整配置输出，不降级成仅节点订阅。"
+    },
+    {
+      "id": "surge",
+      "name": "Surge",
+      "renderer": null,
+      "syntax": null,
+      "baseline": "surge-native",
+      "ranges": [],
+      "notes": "已识别客户端家族，但尚未实现该客户端的完整配置 renderer；明确阻止完整配置输出，不降级成仅节点订阅。"
+    },
+    {
+      "id": "surge-ios",
+      "name": "Surge iOS",
+      "renderer": null,
+      "syntax": null,
+      "baseline": "surge-native",
+      "ranges": [],
+      "notes": "已识别客户端家族，但尚未实现该客户端的完整配置 renderer；明确阻止完整配置输出，不降级成仅节点订阅。"
+    },
+    {
+      "id": "surge-mac",
+      "name": "Surge Mac",
+      "renderer": null,
+      "syntax": null,
+      "baseline": "surge-native",
+      "ranges": [],
+      "notes": "已识别客户端家族，但尚未实现该客户端的完整配置 renderer；明确阻止完整配置输出，不降级成仅节点订阅。"
+    },
+    {
+      "id": "loon",
+      "name": "Loon",
+      "renderer": null,
+      "syntax": null,
+      "baseline": "loon-native",
+      "ranges": [],
+      "notes": "已识别客户端家族，但尚未实现该客户端的完整配置 renderer；明确阻止完整配置输出，不降级成仅节点订阅。"
+    },
+    {
+      "id": "quantumult-x",
+      "name": "Quantumult X",
+      "renderer": null,
+      "syntax": null,
+      "baseline": "quantumult-native",
+      "ranges": [],
+      "notes": "已识别客户端家族，但尚未实现该客户端的完整配置 renderer；明确阻止完整配置输出，不降级成仅节点订阅。"
+    },
+    {
+      "id": "v2rayn",
+      "name": "v2rayN",
+      "renderer": null,
+      "syntax": null,
+      "baseline": null,
+      "ranges": [],
+      "notes": "已识别客户端家族，但尚未实现该客户端的完整配置 renderer；明确阻止完整配置输出，不降级成仅节点订阅。"
+    },
+    {
+      "id": "hiddify",
+      "name": "Hiddify",
+      "renderer": null,
+      "syntax": null,
+      "baseline": null,
+      "ranges": [],
+      "notes": "已识别客户端家族，但尚未实现该客户端的完整配置 renderer；明确阻止完整配置输出，不降级成仅节点订阅。"
+    },
+    {
+      "id": "nekobox",
+      "name": "NekoBox / NekoRay",
+      "renderer": null,
+      "syntax": null,
+      "baseline": null,
+      "ranges": [],
+      "notes": "已识别客户端家族，但尚未实现该客户端的完整配置 renderer；明确阻止完整配置输出，不降级成仅节点订阅。"
+    }
+  ],
+  "references": [
+    "https://t.me/ShadowrocketNews/362",
+    "https://apps.apple.com/us/app/shadowrocket/id932747118",
+    "https://github.com/GMOogway/shadowrocket-rules/blob/68f92ea9aed0f119649813d9d60d69f5139ffe7b/docs/01.shadowrocket_configure.md",
+    "https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md",
+    "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/config/config.go",
+    "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/parser.go",
+    "https://github.com/MetaCubeX/mihomo/blob/v1.15.0/rules/parser.go",
+    "https://github.com/MetaCubeX/mihomo/blob/v1.15.0/config/config.go",
+    "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/provider/parse.go",
+    "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/rules/provider/mrs_reader.go",
+    "https://github.com/MetaCubeX/mihomo/blob/v1.19.0/rules/provider/mrs_reader.go",
+    "https://pkg.go.dev/github.com/Dreamacro/clash@v1.18.0/config",
+    "https://proxy.golang.org/github.com/%21dreamacro/clash/@v/v1.18.0.zip",
+    "https://stash.wiki/configuration/example-config",
+    "https://stash.wiki/rules/rule-types",
+    "https://stash.wiki/rules/rule-set",
+    "https://stash.wiki/release-notes/ios",
+    "https://sing-box.sagernet.org/configuration/",
+    "https://xtls.github.io/config/",
+    "https://manual.nssurge.com/",
+    "https://github.com/Loon0x00/LoonExampleConfig/blob/f5b97c72dfe35283678c6da68b21c959ff30126d/example.conf",
+    "https://github.com/crossutility/Quantumult-X/blob/master/sample.conf",
+    "https://github.com/MetaCubeX/ClashMetaForAndroid/blob/94ebfd648abae76d32ae2191cfc413482d654c66/README.md",
+    "https://github.com/chen08209/FlClash/blob/4b59eca853778d4e7be3de26589252889c899bc5/README.md",
+    "https://github.com/clash-verge-rev/clash-verge-rev/blob/44477d97d4f568e8016d6a2b9a0001d52d8f56a1/README.md",
+    "https://github.com/MetaCubeX/ClashX.Meta/blob/471b3e04153655374516b8589cacdb6db373d913/README.md",
+    "https://github.com/MetaCubeX/mihomo/blob/a001b1b11008ba469442e5e59b058dd032263470/adapter/outboundgroup/parser.go",
+    "https://stash.wiki/proxy-protocols/proxy-groups"
+  ]
+}

@@ -1,5 +1,5 @@
 //! Synthetic configurations for the standalone Mihomo compatibility regression.
-use camofy::{compatibility::Detection, engine, node_filter};
+use camofy::{compatibility::Detection, config_compat, engine, node_filter};
 use serde_json::json;
 
 fn main() -> anyhow::Result<()> {
@@ -50,6 +50,68 @@ fn main() -> anyhow::Result<()> {
             json!({"name":name, "config":engine::mihomo(&config, false)?, "expected":["REJECT"]}),
         );
     }
+    let source = engine::parse(
+        r#"
+mode: rule
+log-level: silent
+allow-lan: false
+bind-address: 127.0.0.1
+geo-auto-update: false
+ipv6: false
+find-process-mode: off
+profile: {store-selected: false, store-fake-ip: false}
+dns:
+  enable: true
+  ipv6: false
+  use-hosts: false
+  use-system-hosts: false
+  enhanced-mode: redir-host
+  default-nameserver: ['127.0.0.1:__DNS_PORT__']
+  nameserver: ['udp://127.0.0.1:__DNS_PORT__']
+proxy-groups:
+  - {name: First, type: select, proxies: [DIRECT]}
+  - {name: Nested, type: select, proxies: [DIRECT]}
+  - {name: IpNoResolve, type: select, proxies: [DIRECT]}
+  - {name: Fallback, type: select, proxies: [DIRECT]}
+rule-providers:
+  sites:
+    type: inline
+    behavior: classical
+    payload:
+      - DOMAIN,first.example
+      - DOMAIN,site.example
+      - DOMAIN,excluded.example
+      - DOMAIN-SUFFIX,suffix.example
+      - DOMAIN-REGEX,^node[0-9]{1,2}\.regex\.example$
+  networks:
+    type: inline
+    behavior: ipcidr
+    payload: [127.0.0.0/8]
+rules:
+  - DOMAIN,first.example,First
+  - AND,((RULE-SET,sites),(NOT,((DOMAIN,excluded.example)))),Nested
+  - RULE-SET,networks,IpNoResolve,no-resolve
+  - MATCH,Fallback
+"#,
+    )?;
+    let compiled = config_compat::compile(
+        &source,
+        config_compat::Target::Shadowrocket,
+        &config_compat::ResolvedSources::new(),
+    )?;
+    fixtures.push(json!({
+        "name": "rule_compilation_equivalence", "kind": "rule_equivalence",
+        "source": serde_yaml::to_string(&source)?, "compiled": serde_yaml::to_string(&compiled.config)?,
+        "requests": [
+            {"host":"first.example", "policy":"First"},
+            {"host":"site.example", "policy":"Nested"},
+            {"host":"a.suffix.example", "policy":"Nested"},
+            {"host":"node42.regex.example", "policy":"Nested"},
+            {"host":"excluded.example", "policy":"Fallback"},
+            {"host":"unmatched.example", "policy":"Fallback"},
+            {"host":"127.0.0.1", "policy":"IpNoResolve"},
+        ]
+    }));
     println!("{}", serde_json::to_string(&fixtures)?);
     Ok(())
 }

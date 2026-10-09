@@ -184,22 +184,30 @@ async fn compatibility_http_end_to_end() {
         .await
         .unwrap();
     assert_eq!(sr.status(), 200);
-    assert_eq!(sr.headers()["x-camofy-format"], "shadowrocket-nodes");
+    assert_eq!(sr.headers()["x-camofy-format"], "shadowrocket");
     assert!(
         sr.headers()["content-type"]
             .to_str()
             .unwrap()
-            .contains("text/plain")
+            .contains("application/yaml")
     );
     assert!(
         sr.headers()["content-disposition"]
             .to_str()
             .unwrap()
-            .contains(".txt")
+            .contains(".yaml")
     );
     let sr_etag = sr.headers()["etag"].clone();
-    let links = String::from_utf8(STANDARD.decode(sr.text().await.unwrap()).unwrap()).unwrap();
-    assert!(links.lines().any(|line| line.starts_with("ss://")));
+    let complete = camofy::engine::parse(&sr.text().await.unwrap()).unwrap();
+    assert!(
+        complete["proxies"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .any(|node| node["type"] == "ss")
+    );
+    assert!(complete["rules"].is_sequence());
+    assert!(complete["proxy-groups"].is_sequence());
     assert_ne!(sr_etag, old_etag);
     let sr_cached = client
         .head(sub)
@@ -209,7 +217,7 @@ async fn compatibility_http_end_to_end() {
         .await
         .unwrap();
     assert_eq!(sr_cached.status(), 304);
-    assert_eq!(sr_cached.headers()["x-camofy-format"], "shadowrocket-nodes");
+    assert_eq!(sr_cached.headers()["x-camofy-format"], "shadowrocket");
     assert!(sr_cached.bytes().await.unwrap().is_empty());
     let unsupported = client
         .get(sub)

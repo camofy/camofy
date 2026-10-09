@@ -662,12 +662,13 @@ fn uri_endpoint(node: &Value, scheme: &str) -> Result<url::Url> {
 fn uri_credentials(url: &mut url::Url, username: &str, password: Option<&str>) -> Result<()> {
     // Url setters preserve existing percent escapes. Encode literal '%' too, so
     // an account containing "%2F" is not changed to "/" by the receiving client.
-    let username =
-        percent_encoding::utf8_percent_encode(username, percent_encoding::NON_ALPHANUMERIC)
-            .to_string();
-    let password = password.map(|s| {
-        percent_encoding::utf8_percent_encode(s, percent_encoding::NON_ALPHANUMERIC).to_string()
-    });
+    const USERINFO: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+        .remove(b'-')
+        .remove(b'.')
+        .remove(b'_')
+        .remove(b'~');
+    let username = percent_encoding::utf8_percent_encode(username, USERINFO).to_string();
+    let password = password.map(|s| percent_encoding::utf8_percent_encode(s, USERINFO).to_string());
     url.set_username(&username)
         .map_err(|_| anyhow::anyhow!("URI exporter cannot encode username"))?;
     url.set_password(password.as_deref())
@@ -1111,82 +1112,15 @@ pub fn shadowrocket_nodes(v: &Value) -> Result<String> {
     Ok(STANDARD.encode(lines.join("\n")))
 }
 
-/// A complete YAML export with bounded structural checks. Node options are kept
-/// intact; URI encoder limitations do not establish the client's YAML capabilities.
-/// Native .conf is deliberately not mislabeled as YAML or inferred from user-agent.
+/// Complete Shadowrocket-compatible YAML. Rule dependencies are provided by the
+/// cloud resolver; this synchronous entry point handles inline-only configurations.
 pub fn shadowrocket_full(v: &Value) -> Result<String> {
-    validate(v)?;
-    sr_nodes(v)?;
-    let mut normalized = v.clone();
-    for field in ["proxy-providers", "rule-providers"] {
-        if normalized
-            .get(field)
-            .is_some_and(|p| p.is_null() || p.as_mapping().is_some_and(Mapping::is_empty))
-        {
-            normalized.as_mapping_mut().unwrap().remove(field);
-        }
-    }
-    let v = &normalized;
-    ensure!(
-        v.get("rule-providers")
-            .and_then(Value::as_mapping)
-            .is_none_or(Mapping::is_empty),
-        "Shadowrocket full export requires inline rules"
-    );
-    for g in v["proxy-groups"].as_sequence().into_iter().flatten() {
-        ensure!(
-            ["select", "url-test", "fallback", "load-balance"].contains(&required(g, "type")?),
-            "unsupported Shadowrocket group type"
-        );
-        ensure!(
-            g.get("use").is_none(),
-            "Shadowrocket groups require explicit proxies"
-        );
-    }
-    let supported_rules = [
-        "DOMAIN",
-        "DOMAIN-SUFFIX",
-        "DOMAIN-KEYWORD",
-        "IP-CIDR",
-        "IP-CIDR6",
-        "GEOIP",
-        "MATCH",
-    ];
-    for r in v["rules"].as_sequence().into_iter().flatten() {
-        let rule_type = r.as_str().unwrap().split(',').next().unwrap();
-        ensure!(
-            supported_rules.contains(&rule_type),
-            "Shadowrocket complete YAML exporter has not implemented rule type {}",
-            diagnostic_key(Some(rule_type))
-        );
-    }
-    let allowed = [
-        "proxies",
-        "proxy-groups",
-        "rules",
-        "dns",
-        "hosts",
-        "mode",
-        "ipv6",
-        "log-level",
-        "allow-lan",
-        "port",
-        "socks-port",
-        "mixed-port",
-        "tun",
-        "external-controller",
-        "external-controller-unix",
-        "secret",
-        "profile",
-    ];
-    for k in v.as_mapping().unwrap().keys() {
-        ensure!(
-            k.as_str().is_some_and(|s| allowed.contains(&s)),
-            "Shadowrocket complete YAML exporter has not implemented top-level field {}",
-            diagnostic_key(k.as_str())
-        );
-    }
-    mihomo(v, false)
+    let compiled = crate::config_compat::compile(
+        v,
+        crate::config_compat::Target::Shadowrocket,
+        &Default::default(),
+    )?;
+    mihomo(&compiled.config, false)
 }
 
 #[cfg(test)]
@@ -1425,7 +1359,7 @@ mod tests {
         let output = parse(&shadowrocket_full(&input).unwrap()).unwrap();
         assert_eq!(output["proxies"], input["proxies"]);
         assert_eq!(output["proxy-groups"], input["proxy-groups"]);
-        assert!(output.get("proxy-providers").is_none());
+        assert_eq!(output["proxy-providers"], input["proxy-providers"]);
         assert!(output.get("rule-providers").is_none());
         assert!(shadowrocket_nodes(&input).is_err());
     }
@@ -1513,7 +1447,9 @@ mod tests {
         let node = export_node(
             "type: vless\nuuid: 00000000-0000-0000-0000-000000000001\ntls: true\nservername: tls.example\nclient-fingerprint: chrome\nflow: xtls-rprx-vision\nreality-opts: {public-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, short-id: 'a1b2'}",
         );
-        let pairs = uri_pairs(&shadowrocket_node_uri(&node).unwrap());
+        let uri = shadowrocket_node_uri(&node).unwrap();
+        assert!(uri.starts_with("vless://00000000-0000-0000-0000-000000000001@"));
+        let pairs = uri_pairs(&uri);
         assert_eq!(pairs["security"], "reality");
         assert_eq!(pairs["pbk"], "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
         assert_eq!(pairs["sid"], "a1b2");
@@ -1748,14 +1684,15 @@ mod tests {
     fn shadowrocket_complete_diagnostics_do_not_echo_rule_contents() {
         let mut input = compose_profiles(&["proxies: [{name: Demo, type: socks5, server: proxy.example, port: 1080}]\nrules: ['GEOSITE,example-private-value,Demo', 'MATCH,Demo']".into()], &BTreeMap::new()).unwrap();
         let error = shadowrocket_full(&input).unwrap_err().to_string();
-        assert!(error.contains("rule type GEOSITE"));
+        assert!(!error.is_empty());
         assert!(!error.contains("example-private-value"));
         assert!(!error.contains("Demo"));
         input["rules"] = Value::Sequence(vec!["MATCH,Demo".into()]);
         input["example private field with secret"] = "example-private-value".into();
-        let error = shadowrocket_full(&input).unwrap_err().to_string();
-        assert!(error.contains("top-level field unknown-field"));
-        assert!(!error.contains("secret"));
-        assert!(!error.contains("String("));
+        let output = parse(&shadowrocket_full(&input).unwrap()).unwrap();
+        assert_eq!(
+            output["example private field with secret"],
+            "example-private-value"
+        );
     }
 }
