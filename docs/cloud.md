@@ -127,31 +127,40 @@ successful profile update automatically publishes again.
 
 ## Output contracts
 
-`GET /sub/{token}` is the default, platform-neutral identity subscription: complete
-merged YAML, with exactly the same content and hash as the legacy `/router` URL.
-Existing identity links are normalized on read without rotating credentials;
-old `/router` links remain compatible. The URL change does not alter runtime defaults.
+`GET /sub/{token}` is the default Auto identity subscription. It selects a complete
+configuration renderer from the request's User-Agent. Missing or unknown clients
+receive complete Clash YAML; recognized clients use their documented configuration
+contract. Auto does not fall back to a nodes-only subscription.
 Optional `GET /sub/{token}/{format}` exports specific formats. Responses include ETag, private/no-cache,
 Content-Disposition, `profile-update-interval: 1` (hours) and revision header.
 Content-Disposition carries the identity or source name as RFC 5987 `filename*` without
 an extension (Clash Verge Rev names the imported profile after it), with an ASCII
 `filename` fallback of `camofy.yaml` or `camofy-{format}.yaml` (`.txt` for nodes).
-Formats: `clash`, `router`, `shadowrocket`, `shadowrocket-nodes`.
+Formats: `clash`, `shadowrocket`, `shadowrocket-nodes`; `auto` explicitly selects
+the default negotiation. The public `/sub/{token}/router` endpoint is removed and
+returns 404, without an alias or redirect.
 
-`clash` excludes router/controller settings so a desktop client's runtime settings
-remain authoritative. `router` fills missing TUN/DNS defaults without overriding
-explicit cloud profiles. Agent local YAML overrides cloud runtime settings; its control API is always loopback and secret
+`clash` is **Clash / Mihomo 完整 YAML**. It preserves explicitly configured runtime
+settings, including ports, TUN, controller fields and DNS listeners, alongside
+nodes, groups and rules. It does not add router defaults. Identity node filtering
+and evidence-based client compatibility checks still apply. Clients may apply
+their own local settings after import.
+
+Agent revision artifacts remain independent of public subscription output. Their
+runtime defaults are unchanged. Agent local YAML overrides cloud runtime settings;
+its control API is always loopback and secret
 protected. Local overrides are read on application/startup; restart the agent to
 apply an edited local file when the cloud revision has not changed.
 
-Shadowrocket nodes are base64 URI lists. Supported conversions are SS (SIP002),
-VMess (v2rayN JSON URI), Trojan and VLESS with basic TCP/WS/TLS options. Full output
-uses Shadowrocket's Clash-compatible YAML import, **not native .conf**. Current
-full compatibility subset: inline nodes/groups and DOMAIN, DOMAIN-SUFFIX,
-DOMAIN-KEYWORD, IP-CIDR, IP-CIDR6, GEOIP, MATCH rules. Proxy/rule providers are not
-expanded for Shadowrocket. Unsupported fields return 422 for that format with a
-diagnostic; they do not silently lose nodes or stop the Clash output. These are
-export capabilities, not a claim of all-protocol/all-version client compatibility.
+Shadowrocket nodes are explicit base64 URI lists with separate protocol/option
+encoder limits. Full output uses Shadowrocket's Clash-compatible YAML import,
+**not native .conf**. It preserves nodes, groups and DNS, and expands supported
+GEOSITE and RULE-SET resources in order. Unconvertible resources and confirmed
+unsupported fields return 422 for that format with a diagnostic. Unknown fields
+are retained and reported; nodes or rules are not silently lost. See
+[client compatibility](client-compatibility.md) for format selection, filtering,
+resource limits and evidence. These are export capabilities, not a claim of
+all-protocol/all-version client compatibility.
 Device-side import tests on actual Shadowrocket and Clash Verge builds are still
 required before asserting end-to-end client compatibility.
 
@@ -163,13 +172,15 @@ an unmodified third-party app.
 
 ## Sync and device behavior
 
-Agent configuration accepts one `/sub/{token}` subscription URL (also accepts legacy
-`/sub/{token}/router`) and derives
-the cloud origin and credential. Both identity and device subscription URLs work;
+Agent configuration accepts a `/sub/{token}` subscription URL and derives
+the cloud origin and credential. Its existing parser can also extract credentials
+from a saved `/sub/{token}/router` URL; it does not request that removed public
+endpoint. Both identity and device subscription credentials work;
 device URLs additionally permit reports and delay tests.
 The agent authenticates to WebSocket `/api/sync/ws` in its first frame (`{token}`).
 Notifications carry only `{"type":"changed"}`. Agent fetches `/api/sync/desired`,
-then downloads merged YAML from its subscription URL and checks the revision header.
+then downloads the manifest's immutable artifact through
+`/api/sync/revisions/{revision}/{format}` and checks the revision header.
 It verifies SHA-256, applies local settings, validates with Mihomo, atomically
 replaces configuration, reloads, applies selections and reports success/failure.
 TLS plus scoped bearer credentials authenticate distribution; hashes detect content

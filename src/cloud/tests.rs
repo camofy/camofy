@@ -877,9 +877,9 @@ async fn cloud_end_to_end() {
     assert_eq!(served.status(), 200);
     assert_eq!(
         served.headers()["content-disposition"],
-        "attachment; filename=\"camofy-router.yaml\"; filename*=UTF-8''Main"
+        "attachment; filename=\"camofy-clash.yaml\"; filename*=UTF-8''Main"
     );
-    assert_eq!(served.headers()["x-camofy-format"], "router");
+    assert_eq!(served.headers()["x-camofy-format"], "clash");
     assert_eq!(
         served.headers()["subscription-userinfo"],
         "upload=100; download=200; total=10000; expire=2000000000"
@@ -1376,7 +1376,7 @@ async fn cloud_end_to_end() {
             .status(),
         304
     );
-    for format in ["router", "shadowrocket", "shadowrocket-nodes"] {
+    for format in ["auto", "shadowrocket", "shadowrocket-nodes"] {
         assert_eq!(
             client
                 .get(format!("{origin}/sub/{secret}/{format}"))
@@ -2010,7 +2010,16 @@ async fn cloud_end_to_end() {
     let etag = neutral.headers()["etag"].clone();
     let revision_header = neutral.headers()["x-camofy-revision"].clone();
     let neutral_yaml = neutral.text().await.unwrap();
-    let legacy = client.get(format!("{url}/router")).send().await.unwrap();
+    assert_eq!(
+        client
+            .get(format!("{url}/router"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+    let legacy = client.get(format!("{url}/clash")).send().await.unwrap();
     assert_eq!(legacy.headers()["etag"], etag);
     assert_eq!(legacy.headers()["x-camofy-revision"], revision_header);
     assert_eq!(legacy.text().await.unwrap(), neutral_yaml);

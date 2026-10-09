@@ -1012,7 +1012,7 @@ export function Editor({
                   </button>
                 }
                 loading={previewBusy}
-                content={currentPreview?.artifacts.router.content}
+                content={currentPreview?.artifacts.clash.content}
                 warnings={currentPreview?.warnings}
                 compatibility={Object.entries(currentPreview?.artifacts ?? {})
                   .filter(([, a]) => a.error)
@@ -1020,8 +1020,8 @@ export function Editor({
                     target:
                       (
                         {
-                          router: "完整 YAML",
-                          clash: "Clash / Mihomo",
+                          router: "Agent 运行配置",
+                          clash: "Clash / Mihomo 完整 YAML",
                           shadowrocket: "Shadowrocket 完整配置",
                           "shadowrocket-nodes": "Shadowrocket 节点",
                         } as Record<string, string>

@@ -600,8 +600,7 @@ function References({ r, link }: { r: Resource; link?: Resource }) {
 }
 const outputFormats = [
   { value: "auto", label: "Auto（自动适配）" },
-  { value: "router", label: "完整 YAML" },
-  { value: "clash", label: "Clash / Mihomo" },
+  { value: "clash", label: "Clash / Mihomo 完整 YAML" },
   { value: "shadowrocket", label: "Shadowrocket 完整配置" },
   { value: "shadowrocket-nodes", label: "Shadowrocket 节点" },
 ];
@@ -643,10 +642,9 @@ function Distribution({ r, children }: { r: Resource; children?: ReactNode }) {
       </label>
       <p className="muted">{format === "auto"
         ? "按客户端能力适配完整配置，保留节点、代理组和分流规则。Shadowrocket 请从配置页导入；未识别时返回完整 YAML。"
-        : format === "router" ? "完整 YAML 保留路由和本地设置；仍应用身份的节点过滤策略。"
         : format === "shadowrocket-nodes" ? "仅包含节点，不包含分流规则和代理组。"
         : format === "shadowrocket" ? "从 Shadowrocket 配置页导入，包含节点、代理组和转换后的分流规则。无法转换的内容会明确提示。"
-        : "Clash YAML 不包含路由器专用的本地运行设置。"}</p>
+        : "保留已配置的节点、代理组、分流规则和运行设置；仍应用身份的节点过滤策略。"}</p>
       {url ? (
         <>
           <label>

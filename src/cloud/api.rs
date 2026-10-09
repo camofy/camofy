@@ -981,6 +981,10 @@ pub async fn preview(
     Path((id, format)): Path<(Uuid, String)>,
 ) -> Result<Json<Value>, Error> {
     let user = auth::user(&app, &h, false).await?;
+    if !crate::client_config::FORMATS.contains(&format.as_str()) {
+        return Err(Error::not_found());
+    }
+
     let mut conn = app.db.acquire().await?;
     let b = store::get(&app, &mut conn, user, id).await?;
     drop(conn);

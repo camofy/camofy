@@ -24,7 +24,6 @@ pub const FORMATS: &[&str] = &[
     "auto",
     "agent",
     "clash",
-    "router",
     "shadowrocket",
     "shadowrocket-nodes",
 ];
@@ -61,7 +60,7 @@ pub fn resolve_format<'a>(
             );
             Ok("clash")
         }
-        None => Ok("router"),
+        None => Ok("clash"),
         Some(_) => anyhow::bail!(
             "Auto 暂未提供此客户端的原生导出格式，请使用支持的客户端或明确选择输出格式"
         ),
@@ -287,12 +286,12 @@ fn adapt_with_sources(
     // agent downloads use the separate revision endpoint and never pass here.
     let mut configuration = Value::Null;
     let content = match format {
-        "router" | "agent" => camofy::engine::mihomo(&filtered.config, true),
+        "agent" => camofy::engine::mihomo(&filtered.config, true),
         "clash" => {
             let capabilities = inspect_configuration(&filtered.config, &report.client);
             configuration = json!({"complete":true,"capabilities":capabilities});
             ensure_configuration_capabilities(&capabilities)
-                .and_then(|()| camofy::engine::mihomo(&filtered.config, false))
+                .and_then(|()| camofy::engine::clash_yaml(&filtered.config))
         },
         "shadowrocket" => config_compat::compile(&filtered.config, config_compat::Target::Shadowrocket, sources)
             .and_then(|compiled| {
@@ -303,7 +302,7 @@ fn adapt_with_sources(
                 ensure_configuration_capabilities(&capabilities)?;
                 configuration = json!({"stats":compiled.stats,"diagnostics":compiled.diagnostics,
                     "complete":true,"capabilities":capabilities,"source_hashes":compiled.source_hashes});
-                camofy::engine::mihomo(&compiled.config, false)
+                camofy::engine::clash_yaml(&compiled.config)
             }),
         "shadowrocket-nodes" => camofy::engine::shadowrocket_nodes(&filtered.config),
         _ => unreachable!(),
@@ -567,8 +566,8 @@ mod tests {
     #[test]
     fn auto_selects_format_separately_from_version_confidence() {
         for (ua, expected) in [
-            (None, "router"),
-            (Some("unknown/1.0"), "router"),
+            (None, "clash"),
+            (Some("unknown/1.0"), "clash"),
             (Some("mihomo/1.19.17"), "clash"),
             (Some("ClashMetaForAndroid/2.10.2.Meta"), "clash"),
             (Some("Stash/3.3.3"), "clash"),
@@ -577,9 +576,43 @@ mod tests {
         ] {
             let detection = compatibility::detect(ua);
             assert_eq!(resolve_format("auto", &detection).unwrap(), expected);
-            assert_eq!(resolve_format("router", &detection).unwrap(), "router");
+            assert!(resolve_format("router", &detection).is_err());
         }
         assert!(resolve_format("auto", &compatibility::detect(Some("sing-box/1.12.0"))).is_err());
+    }
+
+    #[test]
+    fn public_yaml_preserves_explicit_runtime_fields_and_never_injects_defaults() {
+        for content in [
+            "mixed-port: 7898\nallow-lan: false\nbind-address: 127.0.0.1\ninterface-name: test0\nrouting-mark: 42\nexternal-controller: 127.0.0.1:9090\nexternal-ui: dashboard\nsecret: synthetic-secret\ntun: {enable: false, stack: system}\ndns: {enable: true, listen: '127.0.0.1:1053', nameserver: [192.0.2.53]}\nrules: ['MATCH,REJECT']\n",
+            "rules: ['MATCH,REJECT']\n",
+        ] {
+            let expected = camofy::engine::parse(content).unwrap();
+            let artifacts = fixture(content, true);
+            let before = artifacts.clone();
+            let mut public_hash = None;
+            for (format, ua) in [
+                ("clash", None),
+                ("auto", None),
+                ("auto", Some("unknown/1.0")),
+                ("auto", Some("mihomo/1.19.17")),
+                ("auto", Some("Shadowrocket/2.2.90")),
+            ] {
+                let (artifact, report) = adapt(&artifacts, format, ua).unwrap();
+                assert!(artifact["error"].is_null(), "{artifact}");
+                assert_eq!(
+                    camofy::engine::parse(artifact["content"].as_str().unwrap()).unwrap(),
+                    expected
+                );
+                assert_eq!(report.removed, 0);
+                if let Some(hash) = &public_hash {
+                    assert_eq!(&artifact["hash"], hash);
+                }
+                public_hash = Some(artifact["hash"].clone());
+            }
+            assert_eq!(artifacts, before);
+            assert!(adapt(&artifacts, "router", None).is_err());
+        }
     }
 
     #[test]
@@ -654,7 +687,7 @@ mod tests {
                 .unwrap()
                 .contains("clash.group.relay")
         );
-        let (raw, _) = adapt(&artifacts, "router", Some("mihomo/1.19.17")).unwrap();
+        let (raw, _) = adapt(&artifacts, "clash", None).unwrap();
         assert!(raw["error"].is_null());
     }
 
@@ -708,23 +741,19 @@ mod tests {
         let data = json!({"profiles":[{"profile_id":p.id,"enabled":true}]});
         let (artifacts, _) =
             store::render_bundle(std::slice::from_ref(&p), &data, "https://cloud.example").unwrap();
-        let (old, report) = adapt(
-            &artifacts,
-            "router",
-            Some("ClashMetaForAndroid/2.10.2.Meta"),
-        )
-        .unwrap();
+        let (old, report) =
+            adapt(&artifacts, "clash", Some("ClashMetaForAndroid/2.10.2.Meta")).unwrap();
         assert_eq!(report.removed, 1);
         assert!(!old["content"].as_str().unwrap().contains("type: mieru"));
-        let (new, report) = adapt(&artifacts, "router", Some("mihomo/1.19.17")).unwrap();
+        let (new, report) = adapt(&artifacts, "clash", Some("mihomo/1.19.17")).unwrap();
         assert_eq!(report.removed, 0);
-        assert_eq!(new["hash"], artifacts["router"]["hash"]);
+        assert_eq!(new["hash"], artifacts["clash"]["hash"]);
         assert_ne!(old["hash"], new["hash"]);
         let mut disabled = data.clone();
         disabled["node_filter"] = json!({"auto":false,"exclude_types":[]});
         let (disabled, _) = store::render_bundle(&[p], &disabled, "https://cloud.example").unwrap();
         assert_eq!(
-            adapt(&disabled, "router", Some("ClashMetaForAndroid/2.10.2.Meta"))
+            adapt(&disabled, "clash", Some("ClashMetaForAndroid/2.10.2.Meta"))
                 .unwrap()
                 .1
                 .removed,
@@ -736,7 +765,7 @@ mod tests {
             .unwrap()
             .remove("compatibility");
         assert_eq!(
-            adapt(&legacy, "router", Some("ClashMetaForAndroid/2.10.2.Meta"))
+            adapt(&legacy, "clash", Some("ClashMetaForAndroid/2.10.2.Meta"))
                 .unwrap()
                 .1
                 .removed,
@@ -747,13 +776,13 @@ mod tests {
         let cached = adapt_cached(
             revision,
             &artifacts,
-            "router",
+            "clash",
             Some("ClashMetaForAndroid/2.10.2.Meta"),
         )
         .unwrap();
         assert_eq!(cached.0, old);
         assert_eq!(
-            adapt_cached(revision, &artifacts, "router", Some("mihomo/1.19.17"))
+            adapt_cached(revision, &artifacts, "clash", Some("mihomo/1.19.17"))
                 .unwrap()
                 .0["hash"],
             new["hash"]
@@ -762,7 +791,7 @@ mod tests {
             adapt_cached(
                 Uuid::new_v4(),
                 &disabled,
-                "router",
+                "clash",
                 Some("ClashMetaForAndroid/2.10.2.Meta")
             )
             .unwrap()

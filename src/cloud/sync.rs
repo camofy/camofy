@@ -131,6 +131,9 @@ pub async fn subscription(
     serve(app, h, token, format).await
 }
 async fn serve(app: App, h: HeaderMap, token: String, format: String) -> Result<Response, Error> {
+    if !crate::client_config::FORMATS.contains(&format.as_str()) {
+        return Err(Error::not_found());
+    }
     let a = access(&app, &token).await?;
     auth::rate(&app, format!("sub:{}", camofy::digest(&token)), 120, 60).await?;
     let mut conn = app.db.acquire().await?;
@@ -158,9 +161,6 @@ async fn serve(app: App, h: HeaderMap, token: String, format: String) -> Result<
     let records = store::list(&app, &mut tx, a.user).await?;
     let usage = crate::usage::published(&app, &mut tx, a.user, &records, &b).await?;
     tx.commit().await?;
-    if !crate::client_config::FORMATS.contains(&format.as_str()) {
-        return Err(Error::not_found());
-    }
     let mut artifacts = app.vault.open(sealed)?;
     let (artifact, report) = crate::client_config::adapt_request(
         &app,
@@ -214,7 +214,7 @@ async fn serve(app: App, h: HeaderMap, token: String, format: String) -> Result<
 }
 
 /// The stable identity URL selects a format from the requesting client. Complete
-/// YAML remains available at /router; agent revision downloads remain immutable.
+/// YAML remains available at /clash; agent revision downloads remain immutable.
 pub async fn identity_subscription(
     State(app): State<App>,
     h: HeaderMap,

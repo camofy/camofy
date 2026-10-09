@@ -23,7 +23,7 @@ type Preview = {
 };
 const defaultPolicy: Policy = { auto: true, exclude_types: [] };
 const reasons: Record<string, string> = { manual: "指定类型排除", unsupported_protocol: "客户端不支持此协议", unsupported_feature: "客户端不支持此功能", unsupported_output: "导出格式无法无损表达", dependency: "上游节点已排除" };
-const formatNames: Record<string, string> = { router: "完整 YAML", clash: "Clash YAML", shadowrocket: "Shadowrocket 完整配置", "shadowrocket-nodes": "Shadowrocket 节点订阅" };
+const formatNames: Record<string, string> = { clash: "Clash / Mihomo 完整 YAML", shadowrocket: "Shadowrocket 完整配置", "shadowrocket-nodes": "Shadowrocket 节点订阅" };
 const confidence: Record<string, string> = { verified: "已核实内核", bundled: "官方内置内核", documented: "官方版本说明", unknown: "能力未确认" };
 const message = (e: unknown) => e instanceof Error ? e.message : "请求失败，请重试。";
 
@@ -117,7 +117,7 @@ function ClientPreview({ r }: { r: Resource }) {
       <PanelBody><form className="compat-form" onSubmit={e => { e.preventDefault(); void preview(); }}>
         <label>User-Agent<input value={ua} maxLength={512} onChange={e => { invalidate(); setUa(e.target.value); }} placeholder="留空可模拟未提供 User-Agent 的客户端" /></label>
         <FieldActionRow><label>快速示例<select value="" onChange={e => { invalidate(); setUa(e.target.value); }}><option value="" disabled>选择一个公开客户端版本</option><option value="ClashMetaForAndroid/2.10.2.Meta">Clash Meta for Android 2.10.2</option><option value="mihomo/1.19.0">Mihomo 1.19.0</option><option value="mihomo/1.19.17">Mihomo 1.19.17</option><option value="clash-verge/v2.4.5">Clash Verge Rev 2.4.5</option><option value="Stash/3.3.0">Stash 3.3.0</option><option value="Shadowrocket">Shadowrocket（版本未知）</option><option value="Shadowrocket/2.2.90">Shadowrocket 2.2.90</option></select></label>
-          <label>输出格式<select value={format} onChange={e => { invalidate(); setFormat(e.target.value); }}><option value="auto">Auto（自动适配）</option><option value="router">完整 YAML</option><option value="clash">Clash YAML</option><option value="shadowrocket">Shadowrocket 完整配置</option><option value="shadowrocket-nodes">Shadowrocket 节点订阅</option></select></label><button className="primary" disabled={busy}>{busy ? "正在模拟…" : "生成预览"}</button></FieldActionRow>
+          <label>输出格式<select value={format} onChange={e => { invalidate(); setFormat(e.target.value); }}><option value="auto">Auto（自动适配）</option>{Object.entries(formatNames).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><button className="primary" disabled={busy}>{busy ? "正在模拟…" : "生成预览"}</button></FieldActionRow>
       </form></PanelBody>
     </Panel>
     {result && <Panel title={result.report.client.name ? `${result.report.client.name} ${result.report.client.version ?? "版本未知"}` : "未识别客户端"} description={confidence[result.report.client.confidence] ?? "能力未确认"}>

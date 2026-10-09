@@ -503,7 +503,15 @@ proxy-groups:
     assert!(validate(&value).unwrap_err().to_string().contains("cyclic"));
 }
 
-/// Runtime settings belong to the receiving client. Router defaults are opt-in output.
+/// Public Clash YAML preserves the composed configuration without runtime defaults
+/// or blanket field removal. Client-specific adaptations happen before serialization.
+pub fn clash_yaml(v: &Value) -> Result<String> {
+    ensure!(v.is_mapping(), "configuration root must be a mapping");
+    Ok(serde_yaml::to_string(v)?)
+}
+
+/// Internal device artifact rendering. Keep this output stable for existing Agent
+/// revisions; public subscriptions use `clash_yaml` after compatibility adaptation.
 pub fn mihomo(v: &Value, router: bool) -> Result<String> {
     let mut out = if router {
         let mut defaults = parse(include_str!("router-defaults.yaml"))?;
@@ -1120,7 +1128,7 @@ pub fn shadowrocket_full(v: &Value) -> Result<String> {
         crate::config_compat::Target::Shadowrocket,
         &Default::default(),
     )?;
-    mihomo(&compiled.config, false)
+    clash_yaml(&compiled.config)
 }
 
 #[cfg(test)]
@@ -1335,6 +1343,80 @@ mod tests {
         assert_eq!(out["tun"]["enable"].as_bool(), Some(false));
         assert_eq!(out["mixed-port"].as_u64(), Some(1234));
         assert!(out["dns"]["nameserver"].is_sequence());
+    }
+
+    fn explicit_runtime_settings() -> Value {
+        parse(
+            r#"
+mixed-port: 17890
+port: 17891
+socks-port: 17892
+redir-port: 17893
+tproxy-port: 17894
+allow-lan: true
+bind-address: 192.0.2.2
+interface-name: example0
+routing-mark: 1234
+external-controller: 127.0.0.1:19090
+external-controller-unix: /run/example.sock
+external-controller-pipe: example-control
+external-ui: example-dashboard
+external-ui-url: https://dashboard.example/archive.zip
+secret: example-control-secret
+tun: {enable: false, stack: system, auto-route: false}
+dns:
+  enable: false
+  listen: 127.0.0.1:15353
+  enhanced-mode: redir-host
+  nameserver: [https://dns.example/dns-query]
+  nameserver-policy: {'+.example': [https://dns.example/dns-query]}
+proxies: [{name: Example, type: socks5, server: proxy.example, port: 1080}]
+proxy-groups: [{name: Choice, type: select, proxies: [Example]}]
+rules: ['MATCH,Choice']
+"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn public_yaml_preserves_explicit_runtime_settings_and_omitted_defaults() {
+        let input = explicit_runtime_settings();
+        let output = parse(&clash_yaml(&input).unwrap()).unwrap();
+        assert_eq!(output, input);
+
+        for input in [parse("{}").unwrap(), parse(&source()).unwrap()] {
+            let output = parse(&clash_yaml(&input).unwrap()).unwrap();
+            assert_eq!(output, input);
+            assert!(output.get("tun").is_none());
+            assert!(output.get("mixed-port").is_none());
+            assert!(output.get("dns").is_none());
+        }
+
+        // Device artifacts retain their established runtime defaults and local
+        // control boundary independently of public subscription serialization.
+        let device = parse(&mihomo(&input, true).unwrap()).unwrap();
+        assert_eq!(device["tun"]["enable"], false);
+        assert_eq!(device["mixed-port"], 17890);
+        assert!(device["dns"]["default-nameserver"].is_sequence());
+        assert!(device.get("external-controller").is_none());
+        assert!(device.get("secret").is_none());
+    }
+
+    #[test]
+    fn shadowrocket_rule_conversion_preserves_explicit_runtime_settings() {
+        let mut input = explicit_runtime_settings();
+        input["rule-providers"] = parse(
+            "example: {type: inline, behavior: classical, payload: ['DOMAIN,blocked.example']}",
+        )
+        .unwrap();
+        input["rules"] =
+            serde_yaml::from_str("['RULE-SET,example,REJECT', 'MATCH,Choice']").unwrap();
+        let output = parse(&shadowrocket_full(&input).unwrap()).unwrap();
+        assert!(output.get("rule-providers").is_none());
+        assert_eq!(output["rules"][0], "DOMAIN,blocked.example,REJECT");
+        input.as_mapping_mut().unwrap().remove("rule-providers");
+        input["rules"] = output["rules"].clone();
+        assert_eq!(output, input);
     }
 
     fn export_node(fields: &str) -> Value {

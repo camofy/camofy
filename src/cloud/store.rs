@@ -1229,7 +1229,7 @@ pub fn render_bundle(
     let mut artifacts = serde_json::Map::new();
     for (format, result) in [
         ("agent", camofy::engine::mihomo(&base, true)),
-        ("clash", camofy::engine::mihomo(&v, false)),
+        ("clash", camofy::engine::clash_yaml(&v)),
         ("router", camofy::engine::mihomo(&v, true)),
         ("shadowrocket-nodes", camofy::engine::shadowrocket_nodes(&v)),
         ("shadowrocket", camofy::engine::shadowrocket_full(&v)),

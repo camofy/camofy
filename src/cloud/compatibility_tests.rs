@@ -98,7 +98,7 @@ async fn compatibility_http_end_to_end() {
     )
     .await;
     assert!(matrix["clients"].as_array().unwrap().len() >= 15);
-    let source = call(&client,&origin,&sessions[0],"POST","/resources",json!({"kind":"profile","data":{"name":"Fixture","type":"overlay","content":"proxies: [{name: Classic, type: ss, server: proxy.example, port: 443, cipher: aes-256-gcm, password: sample}, {name: Mieru, type: mieru, server: proxy.example, port: 443, username: sample, password: sample, transport: TCP}, {name: AnyTLS, type: anytls, server: proxy.example, port: 443, password: sample}]\nproxy-groups: [{name: Choose, type: select, proxies: [Mieru, AnyTLS, Classic]}]\nrules: ['MATCH,Choose']"}}),200).await;
+    let source = call(&client,&origin,&sessions[0],"POST","/resources",json!({"kind":"profile","data":{"name":"Fixture","type":"overlay","content":"mixed-port: 7898\nexternal-controller: 127.0.0.1:9090\nsecret: synthetic-secret\ntun: {enable: false}\ndns: {enable: true, listen: '127.0.0.1:1053', nameserver: [192.0.2.53]}\nproxies: [{name: Classic, type: ss, server: proxy.example, port: 443, cipher: aes-256-gcm, password: sample}, {name: Mieru, type: mieru, server: proxy.example, port: 443, username: sample, password: sample, transport: TCP}, {name: AnyTLS, type: anytls, server: proxy.example, port: 443, password: sample}]\nproxy-groups: [{name: Choose, type: select, proxies: [Mieru, AnyTLS, Classic]}]\nrules: ['MATCH,Choose']"}}),200).await;
     let data = json!({"name":"Fixture identity","profiles":[{"profile_id":source["id"],"enabled":true}],"selections":{"Choose":"Classic"}});
     let bundle = call(
         &client,
@@ -156,19 +156,58 @@ async fn compatibility_http_end_to_end() {
         .unwrap();
     assert_eq!(head.headers()["etag"], old_etag);
     assert!(head.bytes().await.unwrap().is_empty());
+    for method in [reqwest::Method::GET, reqwest::Method::HEAD] {
+        assert_eq!(
+            client
+                .request(method, format!("{sub}/router"))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            404
+        );
+    }
+    call(
+        &client,
+        &origin,
+        &sessions[0],
+        "GET",
+        &format!("/bundles/{id}/preview/router"),
+        json!(null),
+        404,
+    )
+    .await;
     let full = client
-        .get(format!("{sub}/router"))
+        .get(format!("{sub}/clash"))
         .header("User-Agent", "Shadowrocket/99.0.0")
         .send()
         .await
         .unwrap();
     assert_eq!(full.status(), 200);
-    assert_eq!(full.headers()["x-camofy-format"], "router");
+    assert_eq!(full.headers()["x-camofy-format"], "clash");
     assert!(
         full.headers()["content-type"]
             .to_str()
             .unwrap()
             .contains("yaml")
+    );
+    let full_yaml = camofy::engine::parse(&full.text().await.unwrap()).unwrap();
+    assert_eq!(full_yaml["mixed-port"], 7898);
+    assert_eq!(full_yaml["external-controller"], "127.0.0.1:9090");
+    assert_eq!(full_yaml["secret"], "synthetic-secret");
+    assert_eq!(full_yaml["tun"]["enable"], false);
+    assert_eq!(full_yaml["dns"]["listen"], "127.0.0.1:1053");
+    assert!(full_yaml.get("allow-lan").is_none());
+    let neutral = client
+        .get(sub)
+        .header("User-Agent", "Unknown/1.0")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(neutral.headers()["x-camofy-format"], "clash");
+    assert_eq!(
+        camofy::engine::parse(&neutral.text().await.unwrap()).unwrap(),
+        full_yaml
     );
     let auto = client
         .get(format!("{sub}/auto"))
@@ -206,6 +245,9 @@ async fn compatibility_http_end_to_end() {
             .iter()
             .any(|node| node["type"] == "ss")
     );
+    assert_eq!(complete["dns"], full_yaml["dns"]);
+    assert_eq!(complete["tun"], full_yaml["tun"]);
+    assert_eq!(complete["secret"], full_yaml["secret"]);
     assert!(complete["rules"].is_sequence());
     assert!(complete["proxy-groups"].is_sequence());
     assert_ne!(sr_etag, old_etag);

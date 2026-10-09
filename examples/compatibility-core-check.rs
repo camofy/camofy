@@ -47,7 +47,7 @@ fn main() -> anyhow::Result<()> {
         config["profile"] = serde_yaml::from_str("store-selected: false\nstore-fake-ip: false")?;
         config["dns"] = serde_yaml::from_str("enable: false")?;
         fixtures.push(
-            json!({"name":name, "config":engine::mihomo(&config, false)?, "expected":["REJECT"]}),
+            json!({"name":name, "config":engine::clash_yaml(&config)?, "expected":["REJECT"]}),
         );
     }
     let source = engine::parse(
@@ -101,7 +101,7 @@ rules:
     )?;
     fixtures.push(json!({
         "name": "rule_compilation_equivalence", "kind": "rule_equivalence",
-        "source": serde_yaml::to_string(&source)?, "compiled": serde_yaml::to_string(&compiled.config)?,
+        "source": engine::clash_yaml(&source)?, "compiled": engine::clash_yaml(&compiled.config)?,
         "requests": [
             {"host":"first.example", "policy":"First"},
             {"host":"site.example", "policy":"Nested"},

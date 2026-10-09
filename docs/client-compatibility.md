@@ -88,12 +88,20 @@ that exact version has a verified capability profile:
 
 | Request | Selected output |
 | --- | --- |
-| Clash/Mihomo, Stash and other recognized Clash-format apps | Clash YAML, without router-local settings |
+| Clash/Mihomo, Stash and other recognized Clash-format apps | Complete Clash YAML, retaining explicitly configured runtime settings |
 | Shadowrocket | Complete Clash YAML import, including groups, expanded routing resources and DNS configuration; field-level unknowns are reported |
 | Missing or unrecognized User-Agent | Complete YAML, with an unknown-client warning in preview |
 | Recognized native-format family without an implemented exporter | Explicit format-unavailable error; no mislabeled YAML |
 
-**完整 YAML** uses `/router`. Other explicit format suffixes remain available;
+**Clash / Mihomo 完整 YAML** uses `/clash`. It preserves configured runtime fields
+alongside nodes, groups, rules and DNS; it neither injects router defaults nor
+blanket-removes ports, TUN, controller or DNS listener fields. Identity node
+filtering and evidence-based client compatibility checks still apply. Missing or
+unrecognized User-Agent selects this same renderer. The public `/router` suffix
+has been removed and returns 404, with no redirect or alias. Agent revision
+downloads retain their independent immutable artifact contract.
+
+Other explicit format suffixes remain available;
 `/shadowrocket-nodes` is an explicitly requested node subscription. Auto never
 chooses it. Explicit node-link exports reject unrepresentable fields instead of
 silently dropping options. With automatic node filtering disabled, format selection
