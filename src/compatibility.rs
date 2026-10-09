@@ -117,7 +117,7 @@ fn version(s: &str) -> Option<([u32; 3], String)> {
         format!("{}.{}.{}", numbers[0], numbers[1], numbers[2]),
     ))
 }
-fn token_version<'a>(ua: &'a str, lower: &str, token: &str) -> Option<Option<&'a str>> {
+fn token_version<'a>(ua: &'a str, lower: &str, token: &str) -> Option<(usize, Option<&'a str>)> {
     for (at, _) in lower.match_indices(token) {
         let end = at + token.len();
         if at > 0 && !matches!(lower.as_bytes()[at - 1], b' ' | b'(' | b';') {
@@ -128,10 +128,13 @@ fn token_version<'a>(ua: &'a str, lower: &str, token: &str) -> Option<Option<&'a
         }
         let tail = &ua[end..];
         if !tail.starts_with('/') && !tail.starts_with(" v") {
-            return Some(None);
+            return Some((at, None));
         }
         let value = tail.trim_start_matches(['/', ' ']);
-        return Some(Some(value.split([' ', ';', ')', '(']).next().unwrap_or("")));
+        return Some((
+            at,
+            Some(value.split([' ', ';', ')', '(']).next().unwrap_or("")),
+        ));
     }
     None
 }
@@ -146,13 +149,8 @@ pub fn detect(ua: Option<&str>) -> Detection {
     let mut matches = Vec::new();
     for client in &registry().clients {
         for token in &client.tokens {
-            if let Some(raw) = token_version(ua, &lower, token) {
-                matches.push((
-                    client,
-                    lower.find(token).unwrap_or(usize::MAX),
-                    token.len(),
-                    raw.and_then(version),
-                ));
+            if let Some((at, raw)) = token_version(ua, &lower, token) {
+                matches.push((client, at, token.len(), raw.and_then(version)));
             }
         }
     }
@@ -315,6 +313,12 @@ mod tests {
                 .as_deref(),
             Some("mihomo")
         );
+        assert_eq!(
+            detect(Some("notclash/1.0 FlClash/v0.8.99 Clash/1.18.0"))
+                .family
+                .as_deref(),
+            Some("flclash")
+        );
     }
     #[test]
     fn original_clash_xray_and_platform_version_spaces_remain_distinct() {
@@ -380,5 +384,49 @@ mod tests {
                 .capabilities()
                 .is_none()
         );
+    }
+    #[test]
+    fn reviewed_source_branches_keep_legacy_trojan_and_vision_supported() {
+        for ua in [
+            "mihomo/1.15.0",
+            "ClashMetaForAndroid/2.8.0.Meta",
+            "ClashMetaForAndroid/2.8.8.Meta",
+        ] {
+            let profile = detect(Some(ua)).capabilities().unwrap();
+            assert_eq!(profile.feature("trojan.ws"), Support::Supported, "{ua}");
+            assert_eq!(profile.feature("trojan.grpc"), Support::Supported, "{ua}");
+        }
+        let profile = detect(Some("mihomo/1.19.0")).capabilities().unwrap();
+        assert_eq!(
+            profile.feature("vless.xtls-rprx-vision"),
+            Support::Supported
+        );
+        // An unrecognized implementation shape or an absent field is not a
+        // verified negative. Explicit TCP-only rejection remains a negative.
+        assert_eq!(profile.feature("vless.xhttp"), Support::Unknown);
+        assert_eq!(profile.feature("mieru.traffic-pattern"), Support::Unknown);
+        assert_eq!(profile.feature("mieru.udp-transport"), Support::Unsupported);
+    }
+    #[test]
+    fn stash_reality_support_is_scoped_to_its_transport() {
+        for ua in ["Stash/3.3.3", "Stash/3.4.0", "Stash/3.5.0"] {
+            let profile = detect(Some(ua)).capabilities().unwrap();
+            assert_eq!(profile.feature("vless.reality.tcp"), Support::Supported);
+            for network in ["ws", "h2", "http", "grpc", "xhttp", "httpupgrade"] {
+                assert_eq!(
+                    profile.feature(&format!("vless.reality.{network}")),
+                    Support::Unsupported,
+                    "{ua}: {network}"
+                );
+            }
+        }
+        let current = detect(Some("Stash/3.6.0")).capabilities().unwrap();
+        assert_eq!(current.feature("vless.reality.ws"), Support::Supported);
+        assert_eq!(current.feature("vless.reality.xhttp"), Support::Supported);
+        assert_eq!(
+            current.feature("vless.reality.unverified"),
+            Support::Unknown
+        );
+        assert!(detect(Some("Stash/99.0.0")).capabilities().is_none());
     }
 }

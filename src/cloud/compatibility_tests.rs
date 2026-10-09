@@ -99,8 +99,7 @@ async fn compatibility_http_end_to_end() {
     .await;
     assert!(matrix["clients"].as_array().unwrap().len() >= 15);
     let source = call(&client,&origin,&sessions[0],"POST","/resources",json!({"kind":"profile","data":{"name":"Fixture","type":"overlay","content":"proxies: [{name: Classic, type: ss, server: proxy.example, port: 443, cipher: aes-256-gcm, password: sample}, {name: Mieru, type: mieru, server: proxy.example, port: 443, username: sample, password: sample, transport: TCP}, {name: AnyTLS, type: anytls, server: proxy.example, port: 443, password: sample}]\nproxy-groups: [{name: Choose, type: select, proxies: [Mieru, AnyTLS, Classic]}]\nrules: ['MATCH,Choose']"}}),200).await;
-    let data =
-        json!({"name":"Fixture identity","profiles":[{"profile_id":source["id"],"enabled":true}]});
+    let data = json!({"name":"Fixture identity","profiles":[{"profile_id":source["id"],"enabled":true}],"selections":{"Choose":"Classic"}});
     let bundle = call(
         &client,
         &origin,
@@ -133,6 +132,7 @@ async fn compatibility_http_end_to_end() {
         .unwrap();
     assert_eq!(response.status(), 200);
     assert_eq!(response.headers()["vary"], "User-Agent");
+    assert_eq!(response.headers()["x-camofy-format"], "clash");
     assert_eq!(response.headers()["x-camofy-filtered"], "2");
     let old_etag = response.headers()["etag"].clone();
     let content = response.text().await.unwrap();
@@ -156,6 +156,68 @@ async fn compatibility_http_end_to_end() {
         .unwrap();
     assert_eq!(head.headers()["etag"], old_etag);
     assert!(head.bytes().await.unwrap().is_empty());
+    let full = client
+        .get(format!("{sub}/router"))
+        .header("User-Agent", "Shadowrocket/99.0.0")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(full.status(), 200);
+    assert_eq!(full.headers()["x-camofy-format"], "router");
+    assert!(
+        full.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .contains("yaml")
+    );
+    let auto = client
+        .get(format!("{sub}/auto"))
+        .header("User-Agent", old)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(auto.headers()["etag"], old_etag);
+    let sr = client
+        .get(sub)
+        .header("User-Agent", "Shadowrocket/99.0.0")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(sr.status(), 200);
+    assert_eq!(sr.headers()["x-camofy-format"], "shadowrocket-nodes");
+    assert!(
+        sr.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .contains("text/plain")
+    );
+    assert!(
+        sr.headers()["content-disposition"]
+            .to_str()
+            .unwrap()
+            .contains(".txt")
+    );
+    let sr_etag = sr.headers()["etag"].clone();
+    let links = String::from_utf8(STANDARD.decode(sr.text().await.unwrap()).unwrap()).unwrap();
+    assert!(links.lines().any(|line| line.starts_with("ss://")));
+    assert_ne!(sr_etag, old_etag);
+    let sr_cached = client
+        .head(sub)
+        .header("User-Agent", "Shadowrocket/99.0.0")
+        .header("If-None-Match", &sr_etag)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(sr_cached.status(), 304);
+    assert_eq!(sr_cached.headers()["x-camofy-format"], "shadowrocket-nodes");
+    assert!(sr_cached.bytes().await.unwrap().is_empty());
+    let unsupported = client
+        .get(sub)
+        .header("User-Agent", "sing-box/1.12.0")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unsupported.status(), 422);
     for ua in [new, "clash.meta", "Unrecognized/1.0"] {
         let response = client
             .get(sub)
@@ -234,6 +296,23 @@ async fn compatibility_http_end_to_end() {
     assert_eq!(download.status(), 200);
     let raw = download.bytes().await.unwrap();
     assert_eq!(camofy::digest(&raw), manifest["hash"].as_str().unwrap());
+    let agent_preview = call(
+        &client,
+        &origin,
+        &sessions[0],
+        "GET",
+        &format!("/bundles/{id}/preview/agent"),
+        json!(null),
+        200,
+    )
+    .await;
+    assert_eq!(agent_preview["hash"], manifest["control"]["hash"]);
+    assert!(
+        !agent_preview["content"]
+            .as_str()
+            .unwrap()
+            .contains("default-selected")
+    );
     let mut manual = data.clone();
     manual["node_filter"] = json!({"auto":false,"exclude_types":["anytls"]});
     let mut edited = call(

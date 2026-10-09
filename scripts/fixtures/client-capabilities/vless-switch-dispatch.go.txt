@@ -1,0 +1,19 @@
+// Structural fixture based on the official v1.19.0 implementation:
+// https://github.com/MetaCubeX/mihomo/blob/v1.19.0/adapter/outbound/vless.go
+func route(option FixtureOption) {
+    switch option.Network {
+    case "ws":
+        stream.StreamWebsocketConn()
+    case "grpc":
+        stream.StreamGunWithConn()
+    case "h2":
+        stream.StreamH2Conn()
+    case "http":
+        stream.StreamHTTPConn()
+    default:
+        stream.StreamTLSConn()
+    }
+    if option.Flow == vless.XRV {
+        enableFlow()
+    }
+}

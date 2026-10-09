@@ -21,9 +21,17 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: node --check site/site-assets/site.js && node --test site/tests/site.test.cjs
       - run: node --check src/agent/pair.js && node --test scripts/test-agent-ui.cjs
+      - run: node --test scripts/test-client-capability-evidence.mjs
       - run: cargo fmt --all -- --check
       - run: sh scripts/test-installer.sh "$PWD/install.sh"
       - run: cargo test --locked --lib --bin camofy-cloud
+      - name: Verify filtered configs with pinned Mihomo
+        run: |
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/mihomo.gz" https://github.com/MetaCubeX/mihomo/releases/download/v1.19.17/mihomo-linux-amd64-compatible-v1.19.17.gz
+          echo "960d48079d4e4a23e7aa35fbd1b7e523cff35000f15f40caf5d97a0bd5333cfb  $RUNNER_TEMP/mihomo.gz" | sha256sum --check
+          gzip -dc "$RUNNER_TEMP/mihomo.gz" > "$RUNNER_TEMP/mihomo"
+          chmod 700 "$RUNNER_TEMP/mihomo"
+          python3 scripts/test-mihomo-compatibility.py --core "$RUNNER_TEMP/mihomo"
       - run: cargo test --locked --bin camofy-cloud compatibility_http_end_to_end -- --ignored
         env:
           TEST_DATABASE_URL: postgres://postgres:test-only@localhost:5432/camofy_test

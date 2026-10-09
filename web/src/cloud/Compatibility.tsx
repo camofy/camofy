@@ -10,11 +10,12 @@ type Profile = { name: string; protocols: string[]; unsupported_protocols?: stri
 type Client = { id: string; name: string; format: string; notes: string; releases: { version: string; profile: string | null; evidence: string; confidence: string; prerelease?: boolean }[]; ranges: { min: string; max: string; profile: string }[] };
 type Matrix = { version: string; checked_at: string; protocols: string[]; clients: Client[]; profiles: Record<string, Profile> };
 type Preview = {
-  content?: string; error?: string;
+  content?: string; error?: string; format?: string;
   report: { client: { name?: string; version?: string; confidence: string }; before: number; retained: number; removed: number; repaired_references: number; blocked_groups: string[]; warnings: string[]; unknown_capabilities: string[]; exclusions: { name: string; protocol: string; reason: string; capability: string }[] };
 };
 const defaultPolicy: Policy = { auto: true, exclude_types: [] };
-const reasons: Record<string, string> = { manual: "指定类型排除", unsupported_protocol: "不支持此协议", unsupported_feature: "不支持此功能", dependency: "上游节点已排除" };
+const reasons: Record<string, string> = { manual: "指定类型排除", unsupported_protocol: "客户端不支持此协议", unsupported_feature: "客户端不支持此功能", unsupported_output: "导出格式无法无损表达", dependency: "上游节点已排除" };
+const formatNames: Record<string, string> = { router: "完整 YAML", clash: "Clash YAML", shadowrocket: "Shadowrocket 完整配置", "shadowrocket-nodes": "Shadowrocket 节点订阅" };
 const confidence: Record<string, string> = { verified: "已核实内核", bundled: "官方内置内核", documented: "官方版本说明", unknown: "能力未确认" };
 const message = (e: unknown) => e instanceof Error ? e.message : "请求失败，请重试。";
 
@@ -84,8 +85,10 @@ function PolicyPanel({ r, matrix, onPreview }: { r: Resource; matrix?: Matrix; o
 }
 
 function ClientPreview({ r }: { r: Resource }) {
+  const [params, setParams] = useSearchParams();
   const [ua, setUa] = useState("");
-  const [format, setFormat] = useState("router");
+  const format = ["auto", ...Object.keys(formatNames)].includes(params.get("preview_format") ?? "") ? params.get("preview_format")! : "auto";
+  function setFormat(value: string) { const next = new URLSearchParams(params); next.set("preview_format", value); setParams(next, { replace: true }); }
   const [result, setResult] = useState<Preview>();
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -106,11 +109,12 @@ function ClientPreview({ r }: { r: Resource }) {
       <PanelBody><form className="compat-form" onSubmit={e => { e.preventDefault(); void preview(); }}>
         <label>User-Agent<input value={ua} maxLength={512} onChange={e => { invalidate(); setUa(e.target.value); }} placeholder="留空可模拟未提供 User-Agent 的客户端" /></label>
         <FieldActionRow><label>快速示例<select value="" onChange={e => { invalidate(); setUa(e.target.value); }}><option value="" disabled>选择一个公开客户端版本</option><option value="ClashMetaForAndroid/2.10.2.Meta">Clash Meta for Android 2.10.2</option><option value="mihomo/1.19.0">Mihomo 1.19.0</option><option value="mihomo/1.19.17">Mihomo 1.19.17</option><option value="clash-verge/v2.4.5">Clash Verge Rev 2.4.5</option><option value="Stash/3.3.0">Stash 3.3.0</option></select></label>
-          <label>输出格式<select value={format} onChange={e => { invalidate(); setFormat(e.target.value); }}><option value="router">Clash YAML（含路由设置）</option><option value="clash">Clash YAML</option><option value="shadowrocket">Shadowrocket 配置</option><option value="shadowrocket-nodes">Shadowrocket 节点链接</option></select></label><button className="primary" disabled={busy}>{busy ? "正在模拟…" : "生成预览"}</button></FieldActionRow>
+          <label>输出格式<select value={format} onChange={e => { invalidate(); setFormat(e.target.value); }}><option value="auto">Auto（自动适配）</option><option value="router">完整 YAML</option><option value="clash">Clash YAML</option><option value="shadowrocket">Shadowrocket 完整配置</option><option value="shadowrocket-nodes">Shadowrocket 节点订阅</option></select></label><button className="primary" disabled={busy}>{busy ? "正在模拟…" : "生成预览"}</button></FieldActionRow>
       </form></PanelBody>
     </Panel>
     {result && <Panel title={result.report.client.name ? `${result.report.client.name} ${result.report.client.version ?? "版本未知"}` : "未识别客户端"} description={confidence[result.report.client.confidence] ?? "能力未确认"}>
       <PanelBody><div className="compat-counts" role="status"><span>原始节点 <strong>{result.report.before}</strong></span><span>已排除 <strong>{result.report.removed}</strong></span><span>保留 <strong>{result.report.retained}</strong></span><span>引用修复 <strong>{result.report.repaired_references}</strong></span></div>
+        {result.format && <p className="muted">实际输出：{formatNames[result.format] ?? result.format}</p>}
         {result.report.warnings.map(w => <p className="muted" key={w}>{w}</p>)}
         {result.report.blocked_groups.length > 0 && <p className="muted">以下分组已设为拒绝连接，以保留规则并避免绕过原有链路：{result.report.blocked_groups.join("、")}</p>}
         {result.report.unknown_capabilities.length > 0 && <details><summary>尚未确认的能力（{result.report.unknown_capabilities.length}）</summary><p className="muted">这些能力不会触发自动删除。</p><div className="compat-tags">{result.report.unknown_capabilities.map(key => <code key={key}>{key}</code>)}</div></details>}
@@ -118,7 +122,7 @@ function ClientPreview({ r }: { r: Resource }) {
       {result.report.exclusions.length > 0 && <div className="table-wrap"><table className="resource-table compat-table"><caption className="sr-only">节点排除原因</caption><thead><tr><th>节点</th><th>协议</th><th>原因</th></tr></thead><tbody>{result.report.exclusions.map((node, index) => <tr key={index}><td>{node.name}</td><td><code>{node.protocol}</code></td><td>{reasons[node.reason] ?? node.reason}<small>{node.capability}</small></td></tr>)}</tbody></table></div>}
       {result.report.removed > result.report.exclusions.length && <PanelBody><p className="muted">最多展示前 200 条排除记录。</p></PanelBody>}
     </Panel>}
-    <ConfigPreview title="客户端收到的配置" content={result?.content} error={error || result?.error} loading={busy} empty="输入请求头后生成预览，查看节点和分组的最终输出。" />
+    <ConfigPreview title="客户端收到的配置" formatLabel={result?.format === "shadowrocket-nodes" ? "Base64 节点订阅" : "YAML"} content={result?.content} error={error || result?.error} loading={busy} empty="输入请求头后生成预览，查看节点和分组的最终输出。" />
   </>;
 }
 

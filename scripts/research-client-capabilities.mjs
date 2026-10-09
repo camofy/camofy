@@ -7,6 +7,7 @@ import { inflateRawSync } from 'node:zlib';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { checkoutRepository, mieruFeatures, transportFeatures, visionSupported } from './client-capability-evidence.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cache = path.join(tmpdir(), 'camofy-public-client-research');
@@ -67,10 +68,9 @@ async function concurrent(items, action, limit=6) {
 }
 function checkout(repo) {
   const dir=path.join(cache,repo.split('/')[1]);
-  if(!existsSync(dir)) git('-c','credential.helper=','clone','--bare','--filter=blob:none','--depth=1','--no-single-branch',`https://github.com/${repo}.git`,dir);
-  return dir;
+  return checkoutRepository(dir, `https://github.com/${repo}.git`);
 }
-const registry={schema_version:1,version:'2026-10-09.1',checked_at:'2026-10-09',profiles:{},clients:[],protocols:[]};
+const registry={schema_version:1,version:'2026-10-10.1',checked_at:'2026-10-10',profiles:{},clients:[],protocols:[]};
 const pendingProfiles=new Map();
 function coreProfile(repo, ref) {
   const id=`${repo.replaceAll('/','-').toLowerCase()}-${ref}`;
@@ -89,20 +89,17 @@ function coreProfile(repo, ref) {
       const src=await read(`${base}/adapter/outbound/${protocol}.go`);
       evidence.push(`https://github.com/${repo}/blob/${ref}/adapter/outbound/${protocol}.go`);
       if(protocol==='mieru') {
-        for(const [key,pattern] of Object.entries({
-          'mieru.udp-transport':'TransportProtocol_UDP','mieru.udp-relay':'option.UDP',
-          'mieru.multiplexing':'Multiplexing','mieru.handshake-mode':'HandshakeMode',
-          'mieru.traffic-pattern':'TrafficPattern',
-        })) features[key]=src.includes(pattern);
+        Object.assign(features, mieruFeatures(src));
       } else {
-        // Network dispatch is explicit in these adapters; absent cases cannot
-        // silently be upgraded to a supported transport.
-        for(const transport of ['ws','grpc','h2','http','xhttp','httpupgrade']) {
-          if(src.includes(`case "${transport}"`)) features[`${protocol}.${transport}`]=true;
-          else if(/switch\s+\w+\.Network/.test(src)) features[`${protocol}.${transport}`]=false;
-        }
+        Object.assign(features, transportFeatures(src, protocol));
         if(src.includes('Reality')) features[`${protocol}.reality`]=true;
-        if(src.includes('xtls-rprx-vision')) features[`${protocol}.xtls-rprx-vision`]=true;
+        if(protocol==='vless' && /\bvless\.XRV\b/.test(src)) {
+          const vless=await read(`${base}/transport/vless/vless.go`, true);
+          if(visionSupported(src, vless)) {
+            features['vless.xtls-rprx-vision']=true;
+            evidence.push(`https://github.com/${repo}/blob/${ref}/transport/vless/vless.go`);
+          }
+        }
       }
     }
     registry.profiles[id]={name:`${repo.split('/')[1]} ${ref.slice(0,12)}`,protocols,complete_protocols:true,features,evidence};
@@ -156,10 +153,7 @@ const classicReleases=await concurrent(classicTags,async tag=>{
   for(const protocol of ['vmess','trojan']) {
     const src=zipMember(zip,`adapter/outbound/${protocol}.go`) || zipMember(zip,`adapters/outbound/${protocol}.go`);
     if(!src) continue;
-    for(const transport of ['ws','grpc','h2','http','xhttp','httpupgrade']) {
-      if(src.includes(`case "${transport}"`)) features[`${protocol}.${transport}`]=true;
-      else if(/switch\s+\w+\.Network/.test(src)) features[`${protocol}.${transport}`]=false;
-    }
+    Object.assign(features, transportFeatures(src, protocol));
   }
   const id='clash-'+tag;
   registry.profiles[id]={name:`Clash ${tag}`,protocols,complete_protocols:true,features,evidence:[evidence,goProxy+tag+'.zip']};
@@ -210,10 +204,17 @@ function profile(id,name,protocols,features,evidence,unsupported_protocols=[]) {
 function client(id,name,tokens,format,notes,ranges=[]) {registry.clients.push({id,name,tokens,format,notes,releases:[],ranges});}
 const stashDoc='https://stash.wiki/proxy-protocols/proxy-types';
 const stashBase=['ss','ssr','socks5','http','vmess','snell','trojan','hysteria','hysteria2','vless','wireguard','tuic'];
+// Stash 3.3.3 introduced VLESS Reality only over TCP. The 3.6 protocol
+// documentation explicitly extends Reality to the documented transports.
+const stashTcpReality=Object.fromEntries(['tcp','ws','h2','http','grpc','xhttp','httpupgrade'].map(network=>[`vless.reality.${network}`, network==='tcp']));
+const stashAllReality=Object.fromEntries(['vless','vmess','trojan'].flatMap(protocol=>{
+  const networks=protocol==='vless'?['tcp','ws','h2','http','grpc','xhttp']:protocol==='vmess'?['tcp','ws','h2','http','grpc']:['tcp','ws','grpc'];
+  return networks.map(network=>[`${protocol}.reality.${network}`,true]);
+}));
 profile('stash-3.3','Stash iOS 3.3.0–3.3.2', [...stashBase,'anytls'], {'vless.reality':false,'vless.xhttp':false,'vmess.reality':false,'trojan.reality':false,'snell.v4':false,'snell.v5':false},[stashDoc,'https://stash.wiki/release-notes/ios'],['mieru','masque','tailscale']);
-profile('stash-3.3.3','Stash iOS 3.3.3', [...stashBase,'anytls'], {'vless.reality':true,'vless.xhttp':false,'vmess.reality':false,'trojan.reality':false,'snell.v4':false,'snell.v5':false},[stashDoc,'https://stash.wiki/release-notes/ios'],['mieru','masque','tailscale']);
-profile('stash-3.4','Stash iOS 3.4–3.5',[...stashBase,'anytls','tailscale'],{'vless.reality':true,'vless.xhttp':false,'vmess.reality':false,'trojan.reality':false,'snell.v4':false,'snell.v5':false},[stashDoc],['mieru','masque']);
-profile('stash-3.6','Stash iOS 3.6 / macOS 4.3',[...stashBase,'anytls','tailscale','mieru','masque','trusttunnel'],{'vless.xhttp':true,'vless.reality':true,'vmess.reality':true,'trojan.reality':true,'mieru.udp-transport':true},[stashDoc]);
+profile('stash-3.3.3','Stash iOS 3.3.3', [...stashBase,'anytls'], {'vless.reality':true,...stashTcpReality,'vless.xhttp':false,'vmess.reality':false,'trojan.reality':false,'snell.v4':false,'snell.v5':false},[stashDoc,'https://stash.wiki/release-notes/ios'],['mieru','masque','tailscale']);
+profile('stash-3.4','Stash iOS 3.4–3.5',[...stashBase,'anytls','tailscale'],{'vless.reality':true,...stashTcpReality,'vless.xhttp':false,'vmess.reality':false,'trojan.reality':false,'snell.v4':false,'snell.v5':false},[stashDoc,'https://stash.wiki/release-notes/ios'],['mieru','masque']);
+profile('stash-3.6','Stash iOS 3.6 / macOS 4.3',[...stashBase,'anytls','tailscale','mieru','masque','trusttunnel'],{'vless.xhttp':true,'vless.reality':true,'vmess.reality':true,'trojan.reality':true,...stashAllReality,'mieru.udp-transport':true},[stashDoc]);
 client('stash','Stash（iOS / tvOS）',['stash'],'clash','版本规则来自官方协议文档。未识别的平台或构建号不映射为 iOS 版本。',[
   {min:'3.3.0',max:'3.3.2',profile:'stash-3.3'},{min:'3.3.3',max:'3.3.99',profile:'stash-3.3.3'},{min:'3.4.0',max:'3.5.99',profile:'stash-3.4'},{min:'3.6.0',max:'3.6.99',profile:'stash-3.6'}]);
 client('stash-mac','Stash Mac',['stashmac','stash mac'],'clash','macOS 与 iOS 版本分别匹配。', [{min:'4.3.0',max:'4.3.99',profile:'stash-3.6'}]);

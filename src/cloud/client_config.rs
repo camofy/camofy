@@ -19,12 +19,35 @@ use std::{
 use uuid::Uuid;
 
 pub const FORMATS: &[&str] = &[
+    "auto",
     "agent",
     "clash",
     "router",
     "shadowrocket",
     "shadowrocket-nodes",
 ];
+
+/// Format selection is separate from version-specific node capabilities. A known
+/// product can select its format even when its exact core version is unverified.
+pub fn resolve_format<'a>(
+    requested: &'a str,
+    client: &compatibility::Detection,
+) -> anyhow::Result<&'a str> {
+    anyhow::ensure!(FORMATS.contains(&requested), "unsupported output format");
+    if requested != "auto" {
+        return Ok(requested);
+    }
+    if client.family.as_deref() == Some("shadowrocket") {
+        return Ok("shadowrocket-nodes");
+    }
+    match client.format.as_deref() {
+        Some("clash") => Ok("clash"),
+        None => Ok("router"),
+        Some(_) => anyhow::bail!(
+            "Auto 暂未提供此客户端的原生导出格式，请使用支持的客户端或明确选择输出格式"
+        ),
+    }
+}
 
 struct CachedView {
     key: String,
@@ -93,16 +116,38 @@ pub fn adapt(artifacts: &Value, format: &str, ua: Option<&str>) -> anyhow::Resul
     let client = compatibility::detect(ua);
     // Manual exclusions have already been applied to this revision's base.
     // Legacy revisions never contained them; both paths share the same engine.
-    let filtered = node_filter::apply(
+    let resolved = resolve_format(format, &client);
+    let automatic_uri =
+        format == "auto" && matches!(&resolved, Ok("shadowrocket-nodes")) && policy.auto;
+    let filtered = node_filter::apply_with_exclusions(
         &config,
         &Policy {
             auto: policy.auto,
             exclude_types: vec![],
         },
         client,
+        |node| {
+            if automatic_uri {
+                camofy::engine::shadowrocket_node_uri(node)
+                    .err()
+                    .map(|e| e.to_string())
+            } else {
+                None
+            }
+        },
     )?;
-    let changed = filtered.report.removed > 0;
     let mut report = filtered.report;
+    if format == "auto" {
+        if report.client.family.is_none() {
+            report.warnings.push(
+                "未识别客户端，Auto 返回完整 YAML；请在客户端中更新订阅，或指定输出格式。".into(),
+            );
+        } else if matches!(&resolved, Ok("shadowrocket-nodes")) {
+            report
+                .warnings
+                .push("Auto 为 Shadowrocket 返回节点订阅；不包含分流规则和代理组。".into());
+        }
+    }
     if let Ok(manual) = serde_json::from_value::<Report>(snapshot["manual_report"].clone()) {
         report.before = manual.before;
         report.removed += manual.removed;
@@ -111,22 +156,24 @@ pub fn adapt(artifacts: &Value, format: &str, ua: Option<&str>) -> anyhow::Resul
         report.exclusions.splice(0..0, manual.exclusions);
         report.exclusions.truncate(200);
     }
-    let original = artifacts
-        .get(format)
-        .ok_or_else(|| anyhow::anyhow!("output not found"))?;
-    if !changed {
-        return Ok((
-            json!({"hash":original["hash"],"content":original["content"],"error":original["error"]}),
-            report,
-        ));
-    }
+    let format = match resolved {
+        Ok(value) => value,
+        Err(error) => return Ok((json!({"error":error.to_string(),"format":"auto"}), report)),
+    };
+    // Always compile request views with the current exporter. Published errors
+    // and unsafe legacy graph shapes must not survive an exporter fix. Immutable
+    // agent downloads use the separate revision endpoint and never pass here.
     let content = match format {
         "router" | "agent" => camofy::engine::mihomo(&filtered.config, true),
         "clash" => camofy::engine::mihomo(&filtered.config, false),
         "shadowrocket" => camofy::engine::shadowrocket_full(&filtered.config),
         "shadowrocket-nodes" => camofy::engine::shadowrocket_nodes(&filtered.config),
         _ => unreachable!(),
-    }?;
+    };
+    let content = match content {
+        Ok(value) => value,
+        Err(error) => return Ok((json!({"error":error.to_string(),"format":format}), report)),
+    };
     let content = if format == "shadowrocket-nodes" {
         content
     } else {
@@ -146,7 +193,7 @@ pub fn adapt(artifacts: &Value, format: &str, ua: Option<&str>) -> anyhow::Resul
         "merged output exceeds 4 MiB"
     );
     Ok((
-        json!({"hash":camofy::digest(content.as_bytes()),"content":content}),
+        json!({"hash":camofy::digest(content.as_bytes()),"content":content,"format":format}),
         report,
     ))
 }
@@ -177,7 +224,7 @@ pub async fn preview(
     {
         return Err(Error::bad("User-Agent 最多 512 字节，不能包含控制字符"));
     }
-    let format = body.format.as_deref().unwrap_or("router");
+    let format = body.format.as_deref().unwrap_or("auto");
     if !FORMATS.contains(&format) {
         return Err(Error::bad("unsupported output format"));
     }
@@ -197,13 +244,89 @@ pub async fn preview(
     let (artifact, report) = adapt(&artifacts, format, body.user_agent.as_deref())
         .map_err(|e| Error::new(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
     Ok(Json(
-        json!({"content":artifact["content"],"error":artifact["error"],"report":report,"policy":b.data["node_filter"]}),
+        json!({"content":artifact["content"],"error":artifact["error"],"format":artifact["format"],"report":report,"policy":b.data["node_filter"]}),
     ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn fixture(content: &str, auto: bool) -> Value {
+        let config = camofy::engine::parse(content).unwrap();
+        json!({"agent":{"hash":"immutable-device-hash","content":"immutable-device-content"},
+            "router":{"hash":"old-compiler","content":content,"compatibility":{"base":serde_yaml::to_string(&config).unwrap(),"policy":{"auto":auto,"exclude_types":[]}}},
+            "shadowrocket":{"error":"obsolete compiler error"},
+            "shadowrocket-nodes":{"error":"obsolete compiler error"}})
+    }
+
+    #[test]
+    fn auto_selects_format_separately_from_version_confidence() {
+        for (ua, expected) in [
+            (None, "router"),
+            (Some("unknown/1.0"), "router"),
+            (Some("mihomo/1.19.17"), "clash"),
+            (Some("ClashMetaForAndroid/2.10.2.Meta"), "clash"),
+            (Some("Stash/3.3.3"), "clash"),
+            (Some("Shadowrocket/2.2.90"), "shadowrocket-nodes"),
+            (Some("Shadowrocket/99.0.0"), "shadowrocket-nodes"),
+        ] {
+            let detection = compatibility::detect(ua);
+            assert_eq!(resolve_format("auto", &detection).unwrap(), expected);
+            assert_eq!(resolve_format("router", &detection).unwrap(), "router");
+        }
+        assert!(resolve_format("auto", &compatibility::detect(Some("sing-box/1.12.0"))).is_err());
+    }
+
+    #[test]
+    fn auto_filters_unrepresentable_nodes_without_losing_parameters() {
+        use base64::{Engine, engine::general_purpose::STANDARD};
+        let content = "proxies:\n  - {name: Safe, type: ss, server: proxy.example, port: 443, cipher: aes-128-gcm, password: sample}\n  - name: Protected\n    type: vless\n    server: proxy.example\n    port: 443\n    uuid: 00000000-0000-0000-0000-000000000001\n    network: ws\n    ws-opts:\n      headers: {Authorization: 'Bearer sample'}\nproxy-groups: [{name: Choose, type: select, proxies: [Protected, Safe]}]\nrules: ['MATCH,Choose']\n";
+        let artifacts = fixture(content, true);
+        let before = artifacts.clone();
+        let (view, report) = adapt(&artifacts, "auto", Some("Shadowrocket/99.0.0")).unwrap();
+        assert_eq!(view["format"], "shadowrocket-nodes");
+        assert_eq!(report.removed, 1);
+        assert_eq!(report.exclusions[0].reason, "unsupported_output");
+        let links =
+            String::from_utf8(STANDARD.decode(view["content"].as_str().unwrap()).unwrap()).unwrap();
+        assert!(links.starts_with("ss://"));
+        assert!(!links.contains("vless://"));
+        assert_eq!(artifacts, before);
+        // Explicit node formats and disabled auto filtering fail with diagnostics;
+        // they never silently omit the authentication header.
+        assert!(adapt(&artifacts, "shadowrocket-nodes", None).unwrap().0["error"].is_string());
+        assert!(
+            adapt(
+                &fixture(content, false),
+                "auto",
+                Some("Shadowrocket/99.0.0")
+            )
+            .unwrap()
+            .0["error"]
+                .is_string()
+        );
+        let (yaml, _) = adapt(&artifacts, "router", Some("Shadowrocket/99.0.0")).unwrap();
+        assert!(yaml["content"].as_str().unwrap().contains("Authorization"));
+    }
+
+    #[test]
+    fn corrected_exporters_replace_published_errors_without_republishing() {
+        let artifacts = fixture(
+            "proxies: [{name: Authenticated, type: socks5, server: proxy.example, port: 1080, username: sample, password: sample}]\nproxy-providers: {}\nrules: ['MATCH,Authenticated']\n",
+            true,
+        );
+        let (view, report) = adapt(&artifacts, "shadowrocket", None).unwrap();
+        assert_eq!(report.removed, 0);
+        assert!(view["error"].is_null(), "{view}");
+        assert!(
+            view["content"]
+                .as_str()
+                .unwrap()
+                .contains("username: sample")
+        );
+        assert_eq!(artifacts["agent"]["hash"], "immutable-device-hash");
+    }
+
     #[test]
     fn immutable_artifacts_are_varied_per_client_and_policy_is_pinned() {
         let p = store::Resource {

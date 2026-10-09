@@ -212,7 +212,7 @@ export function Empty({
     </div>
   );
 }
-export function CodeBlock({ content }: { content: string }) {
+export function CodeBlock({ content, formatLabel = "YAML" }: { content: string; formatLabel?: string }) {
   const lines = content.split("\n");
   const [showPreamble, setShowPreamble] = useState(false);
   const firstConfigLine = lines.findIndex(
@@ -224,7 +224,7 @@ export function CodeBlock({ content }: { content: string }) {
     <>
       <div className="code-toolbar">
         <span>
-          YAML <b>·</b> {lines.length.toLocaleString()} 行
+          {formatLabel} <b>·</b> {lines.length.toLocaleString()} 行
         </span>
         {hasPreamble && (
           <button
@@ -305,6 +305,7 @@ export function ConfigPreview({
   actions,
   controls,
   content,
+  formatLabel,
   loading,
   error,
   warnings = [],
@@ -316,6 +317,7 @@ export function ConfigPreview({
   actions?: ReactNode;
   controls?: ReactNode;
   content?: string;
+  formatLabel?: string;
   loading?: boolean;
   error?: string;
   warnings?: string[];
@@ -363,7 +365,7 @@ export function ConfigPreview({
           正在生成预览…
         </p>
       ) : content !== undefined ? (
-        <CodeBlock content={content} />
+        <CodeBlock content={content} formatLabel={formatLabel} />
       ) : (
         <p className="panel-message">{empty}</p>
       )}

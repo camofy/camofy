@@ -557,117 +557,537 @@ fn sr_nodes(v: &Value) -> Result<&Vec<Value>> {
         .ok_or_else(|| anyhow::anyhow!("no inline proxies to export"))
 }
 
-fn uri(node: &Value) -> Result<String> {
-    let kind = required(node, "type")?;
-    let allowed = [
-        "name",
-        "type",
-        "server",
-        "port",
-        "password",
-        "cipher",
-        "uuid",
-        "alterId",
-        "tls",
-        "servername",
-        "sni",
-        "network",
-        "ws-opts",
-        "skip-cert-verify",
-        "udp",
-    ];
-    for k in node.as_mapping().unwrap().keys() {
-        ensure!(
-            k.as_str().is_some_and(|s| allowed.contains(&s)),
-            "unsupported Shadowrocket node option: {:?}",
-            k
-        );
+// These checks describe this encoder, not the receiving application's capabilities.
+// Errors must never include field values: credentials and server addresses are private.
+fn uri_fields(v: &Value, allowed: &[&str], path: &str) -> Result<()> {
+    let fields = v
+        .as_mapping()
+        .ok_or_else(|| anyhow::anyhow!("invalid URI input: {path} must be a mapping"))?;
+    for key in fields.keys() {
+        if !key.as_str().is_some_and(|s| allowed.contains(&s)) {
+            let field = diagnostic_key(key.as_str());
+            bail!("URI exporter cannot preserve {path}.{field}");
+        }
     }
-    let host = required(node, "server")?;
-    let host = if host.contains(':') {
-        format!("[{host}]")
+    Ok(())
+}
+
+fn diagnostic_key(key: Option<&str>) -> &str {
+    key.filter(|s| s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+        .unwrap_or("unknown-field")
+}
+
+fn uri_string<'a>(v: &'a Value, field: &str) -> Result<Option<&'a str>> {
+    match v.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s)),
+        _ => bail!("invalid URI input: {field} must be a string"),
+    }
+}
+
+fn uri_bool(v: &Value, field: &str) -> Result<Option<bool>> {
+    match v.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        _ => bail!("invalid URI input: {field} must be a boolean"),
+    }
+}
+
+fn uri_sni(node: &Value) -> Result<Option<&str>> {
+    let sni = uri_string(node, "sni")?;
+    let servername = uri_string(node, "servername")?;
+    ensure!(
+        sni.is_none() || servername.is_none() || sni == servername,
+        "invalid URI input: conflicting sni and servername"
+    );
+    Ok(sni.or(servername).filter(|s| !s.is_empty()))
+}
+
+fn uri_alpn(node: &Value) -> Result<Option<String>> {
+    match node.get("alpn") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Sequence(items)) => {
+            ensure!(
+                !items.is_empty(),
+                "invalid URI input: alpn must not be empty"
+            );
+            let values = items
+                .iter()
+                .map(|item| {
+                    item.as_str()
+                        .filter(|s| {
+                            !s.is_empty() && !s.contains(',') && !s.chars().any(char::is_control)
+                        })
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("invalid URI input: alpn must contain protocol strings")
+                        })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(Some(values.join(",")))
+        }
+        _ => bail!("invalid URI input: alpn must be a list"),
+    }
+}
+
+fn uri_endpoint(node: &Value, scheme: &str) -> Result<url::Url> {
+    let server = required(node, "server")?;
+    ensure!(
+        !server.chars().any(char::is_whitespace)
+            && !server.contains(['/', '?', '#', '@', '\\', '%']),
+        "invalid URI input: server must be a host or IP address"
+    );
+    let host = if let Ok(ip) = server.parse::<std::net::Ipv6Addr>() {
+        format!("[{ip}]")
     } else {
-        host.into()
-    };
-    let port = node["port"].as_u64().unwrap();
-    let name = required(node, "name")?;
-    let network = node["network"].as_str().unwrap_or("tcp");
-    ensure!(
-        ["tcp", "ws"].contains(&network),
-        "unsupported transport: {network}"
-    );
-    if kind == "vmess" {
-        let data = serde_json::json!({"v":"2","ps":name,"add":required(node,"server")?,"port":port.to_string(),"id":required(node,"uuid")?,"aid":node["alterId"].as_u64().unwrap_or(0).to_string(),"scy":node["cipher"].as_str().unwrap_or("auto"),"net":network,"type":"none","host":node["ws-opts"]["headers"]["Host"].as_str().unwrap_or(""),"path":node["ws-opts"]["path"].as_str().unwrap_or("/"),"tls":if node["tls"].as_bool().unwrap_or(false){"tls"}else{""},"sni":node["servername"].as_str().unwrap_or("")});
         ensure!(
-            !node["skip-cert-verify"].as_bool().unwrap_or(false),
-            "VMess URI does not preserve skip-cert-verify"
+            !server.contains([':', '[', ']']),
+            "invalid URI input: server must be a host or IP address"
         );
-        return Ok(format!(
-            "vmess://{}",
-            STANDARD.encode(serde_json::to_vec(&data)?)
-        ));
+        server.to_string()
+    };
+    let port = node["port"]
+        .as_u64()
+        .filter(|p| *p > 0 && *p <= 65535)
+        .ok_or_else(|| anyhow::anyhow!("invalid URI input: port must be between 1 and 65535"))?;
+    url::Url::parse(&format!("{scheme}://{host}:{port}"))
+        .map_err(|_| anyhow::anyhow!("invalid URI input: server or port"))
+}
+
+fn uri_credentials(url: &mut url::Url, username: &str, password: Option<&str>) -> Result<()> {
+    // Url setters preserve existing percent escapes. Encode literal '%' too, so
+    // an account containing "%2F" is not changed to "/" by the receiving client.
+    let username =
+        percent_encoding::utf8_percent_encode(username, percent_encoding::NON_ALPHANUMERIC)
+            .to_string();
+    let password = password.map(|s| {
+        percent_encoding::utf8_percent_encode(s, percent_encoding::NON_ALPHANUMERIC).to_string()
+    });
+    url.set_username(&username)
+        .map_err(|_| anyhow::anyhow!("URI exporter cannot encode username"))?;
+    url.set_password(password.as_deref())
+        .map_err(|_| anyhow::anyhow!("URI exporter cannot encode password"))?;
+    Ok(())
+}
+
+fn uri_ws(node: &Value, network: &str) -> Result<(String, Option<String>)> {
+    let Some(ws) = node.get("ws-opts").filter(|v| !v.is_null()) else {
+        return Ok(("/".into(), None));
+    };
+    uri_fields(
+        ws,
+        &[
+            "path",
+            "headers",
+            "max-early-data",
+            "early-data-header-name",
+            "v2ray-http-upgrade",
+            "v2ray-http-upgrade-fast-open",
+        ],
+        "ws-opts",
+    )?;
+    ensure!(
+        network == "ws" || ws.as_mapping().is_some_and(Mapping::is_empty),
+        "URI exporter cannot preserve ws-opts without network ws"
+    );
+    // Do not turn HTTP Upgrade into WebSocket or silently strip early-data/header
+    // requirements. Their client-specific URI dialects need separate evidence.
+    for key in ["v2ray-http-upgrade", "v2ray-http-upgrade-fast-open"] {
+        ensure!(
+            uri_bool(ws, key)? != Some(true),
+            "URI exporter cannot preserve ws-opts.{key}"
+        );
+    }
+    if let Some(n) = ws.get("max-early-data").filter(|v| !v.is_null()) {
+        ensure!(
+            n.as_u64().is_some(),
+            "invalid URI input: ws-opts.max-early-data must be a nonnegative integer"
+        );
+        ensure!(
+            n.as_u64() == Some(0),
+            "URI exporter cannot preserve ws-opts.max-early-data"
+        );
     }
     ensure!(
-        ["ss", "trojan", "vless"].contains(&kind),
-        "unsupported Shadowrocket protocol: {kind}"
+        uri_string(ws, "early-data-header-name")?.is_none_or(str::is_empty),
+        "URI exporter cannot preserve ws-opts.early-data-header-name"
     );
-    let mut url = url::Url::parse(&format!("{kind}://{host}:{port}"))?;
+    let path = uri_string(ws, "path")?.unwrap_or("/");
+    ensure!(
+        !path.is_empty(),
+        "invalid URI input: ws-opts.path must not be empty"
+    );
+    let mut host = None;
+    if let Some(headers) = ws.get("headers").filter(|v| !v.is_null()) {
+        let headers = headers.as_mapping().ok_or_else(|| {
+            anyhow::anyhow!("invalid URI input: ws-opts.headers must be a mapping")
+        })?;
+        for (name, value) in headers {
+            ensure!(
+                name.as_str()
+                    .is_some_and(|s| s.eq_ignore_ascii_case("host")),
+                "URI exporter cannot preserve ws-opts.headers other than Host"
+            );
+            ensure!(
+                host.is_none(),
+                "invalid URI input: duplicate ws-opts.headers Host"
+            );
+            host = Some(
+                value
+                    .as_str()
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("invalid URI input: ws-opts.headers.Host must be a string")
+                    })?
+                    .to_string(),
+            );
+        }
+    }
+    Ok((path.to_string(), host))
+}
+
+/// Encode one node without discarding connection parameters. Callers may use the
+/// error as an exportability diagnostic independently of client/version support.
+/// Sharing local routing preferences is not part of a URI: an explicit disabled
+/// UDP capability is rejected rather than silently enabling it on another client.
+///
+/// Wire formats: SIP002; v2rayN's VMess share-link specification; XTLS discussion
+/// #716; Hysteria's URI-Scheme; enfein/mieru pkg/appctl/url.go (mierus).
+pub fn shadowrocket_node_uri(node: &Value) -> Result<String> {
+    let kind = required(node, "type")?;
+    let common = ["name", "type", "server", "port", "udp"];
+    let extra: &[&str] = match kind {
+        "ss" => &["cipher", "password"],
+        "socks5" | "http" => &["username", "password", "tls"],
+        "vmess" => &[
+            "uuid",
+            "alterId",
+            "cipher",
+            "tls",
+            "servername",
+            "sni",
+            "network",
+            "ws-opts",
+            "skip-cert-verify",
+            "alpn",
+            "client-fingerprint",
+        ],
+        "vless" => &[
+            "uuid",
+            "tls",
+            "servername",
+            "sni",
+            "network",
+            "ws-opts",
+            "skip-cert-verify",
+            "alpn",
+            "client-fingerprint",
+            "reality-opts",
+            "flow",
+            "encryption",
+        ],
+        "trojan" => &[
+            "password",
+            "tls",
+            "servername",
+            "sni",
+            "network",
+            "ws-opts",
+            "skip-cert-verify",
+            "alpn",
+            "client-fingerprint",
+        ],
+        "hysteria2" => &[
+            "password",
+            "sni",
+            "skip-cert-verify",
+            "obfs",
+            "obfs-password",
+            "fingerprint",
+        ],
+        "mieru" => &[
+            "username",
+            "password",
+            "transport",
+            "multiplexing",
+            "handshake-mode",
+        ],
+        _ => bail!("URI exporter has not implemented this node protocol"),
+    };
+    let allowed = common
+        .into_iter()
+        .chain(extra.iter().copied())
+        .collect::<Vec<_>>();
+    uri_fields(node, &allowed, "node")?;
+    ensure!(
+        uri_bool(node, "udp")? != Some(false),
+        "URI exporter cannot preserve udp: false; use a complete configuration to retain this restriction"
+    );
+    let name = required(node, "name")?;
+    let scheme = match kind {
+        "mieru" => "mierus",
+        // v2rayN SocksFmt and Sub-Store's URI producer use socks:// with
+        // base64 credentials; keep this distinct from a proxy environment URL.
+        "socks5" => "socks",
+        "http" if uri_bool(node, "tls")? == Some(true) => "https",
+        _ => kind,
+    };
+    let mut url = uri_endpoint(node, scheme)?;
     if kind == "ss" {
-        ensure!(
-            network == "tcp",
-            "SS websocket requires a plugin and cannot be exported"
-        );
         let cipher = required(node, "cipher")?;
         let password = required(node, "password")?;
         if cipher.starts_with("2022-") {
-            url.set_username(cipher)
-                .map_err(|_| anyhow::anyhow!("URI username"))?;
-            url.set_password(Some(password))
-                .map_err(|_| anyhow::anyhow!("URI password"))?;
+            uri_credentials(&mut url, cipher, Some(password))?;
         } else {
-            url.set_username(&URL_SAFE_NO_PAD.encode(format!("{cipher}:{password}")))
-                .map_err(|_| anyhow::anyhow!("URI credentials"))?;
+            uri_credentials(
+                &mut url,
+                &URL_SAFE_NO_PAD.encode(format!("{cipher}:{password}")),
+                None,
+            )?;
+        }
+    } else if matches!(kind, "socks5" | "http") {
+        ensure!(
+            kind != "socks5" || uri_bool(node, "tls")? != Some(true),
+            "URI exporter has not implemented SOCKS5 over TLS"
+        );
+        let username = uri_string(node, "username")?;
+        let password = uri_string(node, "password")?;
+        ensure!(
+            password.is_none_or(str::is_empty) || username.is_some_and(|s| !s.is_empty()),
+            "invalid URI input: password requires username"
+        );
+        if kind == "socks5" {
+            let username = username.unwrap_or("");
+            ensure!(
+                !username.contains(':'),
+                "URI exporter cannot preserve a colon in SOCKS5 username"
+            );
+            uri_credentials(
+                &mut url,
+                &URL_SAFE_NO_PAD.encode(format!("{username}:{}", password.unwrap_or(""))),
+                None,
+            )?;
+        } else if let Some(username) = username.filter(|s| !s.is_empty()) {
+            uri_credentials(&mut url, username, password)?;
+        }
+    } else if kind == "mieru" {
+        uri_credentials(
+            &mut url,
+            required(node, "username")?,
+            Some(required(node, "password")?),
+        )?;
+        let port = url.port().unwrap();
+        url.set_port(None)
+            .map_err(|_| anyhow::anyhow!("URI exporter cannot encode Mieru port"))?;
+        let transport = required(node, "transport")?;
+        ensure!(
+            ["TCP", "UDP"].contains(&transport),
+            "invalid URI input: transport must be TCP or UDP"
+        );
+        let mut q = url.query_pairs_mut();
+        q.append_pair("profile", name)
+            .append_pair("port", &port.to_string())
+            .append_pair("protocol", transport);
+        for (key, values) in [
+            (
+                "multiplexing",
+                &[
+                    "MULTIPLEXING_DEFAULT",
+                    "MULTIPLEXING_OFF",
+                    "MULTIPLEXING_LOW",
+                    "MULTIPLEXING_MIDDLE",
+                    "MULTIPLEXING_HIGH",
+                ][..],
+            ),
+            (
+                "handshake-mode",
+                &[
+                    "HANDSHAKE_DEFAULT",
+                    "HANDSHAKE_STANDARD",
+                    "HANDSHAKE_NO_WAIT",
+                ][..],
+            ),
+        ] {
+            if let Some(value) = uri_string(node, key)?.filter(|s| !s.is_empty()) {
+                ensure!(values.contains(&value), "invalid URI input: {key}");
+                q.append_pair(key, value);
+            }
+        }
+    } else if kind == "hysteria2" {
+        uri_credentials(&mut url, uri_string(node, "password")?.unwrap_or(""), None)?;
+        let obfs = uri_string(node, "obfs")?.filter(|s| !s.is_empty());
+        let obfs_password = uri_string(node, "obfs-password")?.filter(|s| !s.is_empty());
+        ensure!(
+            obfs.is_some() || obfs_password.is_none(),
+            "invalid URI input: obfs-password requires obfs"
+        );
+        let mut q = url.query_pairs_mut();
+        if let Some(obfs) = obfs {
+            ensure!(
+                ["salamander", "gecko"].contains(&obfs),
+                "URI exporter has not implemented this Hysteria2 obfuscation"
+            );
+            let password = obfs_password
+                .ok_or_else(|| anyhow::anyhow!("invalid URI input: obfs requires obfs-password"))?;
+            q.append_pair("obfs", obfs)
+                .append_pair("obfs-password", password);
+        }
+        if let Some(sni) = uri_string(node, "sni")?.filter(|s| !s.is_empty()) {
+            q.append_pair("sni", sni);
+        }
+        if let Some(insecure) = uri_bool(node, "skip-cert-verify")? {
+            q.append_pair("insecure", if insecure { "1" } else { "0" });
+        }
+        if let Some(pin) = uri_string(node, "fingerprint")?.filter(|s| !s.is_empty()) {
+            q.append_pair("pinSHA256", pin);
         }
     } else {
-        let password = required(node, if kind == "vless" { "uuid" } else { "password" })?;
-        url.set_username(password)
-            .map_err(|_| anyhow::anyhow!("URI credentials"))?;
+        let network = uri_string(node, "network")?
+            .filter(|s| !s.is_empty())
+            .unwrap_or("tcp");
+        ensure!(
+            ["tcp", "ws"].contains(&network),
+            "URI exporter has not implemented this transport"
+        );
+        let (path, host) = uri_ws(node, network)?;
+        let tls = kind == "trojan" || uri_bool(node, "tls")?.unwrap_or(false);
+        ensure!(
+            kind != "trojan" || uri_bool(node, "tls")? != Some(false),
+            "invalid URI input: Trojan requires TLS"
+        );
+        let sni = uri_sni(node)?;
+        let insecure = uri_bool(node, "skip-cert-verify")?;
+        let alpn = uri_alpn(node)?;
+        let fingerprint = uri_string(node, "client-fingerprint")?.filter(|s| !s.is_empty());
+        let reality = node.get("reality-opts").filter(|v| !v.is_null());
+        ensure!(
+            tls || (sni.is_none()
+                && insecure != Some(true)
+                && alpn.is_none()
+                && fingerprint.is_none()
+                && reality.is_none()),
+            "URI exporter cannot preserve TLS options without tls: true"
+        );
+        if kind == "vmess" {
+            let alter_id = match node.get("alterId") {
+                None | Some(Value::Null) => 0,
+                Some(value) => value.as_u64().ok_or_else(|| {
+                    anyhow::anyhow!("invalid URI input: alterId must be a nonnegative integer")
+                })?,
+            };
+            let data = serde_json::json!({"v":"2","ps":name,"add":required(node,"server")?,"port":node["port"].as_u64().unwrap().to_string(),"id":required(node,"uuid")?,"aid":alter_id.to_string(),"scy":uri_string(node,"cipher")?.unwrap_or("auto"),"net":network,"type":"none","host":host.unwrap_or_default(),"path":path,"tls":if tls {"tls"}else{""},"sni":sni.unwrap_or(""),"alpn":alpn.unwrap_or_default(),"fp":fingerprint.unwrap_or(""),"insecure":if insecure.unwrap_or(false){"1"}else{"0"}});
+            return Ok(format!(
+                "vmess://{}",
+                STANDARD.encode(serde_json::to_vec(&data)?)
+            ));
+        }
+        uri_credentials(
+            &mut url,
+            required(node, if kind == "vless" { "uuid" } else { "password" })?,
+            None,
+        )?;
         let mut q = url.query_pairs_mut();
         q.append_pair(
             "security",
-            if kind == "trojan" || node["tls"].as_bool().unwrap_or(false) {
+            if reality.is_some() {
+                "reality"
+            } else if tls {
                 "tls"
             } else {
                 "none"
             },
         );
-        if let Some(sni) = node["sni"].as_str().or(node["servername"].as_str()) {
+        if let Some(reality) = reality {
+            uri_fields(reality, &["public-key", "short-id"], "reality-opts")?;
+            let public_key = required(reality, "public-key")?;
+            ensure!(
+                URL_SAFE_NO_PAD
+                    .decode(public_key)
+                    .is_ok_and(|b| b.len() == 32),
+                "invalid URI input: reality-opts.public-key"
+            );
+            let short_id = uri_string(reality, "short-id")?.unwrap_or("");
+            ensure!(
+                short_id.len() <= 16
+                    && short_id.len().is_multiple_of(2)
+                    && short_id.bytes().all(|b| b.is_ascii_hexdigit()),
+                "invalid URI input: reality-opts.short-id"
+            );
+            let fp = fingerprint.ok_or_else(|| {
+                anyhow::anyhow!("URI exporter requires an explicit client-fingerprint for REALITY")
+            })?;
+            q.append_pair("pbk", public_key)
+                .append_pair("sid", short_id)
+                .append_pair("fp", fp);
+        } else if let Some(fp) = fingerprint {
+            q.append_pair("fp", fp);
+        }
+        if let Some(sni) = sni {
             q.append_pair("sni", sni);
         }
-        if node["skip-cert-verify"].as_bool().unwrap_or(false) {
-            q.append_pair("allowInsecure", "1");
+        if let Some(insecure) = insecure {
+            q.append_pair("allowInsecure", if insecure { "1" } else { "0" });
+        }
+        if let Some(alpn) = alpn {
+            q.append_pair("alpn", &alpn);
+        }
+        if kind == "vless" {
+            let encryption = uri_string(node, "encryption")?
+                .filter(|s| !s.is_empty())
+                .unwrap_or("none");
+            ensure!(
+                encryption == "none",
+                "URI exporter has not implemented VLESS encryption"
+            );
+            q.append_pair("encryption", encryption);
+            if let Some(flow) = uri_string(node, "flow")?.filter(|s| !s.is_empty()) {
+                ensure!(
+                    tls && network == "tcp",
+                    "invalid URI input: VLESS flow requires TCP and TLS"
+                );
+                ensure!(
+                    ["xtls-rprx-vision", "xtls-rprx-vision-udp443"].contains(&flow),
+                    "URI exporter has not implemented this VLESS flow"
+                );
+                q.append_pair("flow", flow);
+            }
         }
         q.append_pair("type", network);
         if network == "ws" {
-            q.append_pair("path", node["ws-opts"]["path"].as_str().unwrap_or("/"));
-            if let Some(h) = node["ws-opts"]["headers"]["Host"].as_str() {
-                q.append_pair("host", h);
+            q.append_pair("path", &path);
+            if let Some(host) = host {
+                q.append_pair("host", &host);
             }
         }
     }
-    url.set_fragment(Some(name));
+    let name =
+        percent_encoding::utf8_percent_encode(name, percent_encoding::NON_ALPHANUMERIC).to_string();
+    url.set_fragment(Some(&name));
     Ok(url.into())
 }
 
 pub fn shadowrocket_nodes(v: &Value) -> Result<String> {
-    let lines = sr_nodes(v)?.iter().map(uri).collect::<Result<Vec<_>>>()?;
+    let lines = sr_nodes(v)?
+        .iter()
+        .map(shadowrocket_node_uri)
+        .collect::<Result<Vec<_>>>()?;
     Ok(STANDARD.encode(lines.join("\n")))
 }
 
-/// Shadowrocket's Clash-compatible complete YAML import, with explicit compatibility checks.
+/// A complete YAML export with bounded structural checks. Node options are kept
+/// intact; URI encoder limitations do not establish the client's YAML capabilities.
 /// Native .conf is deliberately not mislabeled as YAML or inferred from user-agent.
 pub fn shadowrocket_full(v: &Value) -> Result<String> {
-    shadowrocket_nodes(v)?; // Reuse node feature compatibility validation.
+    validate(v)?;
+    sr_nodes(v)?;
+    let mut normalized = v.clone();
+    for field in ["proxy-providers", "rule-providers"] {
+        if normalized
+            .get(field)
+            .is_some_and(|p| p.is_null() || p.as_mapping().is_some_and(Mapping::is_empty))
+        {
+            normalized.as_mapping_mut().unwrap().remove(field);
+        }
+    }
+    let v = &normalized;
     ensure!(
         v.get("rule-providers")
             .and_then(Value::as_mapping)
@@ -694,10 +1114,11 @@ pub fn shadowrocket_full(v: &Value) -> Result<String> {
         "MATCH",
     ];
     for r in v["rules"].as_sequence().into_iter().flatten() {
+        let rule_type = r.as_str().unwrap().split(',').next().unwrap();
         ensure!(
-            supported_rules.contains(&r.as_str().unwrap().split(',').next().unwrap()),
-            "unsupported Shadowrocket rule: {}",
-            r.as_str().unwrap()
+            supported_rules.contains(&rule_type),
+            "Shadowrocket complete YAML exporter has not implemented rule type {}",
+            diagnostic_key(Some(rule_type))
         );
     }
     let allowed = [
@@ -722,8 +1143,8 @@ pub fn shadowrocket_full(v: &Value) -> Result<String> {
     for k in v.as_mapping().unwrap().keys() {
         ensure!(
             k.as_str().is_some_and(|s| allowed.contains(&s)),
-            "unsupported Shadowrocket top-level field: {:?}",
-            k
+            "Shadowrocket complete YAML exporter has not implemented top-level field {}",
+            diagnostic_key(k.as_str())
         );
     }
     mihomo(v, false)
@@ -941,5 +1362,254 @@ mod tests {
         assert_eq!(out["tun"]["enable"].as_bool(), Some(false));
         assert_eq!(out["mixed-port"].as_u64(), Some(1234));
         assert!(out["dns"]["nameserver"].is_sequence());
+    }
+
+    fn export_node(fields: &str) -> Value {
+        parse(&format!(
+            "name: Demo\nserver: proxy.example\nport: 443\n{fields}\n"
+        ))
+        .unwrap()
+    }
+
+    fn uri_pairs(uri: &str) -> BTreeMap<String, String> {
+        url::Url::parse(uri)
+            .unwrap()
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect()
+    }
+
+    #[test]
+    fn shadowrocket_complete_yaml_does_not_use_the_uri_encoder() {
+        let source = "proxy-providers: {}\nrule-providers: {}\nproxies:\n- {name: Socks, type: socks5, server: proxy.example, port: 1080, username: demo, password: example, udp: false}\n- {name: Mieru, type: mieru, server: proxy.example, port: 443, username: demo, password: example, transport: TCP, traffic-pattern: example}\n- {name: VMess, type: vmess, server: proxy.example, port: 443, uuid: 00000000-0000-0000-0000-000000000001, tls: true, skip-cert-verify: true}\nproxy-groups: [{name: Choice, type: select, proxies: [Socks, Mieru, VMess]}]\nrules: ['MATCH,Choice']";
+        let input = compose_profiles(&[source.into()], &BTreeMap::new()).unwrap();
+        let output = parse(&shadowrocket_full(&input).unwrap()).unwrap();
+        assert_eq!(output["proxies"], input["proxies"]);
+        assert_eq!(output["proxy-groups"], input["proxy-groups"]);
+        assert!(output.get("proxy-providers").is_none());
+        assert!(output.get("rule-providers").is_none());
+        assert!(shadowrocket_nodes(&input).is_err());
+    }
+
+    #[test]
+    fn shadowrocket_uri_preserves_authenticated_socks_and_http_credentials() {
+        for kind in ["socks5", "http"] {
+            let mut node = export_node(&format!(
+                "type: {kind}\nusername: 'demo@name%2F'\npassword: 'example:/?#%2F value'"
+            ));
+            node["name"] = "Example / + %2F 节点".into();
+            node["server"] = "2001:db8::1".into();
+            let uri = shadowrocket_node_uri(&node).unwrap();
+            let parsed = url::Url::parse(&uri).unwrap();
+            if kind == "socks5" {
+                assert_eq!(parsed.scheme(), "socks");
+                assert_eq!(
+                    String::from_utf8(
+                        URL_SAFE_NO_PAD
+                            .decode(
+                                percent_encoding::percent_decode_str(parsed.username())
+                                    .collect::<Vec<_>>()
+                            )
+                            .unwrap()
+                    )
+                    .unwrap(),
+                    "demo@name%2F:example:/?#%2F value"
+                );
+            } else {
+                assert_eq!(parsed.scheme(), "http");
+                assert_eq!(
+                    percent_encoding::percent_decode_str(parsed.username())
+                        .decode_utf8()
+                        .unwrap(),
+                    "demo@name%2F"
+                );
+                assert_eq!(
+                    percent_encoding::percent_decode_str(parsed.password().unwrap())
+                        .decode_utf8()
+                        .unwrap(),
+                    "example:/?#%2F value"
+                );
+            }
+            assert_eq!(
+                percent_encoding::percent_decode_str(parsed.fragment().unwrap())
+                    .decode_utf8()
+                    .unwrap(),
+                "Example / + %2F 节点"
+            );
+            assert_eq!(parsed.host_str(), Some("[2001:db8::1]"));
+        }
+        let node = export_node("type: http\ntls: true\nusername: demo\npassword: example");
+        assert!(
+            shadowrocket_node_uri(&node)
+                .unwrap()
+                .starts_with("https://")
+        );
+    }
+
+    #[test]
+    fn shadowrocket_uri_vmess_insecure_sni_and_alpn_are_encoded() {
+        // https://github.com/2dust/v2rayN/wiki/Description-of-VMess-share-link
+        let node = export_node(
+            "type: vmess\nuuid: 00000000-0000-0000-0000-000000000001\nalterId: 0\ncipher: auto\ntls: true\nsni: tls.example\nskip-cert-verify: true\nalpn: [h2, http/1.1]\nclient-fingerprint: chrome\nnetwork: ws\nws-opts: {path: '/stream?example=value', headers: {Host: front.example}}",
+        );
+        let uri = shadowrocket_node_uri(&node).unwrap();
+        let decoded: serde_json::Value = serde_json::from_slice(
+            &STANDARD
+                .decode(uri.strip_prefix("vmess://").unwrap())
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(decoded["insecure"], "1");
+        assert_eq!(decoded["sni"], "tls.example");
+        assert_eq!(decoded["alpn"], "h2,http/1.1");
+        assert_eq!(decoded["fp"], "chrome");
+        assert_eq!(decoded["host"], "front.example");
+        assert_eq!(decoded["path"], "/stream?example=value");
+        assert_eq!(decoded["aid"], "0");
+    }
+
+    #[test]
+    fn shadowrocket_uri_reality_preserves_public_key_short_id_and_flow() {
+        // https://github.com/XTLS/Xray-core/discussions/716
+        let node = export_node(
+            "type: vless\nuuid: 00000000-0000-0000-0000-000000000001\ntls: true\nservername: tls.example\nclient-fingerprint: chrome\nflow: xtls-rprx-vision\nreality-opts: {public-key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA, short-id: 'a1b2'}",
+        );
+        let pairs = uri_pairs(&shadowrocket_node_uri(&node).unwrap());
+        assert_eq!(pairs["security"], "reality");
+        assert_eq!(pairs["pbk"], "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+        assert_eq!(pairs["sid"], "a1b2");
+        assert_eq!(pairs["fp"], "chrome");
+        assert_eq!(pairs["flow"], "xtls-rprx-vision");
+        assert_eq!(pairs["encryption"], "none");
+        assert_eq!(pairs["sni"], "tls.example");
+    }
+
+    #[test]
+    fn shadowrocket_uri_hysteria2_obfuscation_and_certificate_settings_round_trip() {
+        // https://v2.hysteria.network/docs/developers/URI-Scheme/
+        let node = export_node(
+            "type: hysteria2\npassword: 'demo:example@value'\nsni: tls.example\nskip-cert-verify: true\nfingerprint: aabbcc\nobfs: salamander\nobfs-password: 'example&value'",
+        );
+        let uri = shadowrocket_node_uri(&node).unwrap();
+        let parsed = url::Url::parse(&uri).unwrap();
+        let pairs = uri_pairs(&uri);
+        assert_eq!(parsed.scheme(), "hysteria2");
+        assert_eq!(
+            percent_encoding::percent_decode_str(parsed.username())
+                .decode_utf8()
+                .unwrap(),
+            "demo:example@value"
+        );
+        assert_eq!(pairs["obfs"], "salamander");
+        assert_eq!(pairs["obfs-password"], "example&value");
+        assert_eq!(pairs["sni"], "tls.example");
+        assert_eq!(pairs["insecure"], "1");
+        assert_eq!(pairs["pinSHA256"], "aabbcc");
+    }
+
+    #[test]
+    fn shadowrocket_uri_mieru_uses_official_simple_url_layout() {
+        // https://github.com/enfein/mieru/blob/main/pkg/appctl/url.go
+        for transport in ["TCP", "UDP"] {
+            let node = export_node(&format!(
+                "type: mieru\nusername: demo\npassword: 'example:@/value'\ntransport: {transport}\nmultiplexing: MULTIPLEXING_MIDDLE\nhandshake-mode: HANDSHAKE_NO_WAIT"
+            ));
+            let uri = shadowrocket_node_uri(&node).unwrap();
+            let parsed = url::Url::parse(&uri).unwrap();
+            let pairs = uri_pairs(&uri);
+            assert_eq!(parsed.scheme(), "mierus");
+            assert_eq!(parsed.port(), None);
+            assert_eq!(parsed.username(), "demo");
+            assert_eq!(
+                percent_encoding::percent_decode_str(parsed.password().unwrap())
+                    .decode_utf8()
+                    .unwrap(),
+                "example:@/value"
+            );
+            assert_eq!(pairs["profile"], "Demo");
+            assert_eq!(pairs["port"], "443");
+            assert_eq!(pairs["protocol"], transport);
+            assert_eq!(pairs["multiplexing"], "MULTIPLEXING_MIDDLE");
+            assert_eq!(pairs["handshake-mode"], "HANDSHAKE_NO_WAIT");
+        }
+    }
+
+    #[test]
+    fn shadowrocket_uri_never_discards_nested_websocket_options() {
+        for kind in ["vmess", "vless", "trojan"] {
+            let credential = if kind == "trojan" {
+                "password: example"
+            } else {
+                "uuid: 00000000-0000-0000-0000-000000000001"
+            };
+            for ws in [
+                "{headers: {Host: front.example, Authorization: 'Bearer example-private-value'}}",
+                "{v2ray-http-upgrade: true}",
+                "{v2ray-http-upgrade-fast-open: true}",
+                "{max-early-data: 2048}",
+                "{early-data-header-name: Sec-WebSocket-Protocol}",
+                "{future-option: example-private-value}",
+            ] {
+                let node = export_node(&format!(
+                    "type: {kind}\n{credential}\nnetwork: ws\nws-opts: {ws}"
+                ));
+                let error = shadowrocket_node_uri(&node).unwrap_err().to_string();
+                assert!(error.contains("URI exporter"), "{error}");
+                assert!(!error.contains("example-private-value"));
+            }
+        }
+    }
+
+    #[test]
+    fn shadowrocket_uri_rejects_unknown_fields_and_invalid_values_without_panics_or_secrets() {
+        let cases = [
+            "type: socks5\nusername: demo\npassword: example\ndialer-proxy: example-private-value",
+            "type: socks5\nusername: demo\npassword: example\nudp: false",
+            "type: socks5\ntls: true",
+            "type: socks5\nusername: [example-private-value]",
+            "type: mieru\nusername: demo\npassword: example\ntransport: TCP\ntraffic-pattern: example-private-value",
+            "type: hysteria2\npassword: example\nup: 20 Mbps",
+            "type: vless\nuuid: example\ntls: 'true'",
+            "type: vless\nuuid: example\nreality-opts: {public-key: example-private-value}",
+            "type: vmess\nuuid: example\nalterId: example-private-value",
+            "type: vmess\nuuid: example\nnetwork: ws\nws-opts: {headers: {Host: [example-private-value]}}",
+        ];
+        for fields in cases {
+            let error = shadowrocket_node_uri(&export_node(fields))
+                .unwrap_err()
+                .to_string();
+            assert!(!error.contains("example-private-value"));
+        }
+        for port in [
+            Value::Null,
+            Value::String("example-private-value".into()),
+            Value::Number(0.into()),
+            Value::Number(65536.into()),
+        ] {
+            let mut node = export_node("type: socks5");
+            node["port"] = port;
+            assert!(shadowrocket_node_uri(&node).is_err());
+        }
+    }
+
+    #[test]
+    fn shadowrocket_uri_explicit_node_list_fails_atomically() {
+        let input = compose_profiles(&["proxies: [{name: Good, type: socks5, server: proxy.example, port: 1080}, {name: Unsupported, type: wireguard, server: proxy.example, port: 443}]\nrules: ['MATCH,Good']".into()], &BTreeMap::new()).unwrap();
+        assert!(shadowrocket_nodes(&input).is_err());
+    }
+
+    #[test]
+    fn shadowrocket_complete_diagnostics_do_not_echo_rule_contents() {
+        let mut input = compose_profiles(&["proxies: [{name: Demo, type: socks5, server: proxy.example, port: 1080}]\nrules: ['GEOSITE,example-private-value,Demo', 'MATCH,Demo']".into()], &BTreeMap::new()).unwrap();
+        let error = shadowrocket_full(&input).unwrap_err().to_string();
+        assert!(error.contains("rule type GEOSITE"));
+        assert!(!error.contains("example-private-value"));
+        assert!(!error.contains("Demo"));
+        input["rules"] = Value::Sequence(vec!["MATCH,Demo".into()]);
+        input["example private field with secret"] = "example-private-value".into();
+        let error = shadowrocket_full(&input).unwrap_err().to_string();
+        assert!(error.contains("top-level field unknown-field"));
+        assert!(!error.contains("secret"));
+        assert!(!error.contains("String("));
     }
 }

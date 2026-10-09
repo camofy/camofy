@@ -599,19 +599,31 @@ function References({ r, link }: { r: Resource; link?: Resource }) {
   );
 }
 const outputFormats = [
+  { value: "auto", label: "Auto（自动适配）" },
   { value: "router", label: "完整 YAML" },
   { value: "clash", label: "Clash / Mihomo" },
   { value: "shadowrocket", label: "Shadowrocket 完整配置" },
   { value: "shadowrocket-nodes", label: "Shadowrocket 节点" },
 ];
 function Distribution({ r, children }: { r: Resource; children?: ReactNode }) {
-  const [format, setFormat] = useState("router"),
-    [reveal, setReveal] = useState(false);
+  const [params, setParams] = useSearchParams();
+  const format = outputFormats.find(f => f.value === params.get("sub_format"))?.value ?? "auto";
+  const [reveal, setReveal] = useState(false);
+  const [checked, setChecked] = useState<{ key: string; error?: string }>();
+  const checkKey = `${r.id}:${r.data.published_revision}:${format}`;
+  useEffect(() => {
+    if (format === "auto" || !r.data.subscription_url) return;
+    let active = true;
+    void api<{ error?: string }>(`/bundles/${r.id}/preview/${format}`)
+      .then(value => { if (active) setChecked({ key: checkKey, error: value.error }); })
+      .catch(e => { if (active) setChecked({ key: checkKey, error: e.message }); });
+    return () => { active = false; };
+  }, [r.id, r.data.subscription_url, format, checkKey]);
   const url = r.data.subscription_url
-    ? r.data.subscription_url + (format === "router" ? "" : `/${format}`)
+    ? r.data.subscription_url + (format === "auto" ? "" : `/${format}`)
     : "";
   const source = !!managedSource(r);
-  const formatError = r.data.outputs?.[format]?.error;
+  const formatError = format !== "auto" && checked?.key === checkKey ? checked.error : undefined;
   return (
     <section className="panel distribution">
       <h2>{source ? "订阅地址" : "订阅链接"}</h2>
@@ -621,7 +633,7 @@ function Distribution({ r, children }: { r: Resource; children?: ReactNode }) {
       {children}
       <label>
         客户端格式
-        <select value={format} onChange={(e) => setFormat(e.target.value)}>
+        <select value={format} onChange={(e) => { const next = new URLSearchParams(params); next.set("sub_format", e.target.value); setParams(next, { replace: true }); }}>
           {outputFormats.map((f) => (
             <option value={f.value} key={f.value}>
               {f.label}
@@ -629,6 +641,12 @@ function Distribution({ r, children }: { r: Resource; children?: ReactNode }) {
           ))}
         </select>
       </label>
+      <p className="muted">{format === "auto"
+        ? "按请求客户端自动适配：Clash 系返回 YAML，Shadowrocket 返回节点订阅。未识别时返回完整 YAML。"
+        : format === "router" ? "完整 YAML 保留路由和本地设置；仍应用身份的节点过滤策略。"
+        : format === "shadowrocket-nodes" ? "仅包含节点，不包含分流规则和代理组。"
+        : format === "shadowrocket" ? "仅适用于能导入此 YAML 的客户端版本；不支持的规则或字段会明确提示。"
+        : "Clash YAML 不包含路由器专用的本地运行设置。"}</p>
       {url ? (
         <>
           <label>
@@ -645,6 +663,7 @@ function Distribution({ r, children }: { r: Resource; children?: ReactNode }) {
               此格式暂不可用：{formatError}
             </p>
           )}
+          {format !== "auto" && checked?.key !== checkKey && <p className="muted" role="status">正在检查此格式…</p>}
           <div className="distribution-actions">
             <Copy value={url} />
             <button className="quiet" onClick={() => setReveal(!reveal)}>
@@ -974,7 +993,7 @@ function SubscriptionManagement({
 }
 function Preview({ r, source = false }: { r: Resource; source?: boolean }) {
   const [params, setParams] = useSearchParams();
-  const format = params.get("format") ?? "router";
+  const format = outputFormats.find(f => f.value === params.get("format"))?.value ?? "auto";
   const [result, setResult] = useState<{
     key: string;
     content?: string;
@@ -983,13 +1002,13 @@ function Preview({ r, source = false }: { r: Resource; source?: boolean }) {
   const key = `${r.id}:${r.version}:${format}:${r.data.published_revision ?? ""}`;
   useEffect(() => {
     let active = true;
-    void api<{ content: string }>(
+    void api<{ content?: string; error?: string }>(
       source
         ? `/profiles/${r.id}/content`
         : `/bundles/${r.id}/preview/${format}`,
     )
       .then((v) => {
-        if (active) setResult({ key, content: v.content });
+        if (active) setResult({ key, content: v.content, error: v.error });
       })
       .catch((e) => {
         if (active) setResult({ key, error: e.message });
@@ -1001,10 +1020,11 @@ function Preview({ r, source = false }: { r: Resource; source?: boolean }) {
   return (
     <ConfigPreview
       title={source ? "上次成功拉取的内容" : "合并结果"}
+      formatLabel={!source && format === "shadowrocket-nodes" ? "Base64 节点订阅" : "YAML"}
       description={
         source
           ? "只读快照。刷新失败不会覆盖上次成功内容。"
-          : "此处为云端发布内容；客户端仍可能应用自身的本地设置。"
+          : format === "auto" ? "此处模拟未提供 User-Agent 的请求，返回完整 YAML。可在「客户端兼容」中模拟具体客户端。" : "此处为云端发布内容；客户端仍可能应用自身的本地设置。"
       }
       actions={
         !source && (

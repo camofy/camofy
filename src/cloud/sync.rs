@@ -128,16 +128,9 @@ pub async fn subscription(
     h: HeaderMap,
     Path((token, format)): Path<(String, String)>,
 ) -> Result<Response, Error> {
-    let fallback = filename(&format);
-    serve(app, h, token, format, &fallback).await
+    serve(app, h, token, format).await
 }
-async fn serve(
-    app: App,
-    h: HeaderMap,
-    token: String,
-    format: String,
-    fallback: &str,
-) -> Result<Response, Error> {
+async fn serve(app: App, h: HeaderMap, token: String, format: String) -> Result<Response, Error> {
     let a = access(&app, &token).await?;
     auth::rate(&app, format!("sub:{}", camofy::digest(&token)), 120, 60).await?;
     let mut conn = app.db.acquire().await?;
@@ -176,8 +169,12 @@ async fn serve(
         h.get(header::USER_AGENT).and_then(|v| v.to_str().ok()),
     )
     .map_err(|e| Error::new(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
-    artifacts[&format] = artifact;
-    let mut response = artifact_response(artifacts, &format, &h, id, Some(&usage))?;
+    let resolved = artifact["format"].as_str().unwrap_or(&format).to_owned();
+    artifacts[&resolved] = artifact;
+    let mut response = artifact_response(artifacts, &resolved, &h, id, Some(&usage))?;
+    response
+        .headers_mut()
+        .insert("x-camofy-format", resolved.parse().unwrap());
     response
         .headers_mut()
         .insert(header::VARY, "User-Agent".parse().unwrap());
@@ -205,19 +202,19 @@ async fn serve(
     );
     response.headers_mut().insert(
         header::CONTENT_DISPOSITION,
-        disposition(fallback, b.data["name"].as_str().unwrap_or("")),
+        disposition(&filename(&resolved), b.data["name"].as_str().unwrap_or("")),
     );
     Ok(response)
 }
 
-/// Platform-neutral identity URL. Preserve the existing complete YAML and hash contract;
-/// the legacy artifact name is an internal compatibility detail, not a client restriction.
+/// The stable identity URL selects a format from the requesting client. Complete
+/// YAML remains available at /router; agent revision downloads remain immutable.
 pub async fn identity_subscription(
     State(app): State<App>,
     h: HeaderMap,
     Path(token): Path<String>,
 ) -> Result<Response, Error> {
-    serve(app, h, token, "router".into(), "camofy.yaml").await
+    serve(app, h, token, "auto".into()).await
 }
 
 fn filename(format: &str) -> String {

@@ -985,7 +985,15 @@ pub async fn preview(
     let b = store::get(&app, &mut conn, user, id).await?;
     drop(conn);
     let revision = crate::sync::current(&app, user, id, &b).await?;
-    Ok(Json(revision.1[&format].clone()))
+    if format == "agent" {
+        return Ok(Json(revision.1["agent"].clone()));
+    }
+    let (artifact, report) =
+        crate::client_config::adapt_cached(revision.0, &revision.1, &format, None)
+            .map_err(|e| Error::new(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?;
+    let mut response = artifact;
+    response["report"] = serde_json::to_value(report)?;
+    Ok(Json(response))
 }
 
 pub async fn test_device(

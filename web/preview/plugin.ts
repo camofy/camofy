@@ -354,14 +354,17 @@ export function designPreview(): Plugin {
             const identity = resources.find(r => r.id === path.split("/")[2]);
             const policy = identity?.data.node_filter as { auto: boolean; exclude_types: string[] } | undefined;
             const old = /ClashMetaForAndroid\/2\.10\.2/.test(draft.user_agent ?? "");
+            const shadowrocket = /Shadowrocket\//.test(draft.user_agent ?? "");
+            const selectedFormat = !draft.format || draft.format === "auto" ? shadowrocket ? "shadowrocket-nodes" : old ? "clash" : "router" : draft.format;
             const fixture = [{ name: "常用节点", protocol: "ss" }, { name: "新协议节点", protocol: "mieru" }, { name: "备用节点", protocol: "anytls" }];
             const excluded = fixture.filter(n => policy?.exclude_types.includes(n.protocol) || (policy?.auto !== false && old && n.protocol !== "ss"));
             if (excluded.length === fixture.length) return send({ error: "过滤后没有可用节点，已阻止下发空订阅；请调整该身份的过滤设置或订阅源" }, 422);
             const retained = fixture.filter(n => !excluded.includes(n));
-            return send({ content: "# 虚构的本地设计预览\nproxies:\n" + retained.map(n => `  - {name: ${n.name}, type: ${n.protocol}, server: proxy.example, port: 443}`).join("\n") + "\nproxy-groups:\n  - name: 节点选择\n    type: select\n    proxies: [" + retained.map(n => n.name).join(", ") + "]\nrules: ['MATCH,节点选择']\n", report: {
-              client: { name: old ? "Clash Meta for Android" : undefined, version: old ? "2.10.2" : undefined, confidence: old ? "bundled" : "unknown" },
+            const fixtureContent = "# 虚构的本地设计预览\nproxies:\n" + retained.map(n => `  - {name: ${n.name}, type: ${n.protocol}, server: proxy.example, port: 443}`).join("\n") + "\nproxy-groups:\n  - name: 节点选择\n    type: select\n    proxies: [" + retained.map(n => n.name).join(", ") + "]\nrules: ['MATCH,节点选择']\n";
+            return send({ format: selectedFormat, content: selectedFormat === "shadowrocket-nodes" ? Buffer.from("ss://YWVzLTEyOC1nY206c2FtcGxl@proxy.example:443#Example").toString("base64") : fixtureContent, report: {
+              client: { name: old ? "Clash Meta for Android" : shadowrocket ? "Shadowrocket" : undefined, version: old ? "2.10.2" : shadowrocket ? "99.0.0" : undefined, confidence: old ? "bundled" : "unknown" },
               before: 3, retained: retained.length, removed: excluded.length, repaired_references: excluded.length,
-              warnings: old ? [] : ["客户端或版本能力未确认，自动模式保留未知节点；指定类型排除仍然生效。"], unknown_capabilities: [], blocked_groups: [],
+              warnings: shadowrocket ? ["Auto 为 Shadowrocket 返回节点订阅；不包含分流规则和代理组。"] : old ? [] : ["客户端或版本能力未确认，自动模式保留未知节点；指定类型排除仍然生效。"], unknown_capabilities: [], blocked_groups: [],
               exclusions: excluded.map(n => ({ ...n, reason: policy?.exclude_types.includes(n.protocol) ? "manual" : "unsupported_protocol", capability: n.protocol }))
             } });
           }
@@ -504,6 +507,7 @@ export function designPreview(): Plugin {
             }
             return send(current);
           }
+          if (path.endsWith("/preview/shadowrocket")) return send({ error: "完整配置包含尚未支持的规则类型 GEOSITE；可使用 Auto 获取节点订阅。" });
           if (path.endsWith("/content") || path.includes("/preview/"))
             return send({ content: current?.data.content ?? yaml });
           if (path.endsWith("/subscription-links")) return send([]);

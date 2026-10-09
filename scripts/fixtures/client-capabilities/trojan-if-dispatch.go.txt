@@ -1,0 +1,15 @@
+// Structural fixture based on the official v1.15.0 implementation:
+// https://github.com/MetaCubeX/mihomo/blob/v1.15.0/adapter/outbound/trojan.go
+// The unrelated TCP-only switch must not turn supported if branches into false.
+func route(option FixtureOption) {
+    switch option.Network {
+    case "", "tcp":
+        inspectFlow(option.Flow)
+    }
+    if option.Network == "ws" {
+        stream.StreamWebsocketConn()
+    }
+    if option.Network == "grpc" {
+        stream.NewHTTP2Client()
+    }
+}
