@@ -108,8 +108,11 @@ silently dropping options. With automatic node filtering disabled, format select
 and configuration conversion still run, but nodes are not automatically removed.
 All-node removal fails with a diagnostic.
 
-Shadowrocket [introduced Clash YAML import in 2.1.95](https://t.me/ShadowrocketNews/362).
-Known older versions cannot use this full-output route. Unknown build numbers use
+Shadowrocket [announced Clash YAML import in 2.1.60](https://t.me/ShadowrocketNews/318)
+and [repeated the announcement in 2.1.95](https://t.me/ShadowrocketNews/362).
+This confirms the import entry point, not complete field compatibility. Versions
+before 2.1.60 have an unknown input contract and cannot select this full-output
+route; they are not classified as unsupported. Unknown build numbers use
 only the documented family input baseline and produce a warning; they are not
 mapped to the latest release. Native rules and Clash-import parser capabilities
 are recorded separately. Unknown fields, including currently unverified
@@ -120,6 +123,12 @@ or DNS behavior on a proprietary client.
 
 The current Shadowrocket compiler expands supported GEOSITE and RULE-SET inputs
 in place, retaining rule order, policy targets, logical expressions and no-resolve.
+The default CN snapshot has one explicit exception: matching top-level positive
+`GEOSITE,cn` references may use a classical text provider at the public, versioned
+`/api/rules/geosite/<source-revision>/cn.list` mirror. The source and content hash
+must match; custom sources, attributes, negation, nested logic and DNS selectors
+retain the existing inline conversion path. This requested output policy does not
+change Shadowrocket's unknown provider capabilities into verified support.
 DNS selector expansion is a separate stage. It never replaces a domain regular
 expression with URL-REGEX or imports routing rules into DNS. See
 [configuration compatibility](configuration-compatibility.md) for the evidence,

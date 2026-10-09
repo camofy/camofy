@@ -15,6 +15,7 @@ mod provider_net;
 mod retry;
 #[cfg(test)]
 mod retry_tests;
+mod rule_mirror;
 mod security;
 mod source_link;
 mod store;
@@ -229,6 +230,10 @@ pub fn router(app: App) -> Router {
         .route("/api/sync/ws", get(sync::socket))
         .route("/sub/:token", get(sync::identity_subscription))
         .route("/sub/:token/:format", get(sync::subscription))
+        .route(
+            "/api/rules/geosite/:revision/cn.list",
+            get(rule_mirror::download),
+        )
         .nest_service(
             "/assets",
             tower_http::services::ServeDir::new("web/dist/assets"),
@@ -257,6 +262,8 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
+    // Refuse startup if the bundled public resource cannot be served completely.
+    rule_mirror::body()?;
     let db = sqlx::postgres::PgPoolOptions::new()
         .max_connections(30)
         .connect(&std::env::var("DATABASE_URL")?)

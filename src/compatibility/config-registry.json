@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "version": "2026-10-10.1",
+  "version": "2026-10-10.2",
   "checked_at": "2026-10-10",
   "dimensions": {
     "syntax": [
@@ -119,9 +119,10 @@
         "syntax.clash_yaml": {
           "support": "supported",
           "evidence": [
+            "https://t.me/ShadowrocketNews/318",
             "https://t.me/ShadowrocketNews/362"
           ],
-          "notes": "2.1.95 发布记录新增 Clash YAML 导入；未知版本只采用家族入口基线并提示，已知旧版本由范围覆盖。"
+          "notes": "2.1.60 和 2.1.95 均宣布 Clash YAML 导入；这里只确认导入语法入口，不证明节点、规则、DNS 或 provider 的逐字段映射。未知版本只采用家族入口基线并提示。"
         },
         "clash.rule.domain": {
           "support": "unknown",
@@ -484,15 +485,15 @@
         }
       }
     },
-    "shadowrocket-before-clash": {
-      "name": "Shadowrocket Clash YAML 引入之前",
+    "shadowrocket-before-reviewed-import": {
+      "name": "Shadowrocket 早于已查 YAML 导入记录",
       "capabilities": {
         "syntax.clash_yaml": {
-          "support": "unsupported",
+          "support": "unknown",
           "evidence": [
-            "https://t.me/ShadowrocketNews/362"
+            "https://t.me/ShadowrocketNews/318"
           ],
-          "notes": "Shadowrocket 2.1.95 才新增 Clash YAML 导入；该已知旧版本无法接收此完整配置格式，请升级客户端。"
+          "notes": "该版本早于本次查到的 2.1.60 YAML 导入发布记录，缺少可核实的输入语法契约；不据此判定为不支持，也不借用后续版本入口。"
         }
       }
     },
@@ -502,10 +503,11 @@
         "syntax.clash_yaml": {
           "support": "supported",
           "evidence": [
+            "https://t.me/ShadowrocketNews/318",
             "https://t.me/ShadowrocketNews/362",
             "https://apps.apple.com/us/app/shadowrocket/id932747118"
           ],
-          "notes": "2.1.95 引入 Clash YAML；后续已查发布记录继续修复 Clash 解析，范围截至 2.2.92，不证明逐字段等价。"
+          "notes": "2.1.60 已宣布 Clash YAML 导入，2.1.95 重复宣布；后续发布记录继续修复 Clash 解析，语法入口范围截至 2.2.92。此条不证明完整字段映射、provider 外链保留或下载失败行为。"
         }
       }
     },
@@ -1694,11 +1696,11 @@
       "ranges": [
         {
           "min": "0.0.0",
-          "max": "2.1.94",
-          "profile": "shadowrocket-before-clash"
+          "max": "2.1.59",
+          "profile": "shadowrocket-before-reviewed-import"
         },
         {
-          "min": "2.1.95",
+          "min": "2.1.60",
           "max": "2.2.92",
           "profile": "shadowrocket-clash-reviewed"
         },
@@ -1829,6 +1831,7 @@
     }
   ],
   "references": [
+    "https://t.me/ShadowrocketNews/318",
     "https://t.me/ShadowrocketNews/362",
     "https://apps.apple.com/us/app/shadowrocket/id932747118",
     "https://github.com/GMOogway/shadowrocket-rules/blob/68f92ea9aed0f119649813d9d60d69f5139ffe7b/docs/01.shadowrocket_configure.md",

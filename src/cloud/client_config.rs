@@ -166,7 +166,9 @@ pub async fn adapt_request(
     crate::config_resources::validate_scope(app, scope).await?;
     let key = scope
         .revision
-        .map(|id| view_key(id, artifacts, format, ua))
+        .map(|id| {
+            view_key(id, artifacts, format, ua).map(|key| format!("{key}:cn-mirror:{}", app.origin))
+        })
         .transpose()?;
     if let Some(result) = key.as_deref().and_then(cached_view) {
         return Ok(result);
@@ -200,7 +202,8 @@ pub async fn adapt_request(
         let resources = runtime.block_on(crate::config_resources::resolve(
             &app, scope, config_compat::Target::Shadowrocket, &config,
         ))?;
-        let (mut artifact, report) = adapt_with_sources(&artifacts, &format, ua.as_deref(), &resources.sources)?;
+        let mirror = crate::rule_mirror::descriptor(&app.origin);
+        let (mut artifact, report) = adapt_with_sources_and_cn_mirror(&artifacts, &format, ua.as_deref(), &resources.sources, Some(&mirror))?;
         if artifact["configuration"].is_object() {
             artifact["configuration"]["resources"] = json!({
                 "count": resources.source_count, "bytes": resources.total_bytes,
@@ -236,6 +239,16 @@ fn adapt_with_sources(
     format: &str,
     ua: Option<&str>,
     sources: &config_compat::ResolvedSources,
+) -> anyhow::Result<(Value, Report)> {
+    adapt_with_sources_and_cn_mirror(artifacts, format, ua, sources, None)
+}
+
+fn adapt_with_sources_and_cn_mirror(
+    artifacts: &Value,
+    format: &str,
+    ua: Option<&str>,
+    sources: &config_compat::ResolvedSources,
+    mirror: Option<&config_compat::CnMirror>,
 ) -> anyhow::Result<(Value, Report)> {
     anyhow::ensure!(FORMATS.contains(&format), "unsupported output format");
     let snapshot = &artifacts["router"]["compatibility"];
@@ -293,7 +306,10 @@ fn adapt_with_sources(
             ensure_configuration_capabilities(&capabilities)
                 .and_then(|()| camofy::engine::clash_yaml(&filtered.config))
         },
-        "shadowrocket" => config_compat::compile(&filtered.config, config_compat::Target::Shadowrocket, sources)
+        "shadowrocket" => match mirror {
+            Some(mirror) => config_compat::compile_with_cn_mirror(&filtered.config, config_compat::Target::Shadowrocket, sources, mirror),
+            None => config_compat::compile(&filtered.config, config_compat::Target::Shadowrocket, sources),
+        }
             .and_then(|compiled| {
                 let target_client = if report.client.family.as_deref() == Some("shadowrocket") {
                     report.client.clone()
@@ -689,6 +705,77 @@ mod tests {
         );
         let (raw, _) = adapt(&artifacts, "clash", None).unwrap();
         assert!(raw["error"].is_null());
+    }
+
+    #[test]
+    fn cn_mirror_keeps_full_configuration_and_other_client_formats() {
+        use config_compat::{ResolvedSource, SourceContent, SourceKind};
+        let original = "proxies: [{name: Example, type: socks5, server: proxy.example, port: 1080, username: sample, password: sample}]\nproxy-groups: [{name: Pick, type: select, proxies: [Example]}]\ndns: {enable: true, nameserver: ['https://dns.example/dns-query']}\nrules: ['DOMAIN,first.example,REJECT', 'GEOSITE,cn,Pick,no-resolve', 'MATCH,REJECT']";
+        let artifacts = fixture(original, true);
+        let source = std::str::from_utf8(crate::rule_mirror::body().unwrap())
+            .unwrap()
+            .to_owned();
+        let sources = config_compat::ResolvedSources::from([(
+            "geosite:cn".into(),
+            ResolvedSource {
+                content: SourceContent::Text(source),
+                hash: crate::rule_mirror::SHA256.into(),
+                kind: SourceKind::Geosite,
+            },
+        )]);
+        let mirror = crate::rule_mirror::descriptor("https://config.example");
+        for (format, ua) in [
+            ("auto", Some("Shadowrocket/2.2.92")),
+            ("shadowrocket", None),
+        ] {
+            let (view, report) =
+                adapt_with_sources_and_cn_mirror(&artifacts, format, ua, &sources, Some(&mirror))
+                    .unwrap();
+            assert!(view["error"].is_null(), "{}", view["error"]);
+            assert_eq!(report.removed, 0);
+            assert_eq!(view["configuration"]["stats"]["externalized_geosite_cn"], 1);
+            assert!(view["content"].as_str().unwrap().len() < 4096);
+            let output = camofy::engine::parse(view["content"].as_str().unwrap()).unwrap();
+            let expected = camofy::engine::parse(original).unwrap();
+            for key in ["proxies", "proxy-groups", "dns"] {
+                assert_eq!(output[key], expected[key]);
+            }
+            assert_eq!(output["rules"].as_sequence().unwrap().len(), 3);
+            assert_eq!(output["rules"][0], expected["rules"][0]);
+            assert_eq!(output["rules"][2], expected["rules"][2]);
+            assert!(
+                output["rules"][1]
+                    .as_str()
+                    .unwrap()
+                    .ends_with(",Pick,no-resolve")
+            );
+            let providers = output["rule-providers"].as_mapping().unwrap();
+            assert_eq!(providers.len(), 1);
+            let provider = providers.values().next().unwrap();
+            assert_eq!(provider["url"], mirror.url);
+            assert_eq!(provider["format"], "text");
+            assert!(
+                view["configuration"]["capabilities"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(
+                        |item| item["key"] == "clash.provider.http" && item["support"] == "unknown"
+                    )
+            );
+        }
+        for (format, ua) in [
+            ("auto", Some("mihomo/1.19.17")),
+            ("clash", None),
+            ("auto", None),
+        ] {
+            let ordinary = adapt(&artifacts, format, ua).unwrap().0;
+            let candidate =
+                adapt_with_sources_and_cn_mirror(&artifacts, format, ua, &sources, Some(&mirror))
+                    .unwrap()
+                    .0;
+            assert_eq!(ordinary, candidate);
+        }
     }
 
     #[test]

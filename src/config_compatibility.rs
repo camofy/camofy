@@ -249,14 +249,52 @@ mod tests {
     }
 
     #[test]
-    fn shadowrocket_syntax_boundary_does_not_become_node_fallback() {
-        let old = full_configuration(&detected("shadowrocket", Some("2.1.94")));
+    fn shadowrocket_earlier_unverified_syntax_does_not_become_node_fallback() {
+        let detection = detected("shadowrocket", Some("2.1.59"));
+        let old = full_configuration(&detection);
         assert!(old.blocked);
-        assert_eq!(old.support, Support::Unsupported);
+        assert_eq!(old.support, Support::Unknown);
         assert_eq!(old.renderer, None);
-        let supported = full_configuration(&detected("shadowrocket", Some("2.1.95")));
-        assert!(!supported.blocked);
-        assert_eq!(supported.renderer.as_deref(), Some("clash_yaml"));
+        assert_eq!(
+            capability(&detection, "syntax.clash_yaml").basis,
+            "version_range"
+        );
+    }
+
+    #[test]
+    fn shadowrocket_import_evidence_does_not_imply_full_field_compatibility() {
+        for release in ["2.1.60", "2.1.94", "2.1.95", "2.2.92"] {
+            let detection = detected("shadowrocket", Some(release));
+            let syntax = capability(&detection, "syntax.clash_yaml");
+            assert_eq!(syntax.support, Support::Supported, "{release}");
+            assert_eq!(syntax.basis, "version_range");
+            assert!(
+                syntax
+                    .evidence
+                    .iter()
+                    .any(|url| url == "https://t.me/ShadowrocketNews/318")
+            );
+            let full = full_configuration(&detection);
+            assert!(!full.blocked, "{release}");
+            assert_eq!(full.renderer.as_deref(), Some("clash_yaml"));
+            assert!(!full.warnings.is_empty());
+            for key in registry().dimensions["clash_rule_providers"]
+                .iter()
+                .map(String::as_str)
+                .chain([
+                    "clash.rule.rule_set",
+                    "clash.rule.domain_suffix",
+                    "clash.dns.nameserver_policy",
+                    "clash.group.select",
+                ])
+            {
+                assert_eq!(
+                    capability(&detection, key).support,
+                    Support::Unknown,
+                    "{release}: {key}"
+                );
+            }
+        }
     }
 
     #[test]

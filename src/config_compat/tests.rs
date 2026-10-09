@@ -1,5 +1,267 @@
 use super::*;
 
+fn cn_fixture(text: &str) -> (ResolvedSources, CnMirror) {
+    let hash = crate::digest(text.as_bytes());
+    let sources = BTreeMap::from([(
+        "geosite:cn".into(),
+        ResolvedSource {
+            content: SourceContent::Text(text.into()),
+            hash: hash.clone(),
+            kind: SourceKind::Geosite,
+        },
+    )]);
+    let mirror = CnMirror {
+        url: "https://config.example/api/rules/geosite/pinned/cn.list".into(),
+        expected_source_hash: hash,
+    };
+    (sources, mirror)
+}
+
+fn mirror_name(result: &Compilation) -> &str {
+    let providers = result.config["rule-providers"].as_mapping().unwrap();
+    assert_eq!(providers.len(), 1);
+    providers.keys().next().unwrap().as_str().unwrap()
+}
+
+#[test]
+fn cn_mirror_keeps_positions_policies_options_nodes_and_groups() {
+    let input = config(
+        r#"
+proxies:
+  - {name: relay, type: socks5, server: proxy.example, port: 1080, dialer-proxy: gateway}
+  - {name: gateway, type: mieru, server: transport.example, port: 8080, username: sample, password: sample}
+proxy-groups:
+  - {name: route, type: select, proxies: [relay, gateway]}
+rule-providers:
+  other: {type: inline, behavior: domain, payload: ['+.other.example']}
+rules:
+  - DOMAIN,first.example,REJECT
+  - GEOSITE,cn,route,no-resolve
+  - RULE-SET,other,DIRECT
+  - GEOSITE,CN,DIRECT
+  - MATCH,route
+"#,
+    );
+    let (sources, mirror) = cn_fixture("DOMAIN-SUFFIX,cn.example\nDOMAIN-SUFFIX,second.example\n");
+    let result = compile_with_cn_mirror(&input, Target::Shadowrocket, &sources, &mirror).unwrap();
+    let name = mirror_name(&result);
+    assert_eq!(
+        rules(&result),
+        [
+            "DOMAIN,first.example,REJECT".to_owned(),
+            format!("RULE-SET,{name},route,no-resolve"),
+            "DOMAIN-SUFFIX,other.example,DIRECT".into(),
+            format!("RULE-SET,{name},DIRECT"),
+            "MATCH,route".into()
+        ]
+    );
+    assert_eq!(result.config["proxies"], input["proxies"]);
+    assert_eq!(result.config["proxy-groups"], input["proxy-groups"]);
+    let provider = &result.config["rule-providers"][name];
+    assert_eq!(provider["type"], "http");
+    assert_eq!(provider["behavior"], "classical");
+    assert_eq!(provider["format"], "text");
+    assert_eq!(provider["url"], mirror.url);
+    assert_eq!(
+        provider["path"],
+        format!(
+            "./rules/camofy-geosite-cn-{}.list",
+            mirror.expected_source_hash
+        )
+    );
+    assert_eq!(result.stats.externalized_geosite_cn, 2);
+    assert_eq!(result.stats.expanded_geosite, 0);
+    assert_eq!(result.stats.expanded_rule_sets, 1);
+    assert_eq!(result.source_hashes, [mirror.expected_source_hash]);
+    let inline = compile(&input, Target::Shadowrocket, &sources).unwrap();
+    assert!(inline.config.get("rule-providers").is_none());
+    assert_eq!(inline.stats.externalized_geosite_cn, 0);
+    assert_eq!(inline.stats.output_rules, 7);
+}
+
+#[test]
+fn cn_in_logic_dns_and_provider_payloads_stays_inline() {
+    let input = config(
+        r#"
+rule-providers:
+  nested: {type: inline, behavior: classical, payload: ['GEOSITE,cn']}
+dns:
+  nameserver-policy: {'geosite:cn': ['https://dns.example/query']}
+  fake-ip-filter: ['geosite:cn']
+rules:
+  - AND,((GEOSITE,cn),(NOT,((DST-PORT,443)))),route
+  - GEOSITE,cn,DIRECT
+  - RULE-SET,nested,route
+  - NOT,((GEOSITE,cn)),REJECT
+"#,
+    );
+    let (sources, mirror) = cn_fixture("DOMAIN-SUFFIX,cn.example\nDOMAIN-SUFFIX,second.example\n");
+    let result = compile_with_cn_mirror(&input, Target::Shadowrocket, &sources, &mirror).unwrap();
+    let name = mirror_name(&result);
+    assert_eq!(rules(&result), [
+        "AND,((OR,((DOMAIN-SUFFIX,cn.example),(DOMAIN-SUFFIX,second.example))),(NOT,((DST-PORT,443)))),route".to_owned(),
+        format!("RULE-SET,{name},DIRECT"),
+        "DOMAIN-SUFFIX,cn.example,route".into(), "DOMAIN-SUFFIX,second.example,route".into(),
+        "NOT,((OR,((DOMAIN-SUFFIX,cn.example),(DOMAIN-SUFFIX,second.example)))),REJECT".into(),
+    ]);
+    assert_eq!(result.stats.externalized_geosite_cn, 1);
+    assert_eq!(
+        result.config["dns"],
+        compile(&input, Target::Shadowrocket, &sources)
+            .unwrap()
+            .config["dns"]
+    );
+    let only_nested = config("rules: ['NOT,((GEOSITE,cn)),DIRECT']");
+    let nested =
+        compile_with_cn_mirror(&only_nested, Target::Shadowrocket, &sources, &mirror).unwrap();
+    assert!(nested.config.get("rule-providers").is_none());
+    assert!(
+        !serde_yaml::to_string(&nested.config)
+            .unwrap()
+            .contains(&mirror.url)
+    );
+}
+
+#[test]
+fn cn_mirror_never_substitutes_attributes_other_tags_custom_sources_or_literal_blocks() {
+    let (mut sources, mirror) = cn_fixture("DOMAIN-SUFFIX,cn.example\n");
+    for tag in ["cn@sample", "other"] {
+        sources.insert(
+            format!("geosite:{tag}"),
+            ResolvedSource {
+                content: SourceContent::Text("DOMAIN-SUFFIX,other.example\n".into()),
+                hash: crate::digest("DOMAIN-SUFFIX,other.example\n"),
+                kind: SourceKind::Geosite,
+            },
+        );
+    }
+    let input = config(
+        "rules: ['GEOSITE,cn@sample,DIRECT', 'GEOSITE,other,route', 'DOMAIN-SUFFIX,cn.example,route']",
+    );
+    let result = compile_with_cn_mirror(&input, Target::Shadowrocket, &sources, &mirror).unwrap();
+    assert_eq!(
+        result.config,
+        compile(&input, Target::Shadowrocket, &sources)
+            .unwrap()
+            .config
+    );
+    assert_eq!(result.stats.externalized_geosite_cn, 0);
+    let custom = config(
+        "geox-url: {geosite: 'https://data.example/custom.dat'}\nrules: ['GEOSITE,cn,DIRECT']",
+    );
+    sources.get_mut("geosite:cn").unwrap().content =
+        SourceContent::Rules(vec!["DOMAIN-SUFFIX,custom.example".into()]);
+    let result = compile_with_cn_mirror(&custom, Target::Shadowrocket, &sources, &mirror).unwrap();
+    assert_eq!(rules(&result), ["DOMAIN-SUFFIX,custom.example,DIRECT"]);
+    assert!(result.config.get("rule-providers").is_none());
+    assert!(
+        !result
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "cn_mirror_source_mismatch")
+    );
+    let inverted = config("rules: ['GEOSITE,!cn,DIRECT']");
+    assert!(compile_with_cn_mirror(&inverted, Target::Shadowrocket, &sources, &mirror).is_err());
+}
+
+#[test]
+fn cn_mirror_distinguishes_unmatched_raw_source_from_corrupt_metadata() {
+    let input = config("rules: ['GEOSITE,cn,DIRECT']");
+    let (sources, mut mirror) = cn_fixture("DOMAIN-SUFFIX,sensitive.example\n");
+    mirror.expected_source_hash = crate::digest("different fixed mirror");
+    let result = compile_with_cn_mirror(&input, Target::Shadowrocket, &sources, &mirror).unwrap();
+    assert_eq!(rules(&result), ["DOMAIN-SUFFIX,sensitive.example,DIRECT"]);
+    assert!(result.config.get("rule-providers").is_none());
+    assert_eq!(result.diagnostics[0].code, "cn_mirror_source_mismatch");
+    assert!(
+        !serde_json::to_string(&result.diagnostics)
+            .unwrap()
+            .contains("sensitive")
+    );
+    let (mut corrupt, mirror) = cn_fixture("DOMAIN-SUFFIX,sensitive.example\n");
+    corrupt.get_mut("geosite:cn").unwrap().content =
+        SourceContent::Text("DOMAIN-SUFFIX,changed.example\n".into());
+    let error = compile_with_cn_mirror(&input, Target::Shadowrocket, &corrupt, &mirror)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("recorded hash"));
+    assert!(!error.contains("sensitive") && !error.contains("changed"));
+    let (mut wrong_kind, mirror) = cn_fixture("DOMAIN-SUFFIX,cn.example\n");
+    wrong_kind.get_mut("geosite:cn").unwrap().kind = SourceKind::RuleProvider;
+    assert!(compile_with_cn_mirror(&input, Target::Shadowrocket, &wrong_kind, &mirror).is_err());
+}
+
+#[test]
+fn cn_mirror_uses_raw_bytes_without_line_ending_normalization() {
+    let input = config("rules: ['GEOSITE,cn,DIRECT']");
+    let (sources, mut mirror) = cn_fixture("\u{feff}DOMAIN-SUFFIX,cn.example\r\n");
+    mirror.expected_source_hash = crate::digest("DOMAIN-SUFFIX,cn.example\n");
+    let result = compile_with_cn_mirror(&input, Target::Shadowrocket, &sources, &mirror).unwrap();
+    assert_eq!(rules(&result), ["DOMAIN-SUFFIX,cn.example,DIRECT"]);
+    assert_eq!(result.stats.externalized_geosite_cn, 0);
+    assert_eq!(result.diagnostics[0].code, "cn_mirror_source_mismatch");
+}
+
+#[test]
+fn cn_mirror_provider_names_do_not_collide_and_paths_remain_content_addressed() {
+    let (sources, mirror) = cn_fixture("DOMAIN-SUFFIX,cn.example\n");
+    let prefix = format!("camofy-geosite-cn-{}", &mirror.expected_source_hash[..12]);
+    let input = config(&format!(
+        "rule-providers:\n  {prefix}: {{type: inline, behavior: domain, payload: [first.example]}}\n  {prefix}-1: {{type: inline, behavior: domain, payload: [second.example]}}\nrules: ['RULE-SET,{prefix},route', 'GEOSITE,cn,DIRECT', 'RULE-SET,{prefix}-1,route']"
+    ));
+    let first = compile_with_cn_mirror(&input, Target::Shadowrocket, &sources, &mirror).unwrap();
+    let second = compile_with_cn_mirror(&input, Target::Shadowrocket, &sources, &mirror).unwrap();
+    assert_eq!(first.config, second.config);
+    assert_eq!(mirror_name(&first), format!("{prefix}-2"));
+    assert_eq!(
+        rules(&first),
+        [
+            "DOMAIN,first.example,route".to_owned(),
+            format!("RULE-SET,{prefix}-2,DIRECT"),
+            "DOMAIN,second.example,route".into()
+        ]
+    );
+}
+
+#[test]
+fn unused_cn_mirror_never_enters_output_and_old_stats_still_decode() {
+    let input = config("rules: ['DOMAIN,cn.example,DIRECT', 'MATCH,route']");
+    let mirror = CnMirror {
+        url: "invalid unused URL".into(),
+        expected_source_hash: "invalid unused hash".into(),
+    };
+    let result = compile_with_cn_mirror(
+        &input,
+        Target::Shadowrocket,
+        &ResolvedSources::new(),
+        &mirror,
+    )
+    .unwrap();
+    assert_eq!(result.config, input);
+    let stats: CompilationStats = serde_json::from_value(serde_json::json!({"input_rules":1,"output_rules":1,"expanded_geosite":0,"expanded_rule_sets":0,"expanded_dns_selectors":0,"resolved_sources":0})).unwrap();
+    assert_eq!(stats.externalized_geosite_cn, 0);
+}
+
+#[test]
+fn cn_mirror_requires_an_unambiguous_public_http_url() {
+    let input = config("rules: ['GEOSITE,cn,DIRECT']");
+    let (sources, mut mirror) = cn_fixture("DOMAIN-SUFFIX,cn.example\n");
+    for url in [
+        "not a URL",
+        "file:///rules/cn.list",
+        "https://sample:credential@config.example/cn.list",
+        "https://config.example/cn.list?token=sample",
+        "https://config.example/cn.list#fragment",
+    ] {
+        mirror.url = url.into();
+        let error = compile_with_cn_mirror(&input, Target::Shadowrocket, &sources, &mirror)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("mirror URL"));
+        assert!(!error.contains("credential") && !error.contains("sample"));
+    }
+}
+
 #[test]
 fn rule_type_case_and_reserved_policy_names_follow_source_parser() {
     let input = config(

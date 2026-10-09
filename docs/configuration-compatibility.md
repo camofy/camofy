@@ -49,7 +49,7 @@
 | Clash for Windows / Clash for Android / ClashX | Clash YAML | 家族输入语法；开源/Premium 等内核差异不推定 |
 | Stash iOS / tvOS | Clash YAML | MRS 自 3.1.0；当前规则及 inline provider 检查 3.6.0 |
 | Stash Mac | Clash YAML | 当前规则及 provider 检查 4.3.0；独立于 iOS 版 |
-| Shadowrocket | Clash YAML 导入 | 输入语法 2.1.95–2.2.92；逐字段导入能力另列未知 |
+| Shadowrocket | Clash YAML 导入 | 导入语法入口 2.1.60–2.2.92；逐字段导入能力另列未知 |
 | sing-box | 未实现 | 已记录原生 JSON 输入；不生成伪完整配置 |
 | Xray | 未实现 | 已记录原生 JSON 输入 |
 | Surge / Surge iOS / Surge Mac | 未实现 | 3 个识别家族，已记录原生语法 |
@@ -61,7 +61,9 @@
 
 ## Shadowrocket 的边界
 
-[官方发布频道 2.1.95](https://t.me/ShadowrocketNews/362) 公布 Clash YAML 导入及 DST-PORT 修复。已知低于 2.1.95 的版本不能选择此完整输出入口；未知版本保留家族入口及明确提示。后续 [App Store 发布记录](https://apps.apple.com/us/app/shadowrocket/id932747118) 仍有 Clash 解析修复，但没有公开整个 YAML 字段的映射契约。
+[官方发布频道 2.1.60（1050）](https://t.me/ShadowrocketNews/318) 已在 2020-08-23 公布 Clash YAML 导入；[2.1.95](https://t.me/ShadowrocketNews/362) 于 2021-12-19 再次公布同项能力，并包含 DST-PORT 修复。因此不能把 2.1.95 当作最早引入边界，也不能将 2.1.60–2.1.94 全部判为不支持。
+
+矩阵只为 2.1.60–2.2.92 确认 YAML 导入语法入口，规则、DNS、策略组与 provider 的逐字段导入能力仍独立评估。2.1.59 及更早版本缺少已核实的输入语法契约，标记 `unknown`，完整输出入口按现有语法门槛阻止选择；这不是客户端“不支持”的结论。未知版本保留家族入口及明确提示。后续 [App Store 发布记录](https://apps.apple.com/us/app/shadowrocket/id932747118) 仍有 Clash 解析修复，但没有公开整个 YAML 字段的映射契约。
 
 原生规则的 DOMAIN、DOMAIN-SUFFIX、DOMAIN-KEYWORD、IP-CIDR、GEOIP、DST-PORT、RULE-SET、FINAL 及逻辑规则，可由[规则项目原作者配置说明](https://github.com/GMOogway/shadowrocket-rules/blob/68f92ea9aed0f119649813d9d60d69f5139ffe7b/docs/01.shadowrocket_configure.md)与[维护手册快照](https://github.com/LOWERTOP/Shadowrocket/blob/3537f928451038ba74258eccbb6d9bd7865628dd/README.md)核对。它们是原作者/维护者资料，不标成 Shadowrocket 开发者正式规范。
 
@@ -99,8 +101,18 @@
 
 输出远程 RULE-SET URL 前必须确认内容已是目标可用语法，而非仅改 URL 后缀。使用自己生成的规则资源时需保留来源、版本和鉴权边界。内联过大或资源不可读取时报告具体阻碍，不能截断、跳过或改成仅节点输出。
 
+## 默认 CN 规则的专用镜像
+
+按用户明确指定的输出策略，Shadowrocket 完整 YAML 可将默认 GeoSite 数据源中顶层、正向、无属性的原子 `GEOSITE,cn,<策略>` 引用改为 HTTP `classical` / `text` provider。只有实际来源与固定内容哈希匹配默认快照时才应用此特例；保留引用位置、原策略及 `no-resolve`。复杂逻辑、DNS 中的 GeoSite 引用、属性过滤、反向匹配和自定义来源继续使用现有内联转换路径，不扩大镜像条件。
+
+公开资源路径为 `/api/rules/geosite/<固定来源版本>/cn.list`，由 cloud 程序内嵌的固定 gzip 资源提供 MetaCubeX 官方 classical 原始文本；运行时不依赖上游网络。该独立入口不是任意 URL 代理，不需要身份 token，也不需要数据库迁移；资源仅包含公开规则，不携带身份、节点或订阅凭据。更新 CN 数据时生成新的版本路径，保留已发布配置引用的历史路径。不能换成第三方同名 China 规则，也不能用 GEOIP 替代域名集合。
+
+这项转换策略不构成新的客户端能力证据：`clash.provider.http`、`clash.provider.classical_text` 和 `clash.rule.rule_set` 对 Shadowrocket 仍保持 `unknown` 并显示诊断。[2.2.34（1977）](https://t.me/ShadowrocketNews/427) 的 Clash text ruleset 解析修复，只能证明存在相应解析路径，不能证明所有 YAML provider 参数或导出后的外链保留行为。[2.2.81（3232）](https://t.me/ShadowrocketNews/1468) 修复了资源下载的 HTTP 304 处理，[2.2.91（3381）](https://t.me/ShadowrocketNews/1578) 修复了远程规则刷新可靠性；这些记录不保证首次下载失败会阻止启用，也不保证刷新失败必然保留旧缓存。
+
+服务端测试可验证镜像字节、哈希、引用位置和转换边界；客户端验收仍须检查首次下载失败、已有缓存后刷新失败、304、规则命中，以及导入、编译、重启、再次导出后的外链是否保留。外置资源减小主配置文本，不等于客户端不再编译这些规则或运行内存同比下降。
+
 ## 维护与验证
 
 新增条目必须提供 HTTPS 证据、明确说明和能力维度。负面结论只来自明确拒绝、明确平台限制或明确引入版本；缺少搜索结果不构成不支持。GitHub 源码优先固定提交或版本，动态文档记录检查日期和已核实版本上限。
 
-当前合成测试覆盖：21 家族与节点识别表一致；Shadowrocket 2.1.94/2.1.95 边界；未知构建号、预发布及未来版本不继承最新 profile；原生/Clash 导入隔离；Stash MRS 引入边界及 iOS/macOS 进程差异；缺 renderer 不节点降级；矩阵键、引用、证据和重叠版本范围完整性。以上是服务端契约测试，不能替代客户端实机验证。
+当前合成测试覆盖：21 家族与节点识别表一致；Shadowrocket 2.1.59 保持未知且不节点降级，2.1.60/2.1.94/2.1.95/2.2.92 仅确认语法入口且全部 provider 能力保持未知；未知构建号、预发布及未来版本不继承最新 profile；原生/Clash 导入隔离；Stash MRS 引入边界及 iOS/macOS 进程差异；缺 renderer 不节点降级；矩阵键、引用、证据和重叠版本范围完整性。以上是服务端契约测试，不能替代客户端实机验证。

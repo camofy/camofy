@@ -425,6 +425,279 @@ fn bundle_reports_per_target_errors_without_losing_clash() {
     assert!(artifacts["shadowrocket-nodes"]["error"].is_string());
 }
 
+/// Exercises the embedded public CN source through publication and HTTP delivery.
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL pointing to disposable PostgreSQL"]
+async fn cn_mirror_http_end_to_end() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use camofy::config_compat::{SourceContent, SourceKind};
+
+    const CN_HASH: &str = "5a992276c844c69afad4bff79aeb7acd807249990d049e1373e54c24aecd0aed";
+    const CN_REVISION: &str = "ad2798bba7340c09298f364bebedebbfa4398f5b";
+    const CN_LENGTH: usize = 2_965_298;
+    const CLIENT: &str = "Shadowrocket/2.2.92";
+    let db = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(8)
+        .connect(&std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL is required"))
+        .await
+        .unwrap();
+    sqlx::migrate!("./migrations").run(&db).await.unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let app = App {
+        db: db.clone(),
+        vault: security::Vault::new(&STANDARD.encode([47; 32])).unwrap(),
+        origin: origin.clone(),
+        legacy_origins: vec![],
+        secure: false,
+        registration: false,
+        private_egress: false,
+        workers: 1,
+        captcha: None,
+        topics: Default::default(),
+        hash_slots: Arc::new(Semaphore::new(1)),
+    };
+    let server = tokio::spawn(
+        axum::serve(
+            listener,
+            router(app.clone()).into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .into_future(),
+    );
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(std::time::Duration::from_secs(60))
+        .build()
+        .unwrap();
+    let user = Uuid::new_v4();
+    let session = Uuid::new_v4().to_string();
+    sqlx::query("INSERT INTO users(id,email,password) VALUES($1,$2,'unused')")
+        .bind(user)
+        .bind(format!("{user}@example.test"))
+        .execute(&db)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO sessions(hash,user_id,expires_at) VALUES($1,$2,now()+interval '1 hour')",
+    )
+    .bind(camofy::digest(&session))
+    .bind(user)
+    .execute(&db)
+    .await
+    .unwrap();
+    async fn create(client: &reqwest::Client, origin: &str, session: &str, body: Value) -> Value {
+        let response = client
+            .post(format!("{origin}/api/resources"))
+            .bearer_auth(session)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        let status = response.status();
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(status, 200, "resource creation failed: {body}");
+        body
+    }
+    let profile = create(
+        &client,
+        &origin,
+        &session,
+        json!({"kind":"profile","data":{"name":"CN mirror fixture","type":"overlay",
+            "content":"proxies: [{name: Example, type: ss, server: proxy.example, port: 443, cipher: aes-256-gcm, password: sample}]\nproxy-groups: [{name: Pick, type: select, proxies: [Example, DIRECT]}]\ndns: {enable: true, nameserver: ['https://dns.example/dns-query']}\nrules: ['DOMAIN,first.example,REJECT', 'GEOSITE,cn,Pick,no-resolve', 'MATCH,REJECT']"}}),
+    )
+    .await;
+    let bundle = create(
+        &client,
+        &origin,
+        &session,
+        json!({"kind":"bundle","data":{"name":"CN mirror identity",
+            "profiles":[{"profile_id":profile["id"],"enabled":true}]}}),
+    )
+    .await;
+    let subscription = bundle["data"]["subscription_url"].as_str().unwrap();
+    let scope = config_resources::Scope {
+        user,
+        bundle: Uuid::parse_str(bundle["id"].as_str().unwrap()).unwrap(),
+        revision: Some(
+            Uuid::parse_str(bundle["data"]["published_revision"].as_str().unwrap()).unwrap(),
+        ),
+    };
+
+    // Generic YAML and other clients retain GEOSITE and do not resolve CN at all.
+    let mut baseline = None;
+    for (suffix, user_agent) in [
+        ("/clash", CLIENT),
+        ("", "mihomo/1.19.17"),
+        ("", "Unknown/1.0"),
+    ] {
+        let response = client
+            .get(format!("{subscription}{suffix}"))
+            .header("User-Agent", user_agent)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.headers()["x-camofy-format"], "clash");
+        let config = camofy::engine::parse(&response.text().await.unwrap()).unwrap();
+        assert!(
+            config["rules"]
+                .as_sequence()
+                .unwrap()
+                .contains(&"GEOSITE,cn,Pick,no-resolve".into())
+        );
+        assert!(config.get("rule-providers").is_none());
+        if let Some(expected) = &baseline {
+            assert_eq!(&config, expected);
+        } else {
+            baseline = Some(config);
+        }
+    }
+    let pending: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM config_resource_snapshots WHERE user_id=$1 AND bundle_id=$2",
+    )
+    .bind(user)
+    .bind(scope.bundle)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    assert_eq!(pending, 0);
+    let baseline = baseline.unwrap();
+    let response = client
+        .get(subscription)
+        .header("User-Agent", CLIENT)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()["x-camofy-format"], "shadowrocket");
+    assert_eq!(response.headers()["x-camofy-filtered"], "0");
+    assert_eq!(response.headers()["vary"], "User-Agent");
+    assert_eq!(
+        response.headers()["x-camofy-revision"],
+        scope.revision.unwrap().to_string()
+    );
+    let etag = response.headers()["etag"].clone();
+    let content = response.text().await.unwrap();
+    assert!(
+        content.len() < 8192,
+        "CN should remain outside the main configuration"
+    );
+    let config = camofy::engine::parse(&content).unwrap();
+    for key in ["proxies", "proxy-groups", "dns"] {
+        assert_eq!(config[key], baseline[key]);
+    }
+    let providers = config["rule-providers"].as_mapping().unwrap();
+    assert_eq!(providers.len(), 1);
+    let (name, provider) = providers.iter().next().unwrap();
+    assert_eq!(provider["type"], "http");
+    assert_eq!(provider["behavior"], "classical");
+    assert_eq!(provider["format"], "text");
+    let mirror_url = provider["url"].as_str().unwrap();
+    assert_eq!(
+        mirror_url,
+        format!("{origin}/api/rules/geosite/{CN_REVISION}/cn.list")
+    );
+    let mut expected_rules = baseline["rules"].as_sequence().unwrap().clone();
+    let position = expected_rules
+        .iter()
+        .position(|rule| rule == "GEOSITE,cn,Pick,no-resolve")
+        .unwrap();
+    expected_rules[position] =
+        format!("RULE-SET,{},Pick,no-resolve", name.as_str().unwrap()).into();
+    assert_eq!(config["rules"].as_sequence().unwrap(), &expected_rules);
+
+    // The first request resolved and encrypted the embedded source, without a
+    // test-supplied snapshot or an upstream subscription/provider request.
+    let sealed: Value = sqlx::query_scalar("SELECT sealed FROM config_resource_snapshots WHERE user_id=$1 AND bundle_id=$2 AND revision_id=$3")
+        .bind(user).bind(scope.bundle).bind(scope.revision).fetch_one(&db).await.unwrap();
+    let snapshot: config_resources::ResourceSnapshot =
+        serde_json::from_value(app.vault.open(sealed).unwrap()).unwrap();
+    assert_eq!(snapshot.source_count, 1);
+    assert_eq!(snapshot.total_bytes, CN_LENGTH);
+    assert_eq!(snapshot.geosite_revision, CN_REVISION);
+    let source = snapshot.sources.get("geosite:cn").unwrap();
+    assert_eq!(source.hash, CN_HASH);
+    assert_eq!(source.kind, SourceKind::Geosite);
+    let SourceContent::Text(source_text) = &source.content else {
+        panic!("CN snapshot must retain the raw source");
+    };
+    assert_eq!(camofy::digest(source_text), CN_HASH);
+
+    // This URL is public, immutable and serves exactly the source compiled above.
+    let mirror = client.get(mirror_url).send().await.unwrap();
+    assert_eq!(mirror.status(), 200);
+    assert_eq!(
+        mirror.headers()["content-type"],
+        "text/plain; charset=utf-8"
+    );
+    assert_eq!(
+        mirror.headers()["cache-control"],
+        "public, max-age=31536000, immutable"
+    );
+    let bytes = mirror.bytes().await.unwrap();
+    assert_eq!(bytes.len(), CN_LENGTH);
+    assert_eq!(camofy::digest(&bytes), CN_HASH);
+    assert_eq!(bytes.as_ref(), source_text.as_bytes());
+    assert_eq!(
+        std::str::from_utf8(&bytes)
+            .unwrap()
+            .lines()
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .count(),
+        111_224
+    );
+    let conditional = client
+        .get(subscription)
+        .header("User-Agent", CLIENT)
+        .header("If-None-Match", etag)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(conditional.status(), 304);
+
+    // Keep the revision and its encrypted inputs identical: changing origins
+    // through HTTP would independently regenerate the cloud safety profile.
+    let sealed: Value = sqlx::query_scalar(
+        "SELECT artifacts FROM revisions WHERE id=$1 AND user_id=$2 AND bundle_id=$3",
+    )
+    .bind(scope.revision)
+    .bind(user)
+    .bind(scope.bundle)
+    .fetch_one(&db)
+    .await
+    .unwrap();
+    let artifacts = app.vault.open(sealed).unwrap();
+    let alternate = App {
+        origin: "https://alternate.example".into(),
+        ..app.clone()
+    };
+    let (view, _) =
+        client_config::adapt_request(&alternate, scope, &artifacts, "auto", Some(CLIENT))
+            .await
+            .unwrap();
+    assert_eq!(view["configuration"]["stats"]["externalized_geosite_cn"], 1);
+    assert_eq!(
+        view["configuration"]["resources"]["fingerprint"],
+        snapshot.fingerprint
+    );
+    let alternate_config = camofy::engine::parse(view["content"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        alternate_config["rule-providers"][name.as_str().unwrap()]["url"],
+        format!("https://alternate.example/api/rules/geosite/{CN_REVISION}/cn.list")
+    );
+    let (original, _) = client_config::adapt_request(&app, scope, &artifacts, "auto", Some(CLIENT))
+        .await
+        .unwrap();
+    assert_eq!(original["content"], content);
+
+    server.abort();
+    sqlx::query("DELETE FROM users WHERE id=$1")
+        .bind(user)
+        .execute(&db)
+        .await
+        .unwrap();
+}
+
 /// Uses a disposable PostgreSQL supplied by the caller, never a developer's production DB.
 #[tokio::test]
 #[ignore = "requires TEST_DATABASE_URL pointing to a disposable PostgreSQL"]

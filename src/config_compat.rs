@@ -74,6 +74,14 @@ pub struct ResolvedSource {
 
 pub type ResolvedSources = BTreeMap<String, ResolvedSource>;
 
+/// An explicitly configured public mirror of the raw default CN source.
+/// The caller owns availability and serves these exact content-addressed bytes.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CnMirror {
+    pub url: String,
+    pub expected_source_hash: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Diagnostic {
     pub code: String,
@@ -86,6 +94,8 @@ pub struct CompilationStats {
     pub input_rules: usize,
     pub output_rules: usize,
     pub expanded_geosite: usize,
+    #[serde(default)]
+    pub externalized_geosite_cn: usize,
     pub expanded_rule_sets: usize,
     pub expanded_dns_selectors: usize,
     pub resolved_sources: usize,
@@ -539,6 +549,9 @@ struct Compiler<'a> {
     unknown: BTreeSet<String>,
     work_nodes: usize,
     work_bytes: usize,
+    cn_mirror: Option<&'a CnMirror>,
+    cn_mirror_matches: Option<bool>,
+    cn_provider: Option<(String, Value)>,
 }
 
 impl<'a> Compiler<'a> {
@@ -556,7 +569,132 @@ impl<'a> Compiler<'a> {
             unknown: BTreeSet::new(),
             work_nodes: 0,
             work_bytes: 0,
+            cn_mirror: None,
+            cn_mirror_matches: None,
+            cn_provider: None,
         }
+    }
+
+    fn mirror_top_level_cn(&mut self, expr: &Expr, context: &str) -> Result<Option<Expr>> {
+        let Some(mirror) = self.cn_mirror else {
+            return Ok(None);
+        };
+        let Expr::Atom {
+            kind,
+            value,
+            no_resolve,
+        } = expr
+        else {
+            return Ok(None);
+        };
+        if kind != "GEOSITE" || !value.eq_ignore_ascii_case("cn") {
+            return Ok(None);
+        }
+        let default_source = match self.config.get("geox-url") {
+            None | Some(Value::Null) => true,
+            Some(Value::Mapping(urls)) => urls.get("geosite").is_none_or(Value::is_null),
+            _ => false,
+        };
+        if !default_source {
+            return Ok(None);
+        }
+        if self.cn_mirror_matches.is_none() {
+            ensure!(
+                mirror.expected_source_hash.len() == 64
+                    && mirror
+                        .expected_source_hash
+                        .bytes()
+                        .all(|b| b.is_ascii_hexdigit()),
+                "invalid CN mirror source hash"
+            );
+            let source = self
+                .resolved
+                .get("geosite:cn")
+                .ok_or_else(|| anyhow::anyhow!("required rule source snapshot is missing"))?;
+            ensure!(
+                source.kind == SourceKind::Geosite
+                    && source.hash.len() == 64
+                    && source.hash.bytes().all(|b| b.is_ascii_hexdigit()),
+                "invalid resolved CN rule source metadata"
+            );
+            let matches = if let SourceContent::Text(text) = &source.content {
+                ensure!(
+                    text.len() <= MAX_OUTPUT_BYTES,
+                    "rule source byte limit exceeded"
+                );
+                let actual_hash = crate::digest(text.as_bytes());
+                ensure!(
+                    actual_hash.eq_ignore_ascii_case(&source.hash),
+                    "CN rule source content does not match its recorded hash"
+                );
+                actual_hash.eq_ignore_ascii_case(&mirror.expected_source_hash)
+            } else {
+                false
+            };
+            self.cn_mirror_matches = Some(matches);
+            if !matches {
+                self.diagnostics.push(Diagnostic {
+                    code: "cn_mirror_source_mismatch".into(),
+                    message: "The default CN source could not be verified against the public mirror; its rules were kept inline.".into(),
+                    context: context.into(),
+                });
+            }
+        }
+        if self.cn_mirror_matches != Some(true) {
+            return Ok(None);
+        }
+        if self.cn_provider.is_none() {
+            let url = url::Url::parse(&mirror.url)
+                .map_err(|_| anyhow::anyhow!("invalid public CN mirror URL"))?;
+            ensure!(
+                ["http", "https"].contains(&url.scheme())
+                    && url.host_str().is_some()
+                    && url.username().is_empty()
+                    && url.password().is_none()
+                    && url.query().is_none()
+                    && url.fragment().is_none(),
+                "invalid public CN mirror URL"
+            );
+            let hash = mirror.expected_source_hash.to_ascii_lowercase();
+            let prefix = format!("camofy-geosite-cn-{}", &hash[..12]);
+            let mut name = prefix.clone();
+            let mut suffix = 1usize;
+            while self
+                .config
+                .get("rule-providers")
+                .and_then(Value::as_mapping)
+                .is_some_and(|providers| providers.contains_key(&name))
+            {
+                name = format!("{prefix}-{suffix}");
+                suffix += 1;
+            }
+            let provider = Mapping::from_iter([
+                (Value::String("type".into()), Value::String("http".into())),
+                (
+                    Value::String("behavior".into()),
+                    Value::String("classical".into()),
+                ),
+                (Value::String("format".into()), Value::String("text".into())),
+                (Value::String("url".into()), Value::String(url.to_string())),
+                (
+                    Value::String("path".into()),
+                    Value::String(format!("./rules/camofy-geosite-cn-{hash}.list")),
+                ),
+                (
+                    Value::String("interval".into()),
+                    Value::Number(86400.into()),
+                ),
+            ]);
+            self.cn_provider = Some((name, Value::Mapping(provider)));
+            self.sources
+                .insert("geosite:cn".into(), request(self.config, "GEOSITE", "cn")?);
+        }
+        self.stats.externalized_geosite_cn += 1;
+        Ok(Some(Expr::Atom {
+            kind: "RULE-SET".into(),
+            value: self.cn_provider.as_ref().unwrap().0.clone(),
+            no_resolve: *no_resolve,
+        }))
     }
 
     fn charge(&mut self, nodes: usize, bytes: usize) -> Result<()> {
@@ -722,8 +860,13 @@ impl<'a> Compiler<'a> {
                     .as_str()
                     .ok_or_else(|| anyhow::anyhow!("rule must be a string"))?;
                 let rule = parse_rule(raw)?;
-                let expr = self.expand(with_no_resolve(rule.expr, rule.no_resolve), 0)?;
-                self.check_atoms(&expr, &format!("rules[{index}]"));
+                let context = format!("rules[{index}]");
+                let expr = if let Some(mirrored) = self.mirror_top_level_cn(&rule.expr, &context)? {
+                    with_no_resolve(mirrored, rule.no_resolve)
+                } else {
+                    self.expand(with_no_resolve(rule.expr, rule.no_resolve), 0)?
+                };
+                self.check_atoms(&expr, &context);
                 let items = if let Expr::Any(items) = expr {
                     items
                 } else {
@@ -1193,10 +1336,32 @@ pub fn plan_with_sources(
     })
 }
 
-pub fn compile(config: &Value, _target: Target, resolved: &ResolvedSources) -> Result<Compilation> {
+pub fn compile(config: &Value, target: Target, resolved: &ResolvedSources) -> Result<Compilation> {
+    compile_inner(config, target, resolved, None)
+}
+
+/// Externalize only direct, positive, default-database CN references whose raw
+/// source bytes match the explicitly supplied public mirror. Other routing and
+/// DNS references retain the existing inline compiler and its safety checks.
+pub fn compile_with_cn_mirror(
+    config: &Value,
+    target: Target,
+    resolved: &ResolvedSources,
+    mirror: &CnMirror,
+) -> Result<Compilation> {
+    compile_inner(config, target, resolved, Some(mirror))
+}
+
+fn compile_inner(
+    config: &Value,
+    _target: Target,
+    resolved: &ResolvedSources,
+    mirror: Option<&CnMirror>,
+) -> Result<Compilation> {
     ensure!(config.is_mapping(), "configuration must be a mapping");
     validate_contexts(config)?;
     let mut compiler = Compiler::new(config, resolved, false);
+    compiler.cn_mirror = mirror;
     let rules = compiler.run_rules()?;
     let dns = compiler.run_dns()?;
     let mut output = config.clone();
@@ -1211,6 +1376,10 @@ pub fn compile(config: &Value, _target: Target, resolved: &ResolvedSources) -> R
         "rule reference remains in an unsupported DNS context"
     );
     output.as_mapping_mut().unwrap().remove("rule-providers");
+    if let Some((name, provider)) = compiler.cn_provider.take() {
+        output["rule-providers"] =
+            Value::Mapping(Mapping::from_iter([(Value::String(name), provider)]));
+    }
     let source_hashes = compiler
         .sources
         .keys()

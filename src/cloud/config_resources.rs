@@ -13,10 +13,10 @@ use std::{sync::OnceLock, time::Duration};
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 
-pub const COMPILER_VERSION: &str = "rules-v1";
+pub const COMPILER_VERSION: &str = "rules-v2-cn-mirror";
 /// Full classical exports retain exact, suffix, keyword and regex predicates.
 /// Never substitute the domain-only files from the parent directory.
-pub const GEOSITE_REVISION: &str = "ad2798bba7340c09298f364bebedebbfa4398f5b";
+pub const GEOSITE_REVISION: &str = crate::rule_mirror::REVISION;
 const MAX_SOURCES: usize = 32;
 const MAX_SOURCE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_TOTAL_BYTES: usize = 24 * 1024 * 1024;
@@ -232,7 +232,11 @@ async fn load_sources(
     key: &str,
 ) -> Result<ResourceSnapshot> {
     load_sources_with(config, target, plan, key, |url| async move {
-        fetch_source(&url, false).await
+        if url.as_str() == crate::rule_mirror::SOURCE_URL {
+            Ok(crate::rule_mirror::body()?.to_vec())
+        } else {
+            fetch_source(&url, false).await
+        }
     })
     .await
 }
